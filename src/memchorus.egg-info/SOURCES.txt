@@ -1,0 +1,12 @@
+README.md
+setup.py
+src/memchorus/__init__.py
+src/memchorus/_memchorus_core.py
+src/memchorus/hermes_memory_source.py
+src/memchorus/memory_source.py
+src/memchorus/mempalace_memory_source.py
+src/memchorus/orchestrator.py
+src/memchorus.egg-info/PKG-INFO
+src/memchorus.egg-info/SOURCES.txt
+src/memchorus.egg-info/dependency_links.txt
+src/memchorus.egg-info/top_level.txt

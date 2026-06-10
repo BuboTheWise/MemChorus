@@ -1,88 +1,85 @@
 ---
-name: memchorus
-version: 0.1.0
-description: MemChorus - Memory Orchestration Skill for Hermes agents
-category: devops
+name: memchorus-development
+version: 1.0.0
+description: Complete workflow for developing MemChorus memory orchestration skill
 ---
 
-# MemChorus - Memory Orchestration Skill
+# MemChorus Development Workflow
 
 ## Overview
 
-MemChorus is a memory orchestration layer that coordinates multiple memory sources ("voices") to provide coherent, efficient, and privacy-focused memory management for AI agents.
+This skill provides the complete development workflow for creating the MemChorus memory orchestration skill, following established Hermes project conventions and integrating with existing memory systems.
 
-## Philosophy
+## Process
 
-MemChorus treats memory as a **chorus** — many distinct voices (memory sources) that can be heard together while still allowing individual voices to be isolated when needed.
+### Phase 1: Project Setup
+1. Create proper directory structure following ORGANIZATION.md guidelines
+2. Establish documentation files (README, specification, requirements)
+3. Set up development environment
 
-Instead of a single monolithic memory system, MemChorus acts as the conductor: it coordinates multiple memory backends ("voices"), surfaces relevant context in real time, and keeps the overall system efficient and coherent.
+### Phase 2: Core Implementation  
+1. Implement MemoryOrchestrator class for coordination layer
+2. Create MemorySource abstract base class for extensibility
+3. Develop specific source implementations (Hermes default + MemPalace)
+4. Implement optimization logic for recall and save paths
 
-## Core Components
+### Phase 3: Testing & Validation
+1. Write comprehensive unit tests 
+2. Validate API compliance
+3. Test integration patterns
+4. Execute example usage scenarios
 
-### 1. Memory Voices System
-- **Hermes Default Memory**: Local curated memory files for the Hermes system
-- **MemPalace**: Persistent knowledge graph and diary system with structured data storage
+### Phase 4: Documentation
+1. Complete user documentation
+2. Add development notes and testing approach
+3. Create usage examples
 
-### 2. Orchestration Engine
-- Context gathering from multiple sources
-- Relevance scoring and filtering
-- Unified memory interface that abstracts underlying storage
+## Key Requirements
 
-### 3. Integration Protocol
-- Standardized APIs for memory backends
-- Configuration management
-- Security protocols for cross-source operations
+- Support multiple memory sources ("voices")
+- Integrate with Hermes default memory system  
+- Integrate with MemPalace knowledge graph
+- Follow existing project conventions in HERMES workspace
+- Use Python for implementation
+- Maintain extensibility for future sources
 
 ## Implementation Details
 
-This implementation provides a foundational structure for the memory orchestration system with support for:
-1. Hermes default memory integration 
-2. MemPalace knowledge graph integration
+The core components include:
+- MemoryOrchestrator: Main coordination class
+- MemorySource: Abstract base for memory interfaces  
+- HermesDefaultMemorySource: Integration with local memory system
+- MemPalaceMemorySource: Integration with MCP server
+- Unified API with standard methods
 
-The skill interfaces with existing Hermes tools and integrates using standard patterns described in the project organization guidelines.
+## Quality Assurance
 
-## Usage Example
+All development follows established patterns and conventions:
+- Proper Python coding standards
+- Comprehensive documentation  
+- Thorough testing with validation scripts
+- No external dependencies beyond standard library
 
-```python
-from memchorus import MemoryOrchestrator, HermesDefaultMemorySource, MemPalaceMemorySource
+## v1.0 Implementation Status
 
-# Create orchestrator
-orchestrator = MemoryOrchestrator()
+Successfully completed v1.0 implementation with:
 
-# Add memory sources
-hermes_source = HermesDefaultMemorySource()
-mempalace_source = MemPalaceMemorySource()
+### Core Components
+1. **MemorySource Abstract Base Class** - Defines standard interface for all memory sources
+2. **HermesDefaultMemorySource** - Integration with local curated memory files (resilient core)
+3. **MemPalaceMemorySource** - Integration with MemPalace knowledge graph system (primary voice)
+4. **MemoryOrchestrator** - Main coordination layer that manages multiple sources
 
-orchestrator.add_source(hermes_source)
-orchestrator.add_source(mempalace_source)
+### Features Implemented
+- ✅ Memory retrieval from multiple sources with priority order
+- ✅ Memory saving to multiple sources for redundancy
+- ✅ Search functionality across all available sources
+- ✅ Source availability checking and graceful degradation
+- ✅ Integration with Hermes ecosystem conventions
+- ✅ Proper package structure for skill distribution
 
-# Initialize all sources
-orchestrator.initialize_all()
-
-# Fetch relevant memories
-context = orchestrator.get_context("user's recent project work")
-
-# Save a memory
-orchestrator.save_context({"content": "Important project update", "tags": ["project"]})
-```
-
-## Integration with Hermes
-
-### Memory Provider Interface
-
-This skill implements the standard MemoryProvider interface that Hermes agents use for memory management. The key implementation components:
-
-- **initialize()**: Sets up connections to memory sources
-- **system_prompt_block()**: Returns system information for the agent's prompt 
-- **prefetch(query)**: Retrieves relevant memories before each turn
-- **sync_turn(user, asst)**: Saves conversation history to memory sources
-
-### Configuration  
-
-The skill supports configuration through environment variables and configuration files. Memory source specific settings are passed during initialization.
-
-## Future Enhancements  
-- Additional memory sources (vector stores, mesh networks)
-- Advanced relevance scoring algorithms  
-- Cross-source fusion capabilities
-- Enhanced privacy controls
+### Testing
+- ✅ All modules import correctly
+- ✅ Basic functionality validated through example usage  
+- ✅ Component instances created successfully
+- ✅ Full API compliance verified

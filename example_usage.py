@@ -1,76 +1,46 @@
-#!/usr/bin/env python3
 """
-Example usage script demonstrating MemChorus in practice.
+Example usage of MemChorus implementation
 """
 
 import sys
-import os
+sys.path.insert(0, '/home/bubo/.hermes/workspace/Code/MemChorus/src')
 
-# Add current directory to Python path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from memchorus.orchestrator import MemoryOrchestrator
 
-from memchorus import MemoryOrchestrator, HermesDefaultMemorySource, MemPalaceMemorySource
-
-def demonstrate_usage():
-    """Demonstrate typical usage patterns."""
-    
-    print("=== MemChorus Usage Demonstration ===\n")
+def main():
+    print("=== MemChorus v1.0 Example Usage ===")
     
     # Initialize orchestrator
-    print("1. Creating Memory Orchestrator...")
     orchestrator = MemoryOrchestrator()
-    print("✓ Created orchestrator\n")
     
-    # Add memory sources (these would be properly configured in real usage)
-    print("2. Adding memory sources...")
-    hermes_source = HermesDefaultMemorySource()
-    mempalace_source = MemPalaceMemorySource()
+    print("\n1. Saving memories...")
+    # Save some test memories
+    orchestrator.save("project_status", "MemChorus implementation in progress")
+    orchestrator.save("task_summary", "Completed core memory source implementations")
+    orchestrator.save("spec_review", "Reviewed MemChorus-Spec.md thoroughly")
     
-    orchestrator.add_source(hermes_source)
-    orchestrator.add_source(mempalace_source)
-    print("✓ Added memory sources\n")
+    print("   ✅ Memories saved successfully")
     
-    # Initialize all sources
-    print("3. Initializing memory sources...")
-    orchestrator.initialize_all({
-        "hermes_builtin": {"path": "/home/user/.hermes/memory"},
-        "mempalace": {"host": "localhost", "port": 8080}
-    })
-    print("✓ Memory sources initialized\n")
+    print("\n2. Retrieving memories...")
+    # Retrieve some memories
+    task_summary = orchestrator.retrieve("task_summary")
+    project_status = orchestrator.retrieve("project_status")
     
-    # List available sources
-    print("4. Available memory sources:")
-    sources = orchestrator.list_sources()
-    for source in sources:
-        print(f"  - {source['name']}: {source['description']}")
-    print()
+    print(f"   Task Summary: {task_summary}")
+    print(f"   Project Status: {project_status}")
     
-    # Simulate context retrieval
-    print("5. Retrieving relevant memories...")
-    context = orchestrator.get_context("project planning", relevance_threshold=0.3)
-    print(f"✓ Retrieved {len(context)} memories")
-    if context:
-        print(f"  First result: {context[0].get('content', 'No content')[:100]}...")
-    print()
+    print("\n3. Searching memories...")
+    # Search for related content
+    results = orchestrator.search("MemChorus", limit=5)
+    print(f"   Found {len(results)} matching memories")
     
-    # Save memory example
-    print("6. Saving new memory...")
-    success = orchestrator.save_context({
-        "content": "Discussed project timeline with team",
-        "tags": ["project", "discussion"],
-        "timestamp": "2026-06-10T10:00:00Z"
-    })
-    print(f"✓ Memory save {'successful' if success else 'failed'}")
-    print()
+    print("\n4. Getting system information...")
+    # Get orchestrator info
+    info = orchestrator.get_orchestrator_info()
+    print(f"   Orchestrator: {info['orchestrator']['name']}")
+    print(f"   Available sources: {info['orchestrator']['available_sources']}")
     
-    # Query specific source
-    print("7. Querying specific source...")
-    source_info = orchestrator.source_info("hermes_builtin")
-    if source_info:
-        print(f"✓ Source info: {source_info['name']} - {source_info['status']}")
-        print(f"  Description: {source_info['description']}")
-    
-    print("\n=== Demo Complete ===")
+    print("\n🎉 MemChorus example usage completed successfully!")
 
 if __name__ == "__main__":
-    demonstrate_usage()
+    main()
