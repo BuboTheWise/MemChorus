@@ -35,8 +35,8 @@ class MemPalaceMemorySource(MemorySource):
     
     def _initialize_mcp_client(self):
         """Initialize the MCP client connection."""
-        # This would normally initialize an MCP connection to MemPalace
-        # For now, we'll simulate it with local storage 
+        # Placeholder for actual MCP integration
+        # This would establish a connection to the MemPalace MCP server in a real implementation
         pass
     
     def save(self, key: str, value: Any) -> bool:
@@ -51,8 +51,8 @@ class MemPalaceMemorySource(MemorySource):
             bool: True if successful, False otherwise
         """
         try:
-            # In practice, this would send data to the MemPalace MCP server
-            # For this v1.0 implementation, we'll simulate by storing locally
+            # In a real implementation, this would send data to the MemPalace MCP server
+            # For now we maintain the fallback local storage approach from the original design
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             os.makedirs(mempalace_dir, exist_ok=True)
             
@@ -74,8 +74,8 @@ class MemPalaceMemorySource(MemorySource):
             Any: The memory content if found, None otherwise
         """
         try:
-            # In practice, this would query the MemPalace MCP server
-            # For this v1.0 implementation, we'll simulate by retrieving locally
+            # In a real implementation, this would query the MemPalace MCP server
+            # For now we maintain the fallback local storage approach from the original design
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             file_path = os.path.join(mempalace_dir, f"{key}.json")
             
@@ -99,8 +99,8 @@ class MemPalaceMemorySource(MemorySource):
         """
         results = []
         try:
-            # In practice, this would query the MemPalace search API
-            # For now we'll simulate by searching locally
+            # In a real implementation, this would query the MemPalace MCP search API
+            # For now we simulate by searching in local directory
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             
             if os.path.exists(mempalace_dir):
@@ -128,8 +128,8 @@ class MemPalaceMemorySource(MemorySource):
             bool: True if the source is available, False otherwise
         """
         try:
-            # In practice this would check actual MCP server connectivity  
-            # For v1.0, we'll assume it's available if the cache dir can be accessed
+            # In a real implementation, this would check actual MCP server connectivity  
+            # For now we assume it's available if the cache dir can be accessed (fallback method)
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             return os.path.exists(mempalace_dir) and os.access(mempalace_dir, os.R_OK | os.W_OK)
         except Exception:

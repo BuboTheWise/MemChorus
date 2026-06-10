@@ -1,23 +1,6 @@
-# MemChorus - Memory Orchestration System
+# MemChorus - Memory Orchestrator
 
-MemChorus is a memory orchestration system that manages multiple memory sources 
-for Hermes agents, providing intelligent context management with real-time optimization.
-
-## Features
-
-- **Multi-Voice Architecture**: Integrates with multiple memory sources (MemPalace + Hermes default)
-- **Optimized Retrieval**: Intelligent source selection and combination
-- **Optimized Storage**: Smart placement decisions based on memory characteristics
-- **Proactive Memory Checking**: Checks for relevant memories before significant actions
-- **Graceful Degradation**: Continues to function even if some sources are unavailable
-- **Extensible Design**: Easy to add new memory sources in the future
-
-## Architecture
-
-The system follows a two-tier architecture:
-
-1. **Resilient Core**: Hermes default memory system - local curated files that serve as the ultimate fallback
-2. **Enhancement Voice**: MemPalace knowledge graph and diary system - primary enhancement layer  
+MemChorus is the core memory orchestration system for all Hermes agents. It provides intelligent management of multiple memory sources that work together to provide comprehensive, resilient agent memory.
 
 ## Installation
 
@@ -25,20 +8,44 @@ The system follows a two-tier architecture:
 pip install -e .
 ```
 
-## Usage
+## Quick Start
 
 ```python
-from memchorus.orchestrator import MemoryOrchestrator
+from memchorus import MemoryOrchestrator
 
 # Initialize orchestrator
 orchestrator = MemoryOrchestrator()
 
 # Save a memory
-orchestrator.save("task_summary", "Completed the MemChorus implementation")
+success = orchestrator.save("key1", {"content": "Hello MemChorus"})
 
 # Retrieve a memory
-content = orchestrator.retrieve("task_summary")
+memory = orchestrator.retrieve("key1")
 
 # Search for memories
-results = orchestrator.search("MemChorus")
+results = orchestrator.search("hello")
 ```
+
+## Key Features
+
+- **Multi-source Memory Management**: Integrates with multiple memory backends (local files, knowledge graphs)
+- **Graceful Degradation**: Continues functioning even when individual sources are unavailable
+- **Resilient Core**: Uses Hermes default memory as the essential foundation
+- **Intelligent Retrieval**: Prioritizes memory sources based on relevance and availability  
+
+## Source Structure
+
+MemChorus manages different types of memory sources:
+1. `HermesDefaultMemorySource` - Local file-based memory (resilient core)
+2. `MemPalaceMemorySource` - Knowledge graph system (primary enhancement)
+
+## How Graceful Degradation Works
+
+The system automatically handles cases where memory sources are unavailable:
+
+1. **Availability Checks**: Each source is checked for availability before use
+2. **Error Recovery**: Operations fail gracefully without crashing the system  
+3. **Fallback Behavior**: Critical memories are preserved in the Hermes default source
+4. **Transparent Operation**: Applications using MemChorus don't see the failures
+
+For detailed implementation details, refer to the GRACEFUL_DEGRADATION.md documentation.

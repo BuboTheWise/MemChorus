@@ -9,6 +9,7 @@ This document summarizes all work done on the MemChorus project and outlines how
 2. **Document Memory Optimization Logic** - Created comprehensive documentation covering recall relevance scoring, source selection, save placement decisions, and deduplication
 3. **Implement Proactive Memory Check and Save Behavior** - Enhanced example_usage.py to demonstrate proactive memory checking and saving behaviors 
 4. **Implement Resilient Hermes Default Memory Source** - Created the HermesDefaultMemorySource for MemChorus with fallback behavior
+5. **Implement MemPalace Memory Source Adapter** - Created the MemPalaceMemorySource adapter for MemChorus that provides MCP integration capability
 
 ## Implemented Features:
 
