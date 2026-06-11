@@ -1,5 +1,7 @@
 # MemChorus - Requirements
 
+**Version**: 1.0.2
+
 ## Functional Requirements
 
 ### 1. Memory Source Management
@@ -68,6 +70,14 @@
 - Graceful degradation if MemPalace is unavailable
 - Clear extension points for additional or replacement memory sources
 
+
+## Installation and Distribution Requirements
+
+### Easy Installation for Other Hermes Users
+- The repository must be structured so that other Hermes users can easily clone it and install MemChorus as a skill.
+- Clear, simple installation instructions must be present in README.md.
+- The recommended pattern is to allow users to symlink or copy the skill into ~/.hermes/skills/stable/ with minimal friction.
+- setup.py and src/ layout should not complicate the basic clone-and-install use case.
 ## Initial Implementation Scope
 
 ### Phase 1: Core Infrastructure

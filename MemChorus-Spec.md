@@ -1,6 +1,6 @@
 # MemChorus - Specification
 
-**Version**: 1.0.0
+**Version**: 1.0.1
 
 ## Philosophy
 
@@ -17,6 +17,11 @@ The core questions MemChorus continuously answers are:
 - On recall: intelligently select, combine, and prioritize sources based on relevance and efficiency.
 - On save: decide optimal storage location, avoid duplication, and support consolidation or promotion of memories over time.
 - The system should continuously improve memory placement and retrieval effectiveness.
+
+### Foundational Layer
+- Hermes default memory (local curated files) is the **lowest-level foundation** of MemChorus.
+- Even with no other memory sources installed, MemChorus must still improve the behavior and utilization of the default Hermes memory.
+- It is not merely a fallback — it is the core that all other voices build upon.
 
 ### Multi-Voice Architecture
 - Memory is treated as a **chorus** of distinct sources ("voices").
