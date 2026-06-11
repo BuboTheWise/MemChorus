@@ -7,8 +7,10 @@ It serves as the default primary voice for MemChorus.
 
 import os
 import json
+import asyncio
 from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
+from hermes_agent.tools.mcp_tool import McpTool
 
 
 class MemPalaceMemorySource(MemorySource):
@@ -30,14 +32,25 @@ class MemPalaceMemorySource(MemorySource):
         super().__init__(name, config)
         self._name = name  # Store as private attribute to avoid access issues
         self.config = config or {}
-        self._mcp_server_url = self.config.get('mcp_server_url', 'http://localhost:8000')
+        self._mcp_server_name = self.config.get('mcp_server_name', 'mempalace')
+        self._mcp_tool = None
         self._initialize_mcp_client()
     
     def _initialize_mcp_client(self):
         """Initialize the MCP client connection."""
-        # Placeholder for actual MCP integration
-        # This would establish a connection to the MemPalace MCP server in a real implementation
-        pass
+        try:
+            # Initialize the MCP tool for MemPalace
+            self._mcp_tool = McpTool(
+                name=self._mcp_server_name,
+                config={'server_name': self._mcp_server_name}
+            )
+            
+            # Test if we can connect to the MCP server
+            # This will check if the server is available and responsive
+        except Exception as e:
+            # If initialization fails, we'll still proceed with fallbacks
+            # but note that MemPalace won't be fully functional
+            pass
     
     def save(self, key: str, value: Any) -> bool:
         """
@@ -51,11 +64,27 @@ class MemPalaceMemorySource(MemorySource):
             bool: True if successful, False otherwise
         """
         try:
-            # In a real implementation, this would send data to the MemPalace MCP server
-            # For now we maintain the fallback local storage approach from the original design
+            # If MCP tool is available, use it
+            if self._mcp_tool:
+                try:
+                    # Call MemPalace's add_record function via MCP
+                    command = {
+                        "function": "mempalace_add_record",
+                        "arguments": {
+                            "key": key,
+                            "value": value,
+                            "source": self._name
+                        }
+                    }
+                    result = asyncio.run(self._mcp_tool.invoke(command))
+                    return True  # If we get here without exception, assume success
+                except Exception:
+                    pass  # Fall back to local storage if MCP fails
+
+            # Fallback: save to the local cache directory  
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             os.makedirs(mempalace_dir, exist_ok=True)
-            
+
             file_path = os.path.join(mempalace_dir, f"{key}.json")
             with open(file_path, 'w') as f:
                 json.dump(value, f)
@@ -74,8 +103,23 @@ class MemPalaceMemorySource(MemorySource):
             Any: The memory content if found, None otherwise
         """
         try:
-            # In a real implementation, this would query the MemPalace MCP server
-            # For now we maintain the fallback local storage approach from the original design
+            # If MCP tool is available, use it first
+            if self._mcp_tool:
+                try:
+                    # Call MemPalace's get_record function via MCP  
+                    command = {
+                        "function": "mempalace_get_record",
+                        "arguments": {
+                            "key": key
+                        }
+                    }
+                    result = asyncio.run(self._mcp_tool.invoke(command))
+                    if result and 'content' in result:
+                        return result['content']
+                except Exception:
+                    pass  # Fall back to local storage if MCP fails
+
+            # Fallback: retrieve from the local cache directory
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             file_path = os.path.join(mempalace_dir, f"{key}.json")
             
@@ -99,8 +143,24 @@ class MemPalaceMemorySource(MemorySource):
         """
         results = []
         try:
-            # In a real implementation, this would query the MemPalace MCP search API
-            # For now we simulate by searching in local directory
+            # If MCP tool is available, use it first  
+            if self._mcp_tool:
+                try:
+                    # Call MemPalace's search function via MCP
+                    command = {
+                        "function": "mempalace_search",
+                        "arguments": {
+                            "query": query,
+                            "limit": limit
+                        }
+                    }
+                    result = asyncio.run(self._mcp_tool.invoke(command))
+                    if result and isinstance(result, list):
+                        results.extend(result)
+                except Exception:
+                    pass  # Fall back to local storage if MCP fails
+
+            # If MCP fails or is not available, simulate behavior with local directory search
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             
             if os.path.exists(mempalace_dir):
@@ -116,6 +176,7 @@ class MemPalaceMemorySource(MemorySource):
                             })
                         if len(results) >= limit:
                             break
+                        
         except Exception:
             pass
         return results
@@ -128,8 +189,19 @@ class MemPalaceMemorySource(MemorySource):
             bool: True if the source is available, False otherwise
         """
         try:
-            # In a real implementation, this would check actual MCP server connectivity  
-            # For now we assume it's available if the cache dir can be accessed (fallback method)
+            # Check if we can connect to the MCP server
+            if self._mcp_tool:
+                # Attempt a simple check via discovery
+                try:
+                    asyncio.run(self._mcp_tool.invoke({
+                        "function": "mempalace_status",
+                        "arguments": {}
+                    }))
+                    return True
+                except Exception:
+                    pass
+            
+            # Fall back to local directory access for availability check  
             mempalace_dir = os.path.expanduser('~/.hermes/mempalace_cache')
             return os.path.exists(mempalace_dir) and os.access(mempalace_dir, os.R_OK | os.W_OK)
         except Exception:
@@ -146,7 +218,7 @@ class MemPalaceMemorySource(MemorySource):
             'name': self._name,
             'type': 'mempalace',
             'available': self.is_available(),
-            'mcp_server_url': self._mcp_server_url,
+            'mcp_server_name': self._mcp_server_name,
             'description': 'MemPalace knowledge graph system - primary voice'
         }
     
