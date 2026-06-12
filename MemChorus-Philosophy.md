@@ -1,68 +1,99 @@
-# MemChorus - Memory Orchestration Skill
+# MemChorus Hermes Default Memory Source Implementation
+
+This skill documents the implementation of `HermesDefaultMemorySource` which serves as the resilient core of MemChorus, providing an always-available fallback memory source that works with Hermes' local memory files.
 
 ## Overview
 
-MemChorus is a modular, extensible memory orchestration layer that coordinates multiple memory sources ("voices") to provide coherent, efficient, and privacy-focused memory management for AI agents.
+The `HermesDefaultMemorySource` class implements the abstract `MemorySource` interface and provides an integration layer to Hermes' local file-based memory system. This source is designed to be the most stable and always-available foundation within MemChorus, ensuring critical context remains functional even when other memory sources (like MemPalace) are unavailable.
 
-The system follows the "memory as a living system" philosophy, where memory is continuously checked proactively before significant actions and saved automatically after important outcomes or decisions.
+## Key Enhancements
 
-## Core Functionality
+### Proactive Memory Behavior
+This implementation includes enhanced proactive memory checking and saving behaviors that demonstrate the strong foundational role:
 
-### Proactive Memory Checking
-Before any significant action, MemChorus should:
-- Check relevant memory sources for useful context
-- Retrieve memories that might inform decision-making  
-- Leverage existing knowledge to enhance new tasks
+1. **Proactive Check**: `proactive_check()` method that identifies relevant memories before decisions 
+2. **Proactive Save**: `proactive_save()` method that reliably stores outcomes after actions, even without other sources
 
-This behavioral pattern ensures the system doesn't re-invent solutions and can build upon previous experiences.
+### Core Features
 
-### Post-Action Saving Behavior
-After important outcomes or decisions, MemChorus should:
-- Save newly acquired knowledge to appropriate memory sources
-- Maintain consistency in how information is stored across different systems
-- Follow a "memory as a living system" approach where knowledge continuously accumulates
+1. **File-based Integration**: Interfaces with standard Hermes memory files (`MEMORY.md`, `USER.md`)
+2. **Graceful Error Handling**: Handles missing or empty files gracefully without crashing
+3. **Search Capability**: Can search through memories by content and tags  
+4. **Save Functionality**: Supports saving new memories to appropriate files
+5. **Initialization Safety**: Properly initializes the memory directory and file structure
+6. **Logging**: Comprehensive logging for debugging and monitoring
+7. **Proactive Memory System**: Explicit methods that show it can independently support decision making
 
-## Example Usage
+### Memory File Format Support
 
-The `example_usage.py` script demonstrates this behavior pattern:
+The implementation handles standard Hermes memory file formats:
+- **MEMORY.md**: Agent memories and system information  
+- **USER.md**: User context, preferences, and personal notes
 
-1. **Proactive Check**: Before starting a planning task, system checks for existing context about "planning meeting"
-2. **Decision Execution**: After discussing project timeline with team
-3. **Outcome Storage**: Saves the decision outcome and context considerations to memory
+Both files use date-based entry format with content following the date:
+```
+2026-06-10: This is a memory entry [tags]
+```
 
-## Implementation Details
+### Key Methods
 
-### Memory Sources
-The current implementation supports:
-- `HermesDefaultMemorySource`: Local file-based storage (MEMORY.md, USER.md)
-- `MemPalaceMemorySource`: Knowledge graph and diary system integration
+#### `initialize(config)`
+Initializes the Hermes default memory source with configuration parameters.
 
-### MemoryOrchestrator Methods
-- `get_context(query, sources, relevance_threshold, prioritize_results)`: Retrieve relevant memories from specified or all sources
-- `save_context(context, source, fallback_to_hermes)`: Save context to specified or default memory source with fallback behavior
+#### `fetch(query=None, limit=10)`  
+Fetches memory items matching the query or all items if no query. Includes date-based sorting and content filtering.
 
-## Memory as a Living System
+#### `save(item)`  
+Saves a memory item to either MEMORY.md (for agent memories) or USER.md (for user context) based on tags.
 
-This philosophy emphasizes that:
-1. Memory is continuously checked and updated in response to new situations
-2. All valuable information should be captured and preserved 
-3. There's no clear distinction between "memory retrieval" and "awareness" - they happen simultaneously
-4. The system should evolve organically as new insights are acquired
+#### `list_sources()`
+Lists available sources in the Hermes default system.
 
-This is in contrast to systems with static, isolated memories that don't interact with each other or continuously evolve.
+#### `get_source_info()` 
+Returns metadata about this source including version, status, and memory directory.
 
-## Integration Notes
+#### `proactive_check(context)`
+Performs proactive memory checking before decisions - demonstrates the foundation role.
 
-The implementation demonstrates how:
-1. The orchestrator can be used for both proactive searching and saving operations
-2. Different memory sources can work together seamlessly  
-3. Context-sensitive decisions are possible as different knowledge layers contribute to the same task
-4. Both memory retrieval and storage operate according to the "living system" principles
+#### `proactive_save(key, value, context)` 
+Performs proactive saving after actions - ensures reliability even without other voices.
 
-## Development Approach
+## Usage Example
 
-This demonstrates a clear evolution path:
-- Initial setup through `initialize_all()`
-- Proactive context checking via `get_context()` before significant actions  
-- Outcome saving via `save_context()` after important decisions
-- System-wide coherence where all components work together in a unified memory ecosystem
+```python
+from hermes_memory_source import HermesDefaultMemorySource
+
+# Initialize source
+source = HermesDefaultMemorySource()
+source.initialize({
+    'memory_dir': '/home/bubo/.hermes/memories'
+})
+
+# Proactively check for relevant context  
+context = {'current_task': 'implement memory orchestration'}
+check_result = source.proactive_check(context)
+
+# Save a new memory
+success = source.save({
+    'content': 'Test memory entry', 
+    'tags': ['test', 'development']
+})
+
+# Proactively save a decision or outcome
+decision_result = source.proactive_save(
+    'implementation_decision', 
+    {'final_choice': 'use hermes as core'}, 
+    {'context': 'memory system design'}
+)
+```
+
+## Implementation Requirements Met
+
+- ✅ Complete fetch() and save() methods with real integration to Hermes local memory files
+- ✅ Graceful behavior when memory files are missing or empty
+- ✅ Made this source the most stable and always-available foundation
+- ✅ Added appropriate error handling and logging
+- ✅ Provided ultimate fallback for critical context
+- ✅ **Added proactive memory checking and saving behaviors** that demonstrate the system can function independently as the core
+
+This implementation completes the highest priority task in the MemChorus project, providing a solid foundation that ensures memory continuity even under adverse conditions.
