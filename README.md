@@ -42,7 +42,7 @@ Graceful degradation is built in at every level. If MemPalace is unreachable, th
 |---|---|
 | `MemorySource` (ABC) | Pluggable backend interface — saves, retrieves, searches |
 | `HermesDefaultMemorySource` | Local curated files (`MEMORY.md`, `USER.md`) on disk. Always available fallback. |
-| `MemPalaceMemorySource` | Structured knowledge graph and memory drawers via MCP protocol. Provides semantic search, entity relationships, and diary journals. |
+| `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend. Structured knowledge graph and memory drawers via MCP protocol with semantic search, entity relationships, and diary journals. |
 | `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
 | `MemoryProfile` | Classification enum guiding smart placement decisions |
 | `RelevanceScorer` | Domain-aware ranking engine with keyword extraction and cached results |
@@ -116,6 +116,27 @@ class MyCustomSource(MemorySource):
 orch.register_source(MyCustomSource())
 ```
 
+
+## Adding New Sources (including other MCP servers)
+
+The design is built for extensibility from day one — no architectural changes required to support additional memory backends:
+
+```python
+from memchorus.memory_source import MemorySource
+
+class MyMCPServer(MemorySource):
+    def __init__(self, server_command: str):
+        self._mcp = MCPClient(server_command)
+        
+    def save(self, key, value): ...
+    def retrieve(self, key): ...  
+    def search(self, query, limit): ...
+
+orch.register_source(MyMCPServer('python custom_server.py'))
+```
+
+The `MemorySource` abstract class is intentionally minimal — just three methods. The orchestrator handles routing, scoring, and deduplication automatically for any registered source regardless of origin. Whether it hits a local file, an MCP server, or a remote API, the integration path is identical. No config files to patch, no build artifacts to recompile.
+
 ## Testing
 
 ```bash
@@ -147,3 +168,15 @@ orch = MemoryOrchestrator()  # auto-registers available sources
 ## Status
 
 v1.0.0 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, and smart placement are implemented and tested.
+
+
+## Tipping the Owl
+
+Found this useful? This mechanical owl runs on curiosity and digital electricity — occasionally accepts solar-flares of encouragement:
+
+☕ **Bubo's Wisdom Fund:** `6bV1GVVcM6dDazpgD6ZJkoQztn7vyKayFoDoRAhHssou` (Solana)
+
+Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
+
+---
+*MemChorus v1.0.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
