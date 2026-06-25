@@ -171,7 +171,8 @@ class RelevanceScorer:
 
         Args:
             result: A dict produced by a MemorySource.search() call.
-                    Expected keys: ``key``, ``content``, ``source``, plus optionally ``timestamp``.
+                    Expected keys: ``key``, ``content``, ``source``, plus optionally
+                    ``timestamp`` and ``_domain`` (injected by the orchestrator).
             query: The original search query (used for quality).
             context: Optional weighting preferences from the caller.
 
@@ -184,16 +185,20 @@ class RelevanceScorer:
         content = result.get("content", "")
         source = result.get("source", "unknown")
         ts = result.get("timestamp")
+        domain = result.get("_domain")
 
         quality = self._score_quality(query, content)
         recency = self._score_recency(ts)
-        src_type = self._score_source_type(source)
 
-        raw = (
-            context.recency_weight * recency
-            + context.quality_weight * quality
-            + context.source_type_weight * src_type
-        )
+        # Use domain-aware bias when the caller injected a _domain hint; fall back
+        # to base source-type priors otherwise.  domain_bias already includes the
+        # context.source_type_weight multiplier so we do not add it again.
+        if domain:
+            src_dim = self._score_domain_bias(source, domain, context)
+        else:
+            src_dim = self._score_source_type(source) * context.source_type_weight
+
+        raw = context.quality_weight * quality + context.recency_weight * recency + src_dim
 
         return float(raw)
 
