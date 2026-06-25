@@ -10,3 +10,17 @@ build/
 *.DS_Store
 .env
 .venv/
+# Coverage and test artifacts
+.coverage
+coverage.xml
+*.cover
+htmlcov/
+
+# Test scripts (temporary)
+*_test.sh
+integration_test_*.py
+final_test.sh
+
+# Docs moved outside repo
+Level-Set-Summary.md
+example_memchorus_usage_improved.py
