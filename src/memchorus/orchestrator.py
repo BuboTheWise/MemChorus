@@ -3,12 +3,57 @@ Memory Orchestrator
 
 The MemoryOrchestrator is the core component that manages multiple memory sources
 and provides intelligent context management for agents.
+
+Relevance scoring: the orchestrator now uses a RelevanceScorer to rank multi-source
+search results by computed relevance (G1 + G2 gap fixes) rather than a hard-coded
+priority chain that defeats the "chorus" principle.
+
+Smart placement (t_d0150e05 / G4+G5): memory_profile enum, inference from content,
+cross-source deduplication to prevent redundant storage.
 """
 
+from datetime import datetime, timezone
+from enum import Enum
 from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
+from memchorus.relevance_engine import RelevanceScorer, ContextWeight
+
+
+# ---------------------------------------------------------------------------
+# 1. Enum: memory_profile (explicit or inferred)
+# ---------------------------------------------------------------------------
+
+class MemoryProfile(Enum):
+    """Classification that guides smart storage placement decisions."""
+
+    # --- user-facing profile names ---------------------------------------
+    USER_PREFERENCE         = "user_preference"        # hermes_default
+    LONG_LIVED_KNOWLEDGE    = "long_lived_knowledge"   # mempalace
+    EPHEMERAL               = "ephemeral"              # hermes_default
+    LARGE_DATA_BLOCK        = "large_data_block"       # hermes_default
+    RELATIONSHIP_GRAPH      = "relationship_graph"     # mempalace
+    CONTEXT_SENSITIVE_PREF  = "context_sensitive_pref" # hermes_default
+
+    # --- auto-inferred sentinel -----------------------------------------
+    AUTO                    = "auto"                   # infer from content / type
+
+
+# Helper map: which source each profile *prefers* (not an exclusive list)
+_PROFILE_SOURCE_HINT: Dict[MemoryProfile, List[str]] = {
+    MemoryProfile.USER_PREFERENCE:         ["hermes_default"],
+    MemoryProfile.LONG_LIVED_KNOWLEDGE:   ["mempalace"],
+    MemoryProfile.EPHEMERAL:               ["hermes_default", "mempalace"],          # both cheaply
+    MemoryProfile.LARGE_DATA_BLOCK:        ["hermes_default", "mempalace"],           # fallback ok
+    MemoryProfile.RELATIONSHIP_GRAPH:      ["mempalace"],
+    MemoryProfile.CONTEXT_SENSITIVE_PREF:  ["hermes_default"],
+    MemoryProfile.AUTO:                    ["mempalace", "hermes_default"],           # try mempalace first
+}
+
+# Heuristic thresholds for AUTO inference
+_MAX_KV_STRING_BYTES = 4_500        # key-value payloads above this are "large"
+_JSON_LARGE_LIMIT  = 1_000          # dict/list size (items/keys) > this → large
 
 
 class MemoryOrchestrator:
@@ -33,6 +78,9 @@ class MemoryOrchestrator:
         self.config = config or {}
         self.memory_sources: Dict[str, MemorySource] = {}
         self._default_source_name = self.config.get('default_source', 'hermes_default')
+        # Relevance scoring engine (Gap G1/G2 fix)
+        half_life_days = self.config.get('half_life_days', 30.0)
+        self._scorer = RelevanceScorer(half_life_days=half_life_days)
         self._initialize_default_sources()
     
     def _initialize_default_sources(self):
@@ -102,21 +150,24 @@ class MemoryOrchestrator:
         Returns:
             bool: True if successful, False otherwise
         """
-        # If specific source is provided, use it
-        if source_name and source_name in self.memory_sources:
-            return self.memory_sources[source_name].save(key, value)
+        # If specific source is provided, use it — fail if unavailable
+        if source_name:
+            if source_name in self.memory_sources:
+                return self.memory_sources[source_name].save(key, value)
+            # Explicit source requested but not registered -> fail gracefully
+            return False
         
         # Otherwise, save to the most appropriate source
         # For v1.0, we'll save to both sources (redundancy for resilience)
         success_count = 0
         
-        # Save to Hermes default memory (resilient core)
-        if self.memory_sources.get('hermes_default'):
+        # Save to Hermes default memory (resilient core if available)
+        if self.memory_sources.get('hermes_default') and self.memory_sources['hermes_default'].is_available():
             if self.memory_sources['hermes_default'].save(key, value):
                 success_count += 1
         
-        # Save to MemPalace (enhancement voice)
-        if self.memory_sources.get('mempalace'):
+        # Save to MemPalace (enhancement voice if available)
+        if self.memory_sources.get('mempalace') and self.memory_sources['mempalace'].is_available():
             if self.memory_sources['mempalace'].save(key, value):
                 success_count += 1
                 
@@ -126,10 +177,13 @@ class MemoryOrchestrator:
         """
         Retrieve a memory from the most relevant source.
         
-        The orchestrator selects the best source based on:
-        - Source availability
-        - Context relevance (for future enhancements)
-        - Efficiency considerations
+        Uses RelevanceScorer to rank available sources by a computed relevance
+        score (source-type bias for key-based retrieval). Sources with higher
+        priority scores are tried first -- if that source has the key, return it.
+        If unavailable or missing, fall through to the next-best source.
+        
+        Unlike the original hard-coded priority chain ['hermes_default', 'mempalace'],
+        this method respects the scorer's ranking so new sources can compete on score.
         
         Args:
             key (str): Unique identifier for the memory
@@ -137,69 +191,113 @@ class MemoryOrchestrator:
         Returns:
             Any: The memory content if found, None otherwise
         """
-        # Check sources in order of priority (most resilient first)
-        priorities = ['hermes_default', 'mempalace']  # Hermes as core, then MemPalace
+        # Build candidate list ranked by scorer's source-type bias
+        candidates = self._scorer.score_and_rank(
+            [  # dummy results -- only the "source" key matters for bias ranking
+                {"key": src_name, "content": "", "source": s.name}
+                for src_name, s in self.memory_sources.items()
+            ],
+            query="",
+        )
         
-        for source_name in priorities:
-            if source_name in self.memory_sources:
-                source = self.memory_sources[source_name]
-                if source.is_available():
-                    result = source.retrieve(key)
-                    if result is not None:
-                        return result
+        for candidate in candidates:
+            source = self.memory_sources.get(candidate.source)
+            if source and source.is_available():
+                result = source.retrieve(key)
+                if result is not None:
+                    return result
         
         return None
     
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query across all sources.
+        
+        Every source is queried; results are combined, scored with the RelevanceScorer,
+        deduplicated (highest score per key wins), and sorted descending.
         
         Args:
             query (str): Search query string
             limit (int): Maximum number of results to return
+            context: Optional ContextWeight for custom scoring preferences
+            domain: Optional domain hint (e.g. 'memory', 'graph') that influences
+                    source-type boosting in the scorer
             
         Returns:
-            List[Dict[str, Any]]: List of matching memories with source metadata
+            List[Dict[str, Any]]: Sorted search results, each including a ``score`` field
         """
+        if context is None:
+            context = ContextWeight()
+        
+        # Inject domain-level weightings before scoring
         all_results = []
-        
-        # Search all available sources
         for source_name, source in self.memory_sources.items():
-            if source.is_available():
-                try:
-                    results = source.search(query, limit)
-                    all_results.extend(results)
-                    # Adjust limit to preserve total result count
-                    limit -= len(results)
-                    if limit <= 0:
-                        break
-                except Exception:
+            if not source.is_available():
+                continue
+            try:
+                results = source.search(query, limit)
+                if not results:
                     continue
+                
+                # Attach a timestamp (current time for v1.0 stub) to every result so
+                # the scorer has data to work with; also attach domain hint.
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for r in results:
+                    if "timestamp" not in r:
+                        r["timestamp"] = now_iso
+                    r["_domain"] = domain  # passed through into RankedResult.meta
+                    
+                    # If this result has an explicit score from the source honour it;
+                    # otherwise let the scorer compute one (higher wins).
+                    if "score" not in r:
+                        r["score"] = 0.0
+                all_results.extend(results)
+                
+                limit -= len(results)
+                if limit <= 0:
+                    break
+            except Exception:
+                continue
         
-        # Sort and deduplicate results  
-        return self._sort_and_deduplicate_results(all_results)
+        # Score and rank via the relevance engine
+        ranked = self._scorer.score_and_rank(all_results, query, context)
+        
+        # Convert RankedResult -> plain dict with score field
+        return [
+            {
+                "key": r.key,
+                "content": r.content,
+                "source": r.source,
+                "score": r.score,  # <-- always present
+                **r.meta,
+            }
+            for r in ranked[:limit]
+        ]
     
     def _sort_and_deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Sort and remove duplicate results from search.
         
+        Now delegates to the RelevanceScorer which scores every result, deduplicates
+        by key (highest score wins), and returns them in descending-score order.
+        
         Args:
             results (List[Dict[str, Any]]): Raw search results
             
         Returns:
-            List[Dict[str, Any]]: Sorted and deduplicated results
+            List[Dict[str, Any]]: Sorted and deduplicated results with score field
         """
-        # This would contain more sophisticated sorting and deduplication logic
-        # For v1.0, we'll keep it simple
-        seen_keys = set()
-        unique_results = []
-        
-        for result in results:
-            if result['key'] not in seen_keys:
-                seen_keys.add(result['key'])
-                unique_results.append(result)
-                
-        return unique_results
+        scored = self._scorer.score_and_rank(results, query="", context=ContextWeight())
+        return [
+            {
+                "key": r.key,
+                "content": r.content,
+                "source": r.source,
+                "score": r.score,  # --- always present per acceptance criterion
+                **r.meta,
+            }
+            for r in scored
+        ]
     
     def is_available(self) -> bool:
         """

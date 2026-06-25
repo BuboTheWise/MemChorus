@@ -162,10 +162,19 @@ class HermesDefaultMemorySource(MemorySource):
                     key = filename[:-5]  # Remove .json extension
                     content = self.retrieve(key)
                     if content:
+                        # Get file modification time if available
+                        import time
+                        try:
+                            mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
+                            ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
+                        except Exception:
+                            ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+                        
                         results.append({
                             'key': key,
                             'content': content,
-                            'source': self._name
+                            'source': self._name,
+                            'timestamp': ts
                         })
                 if len(results) >= limit:
                     break
