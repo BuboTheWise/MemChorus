@@ -1,0 +1,75 @@
+{
+  "mode": "post_integration_orchestrator",
+  "timestamp": "2026-06-25T21:33:41.699961",
+  "fact_count": 12,
+  "query_count": 8,
+  "source_count": 2,
+  "avg_latency_ms": 0.12,
+  "avg_recall_rate": 1.0,
+  "per_query": [
+    {
+      "query": "project_python_version",
+      "latency_ms": 0.24,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "project_python_version"
+    },
+    {
+      "query": "deployment_target",
+      "latency_ms": 0.13,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "deployment_target"
+    },
+    {
+      "query": "auth_mechanism",
+      "latency_ms": 0.1,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "auth_mechanism"
+    },
+    {
+      "query": "database_sharding",
+      "latency_ms": 0.1,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "database_sharding"
+    },
+    {
+      "query": "cache_ttl_default",
+      "latency_ms": 0.1,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "cache_ttl_default"
+    },
+    {
+      "query": "monitoring_stack",
+      "latency_ms": 0.1,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "monitoring_stack"
+    },
+    {
+      "query": "ci_runner",
+      "latency_ms": 0.09,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "ci_runner"
+    },
+    {
+      "query": "code_review_policy",
+      "latency_ms": 0.09,
+      "recall_count": 1,
+      "total_expected": 1,
+      "recall_rate": 1.0,
+      "top_result_key": "code_review_policy"
+    }
+  ]
+}
