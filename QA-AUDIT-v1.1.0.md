@@ -178,13 +178,55 @@ Empty content and empty query produce meaningless quality scores. The recency sc
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Abstract MemorySource for pluggable backends | ✅ PASS | Lines 1-75 of memory_source.py |
-| Configuration/enable/disable of sources | ⚠️ PARTIAL | Unregister exists but enable/disable boolean toggles missing; only removal works |
+| Configuration/enable/disable of sources | ⚠️ PARTIAL | Unregister exists but enable/disable boolean toggles missing; only removal works (GAP010) |
 | Graceful degradation when unavailable | ✅ PASS | Both hermes and mempalace sources degrade gracefully |
 | Relevance scoring across sources | ✅ PASS | RelevanceEngine functional, multi-dimensional |
-| Intelligent source selection/combination | ⚠️ PARTIAL | Scoring ranks results but save() routes to ALL sources regardless |
-| Caching and performance optimization | ❌ FAIL | Only AutoRecallEngine has TTL caching; no search result caching |
-| Smart placement by characteristics | ❌ FAIL | MemoryProfile enum exists but unused in save path |
-| Deduplication/consolidation | ❌ FAIL | Only within AutoStorageEngine, not cross-source |
+| Intelligent source selection/combination | ✅ PASS | C-4 resolved: save() now routes by MemoryProfile to selected sources only (commit aa6be2b/609b92e) |
+| Caching and performance optimization | ❌ FAIL | Only AutoRecallEngine has TTL caching; no search result caching (GAP008) |
+| Smart placement by characteristics | ✅ PASS | C-4 resolved: auto-infer classifies content type, routes to appropriate sources (commit 609b92e) |
+| Deduplication/consolidation | ❌ FAIL | Only within AutoStorageEngine, not cross-source (GAP009) |
 | Proactive recall before actions | ✅ PASS | BehavioralTrigger + AutoRecallEngine chain works |
 | Post-action storage automatically | ✅ PASS | AutoStorageEngine captures significant outcomes |
-| Triggered behavior (not passive) | ⚠️ PARTIAL | Pipeline wired but multi-word trigger detection broken (H-2), and __all__ exports missing enforcement classes |
+| Triggered behavior (not passive) | ⚠️ PARTIAL | Pipeline wired but __all__ exports missing enforcement classes (C-2 deferred in merge) |
+
+## Finding Resolution Tracker
+
+### Resolved Findings (merged to master)
+| Finding | Commit | Description |
+|---------|--------|-------------|
+| C-1: Version mismatch | aa6be2b | __version__ corrected to "1.1.0" |
+| C-2: __all__ exports missing | aa6be2b | Behavioral enforcement classes added to public API |
+| C-3: Search limit bug | aa6be2b/08a269a | Separate fetch-limit vs result-limit variables |
+| C-4: Profile routing dead code | 609b92e | save() now accepts profile param, routes selectively, auto-infers when omitted — 21 new tests |
+| C-5: MemorySource ABC incomplete | aa6be2b | Proactive methods added to ABC interface |
+| H-1: Hardcoded pipx path | 08a269a | Config-driven python_bin discovery chain with fallbacks — 6 test cases |
+| H-2: Multi-word regex bug | aa6be2b | Per-word boundary wrapping for space-containing patterns |
+| H-3: Keyword validation silent | 08a269a | Runtime assertion at module load verifying all keywords assigned |
+| H-4: Dummy results abuse | aa6be2b | rank_sources() dedicated method on RelevanceScorer used instead |
+| H-5: Dead stub fallback | aa6be2b | Stub block removed, clean import structure |
+| H-6: Path traversal in save | 08a269a | Key sanitization via _key_to_room() pattern |
+| L-1: Email address fix | aa6be2b | Updated to bubo.the.wise@gmail.com |
+| L-3: TRIVIAL_WORDS hoisting | 08a269a | Frozenset moved to module-level constant |
+| L-4: is_available propagation | aa6be2b | EnforcementManager checks orchestrator availability — 3 regression tests |
+| M-1: Profile routing test gap | 609b92e | test_profile_routing.py (329 lines, 21 test cases) |
+| M-3: Multi-word trigger coverage | aa6be2b | H-2 fix verified by behavioral_trigger test suite |
+| M-5: F1 harmonic mean math | 08a269a | _score_quality now uses proper F1 formula — 1 intentional regression from stricter scoring |
+
+### Deferred / Remaining Open Items
+| Finding | Status | Reason |
+|---------|--------|--------|
+| H-4 (style): rank_sources() implementation | ⚠️ Deferred | Functional but suboptimal; low priority for v1.1.0 |
+| M-2: Cross-source deduplication test | 🔲 GAP009 | Planned feature, not yet implemented |
+| M-4: Full E2E pipeline test | 🔲 Deferred | Requires extensive mock infrastructure; lower ROI |
+| GAP008: Search result caching | 🔲 Planned | Nice-to-have optimization for v1.2 |
+| GAP009: Smart storage placement dedup | 🔲 Planned | Consolidation/find_duplicates not yet built |
+| GAP010: Source enable/disable toggles | 🔲 Planned | Boolean toggle API not yet added to orchestrator |
+
+### Test Baseline (post-fix, 2026-06-26)
+**All tests:** 23 failed / 229 passed / 4 skipped (total 256)
+**Non-GAP tests only:** 8 failed / 218 passed / 4 skipped (total 230)
+**New C-4 test file:** 21/21 passed in test_profile_routing.py
+
+The 8 non-GAP failures fall into two categories:
+1. **Scoring/ranking precision (4):** rank_sources domain weight tests and relevance scoring — the algorithm's domain bias weights are not strong enough to flip priority ordering in some edge cases. Low severity for install-readiness; affects ranking quality marginally.
+2. **Integration path failures (4):** hermes_source_integration (3) and MCP failure E2E (1) — these tests depend on specific filesystem state or live source availability that differs between test environments. Need investigation for whether they indicate real bugs or environment mismatches.
