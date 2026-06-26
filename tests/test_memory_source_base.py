@@ -63,6 +63,12 @@ def test_memory_source_subclass_with_all_methods_is_instantiable():
         def get_source_info(self):
             return {"name": self.name}
 
+        def proactive_check(self, context=None):
+            return {}
+
+        def proactive_save(self, key, value, context=None):
+            pass
+
     src = ConcreteMemorySource()
     assert src is not None
     assert isinstance(src, MemorySource)
@@ -90,6 +96,12 @@ def test_memory_source_instance_has_name_attribute():
         def get_source_info(self):
             return {"name": self.name}
 
+        def proactive_check(self, context=None):
+            return {}
+
+        def proactive_save(self, key, value, context=None):
+            pass
+
     src = TestableMemorySource(name="custom_name")
     assert src.name == "custom_name"
 
@@ -115,6 +127,12 @@ def test_memory_source_name_is_string():
 
         def get_source_info(self):
             return {"name": self.name}
+
+        def proactive_check(self, context=None):
+            return {}
+
+        def proactive_save(self, key, value, context=None):
+            pass
 
     src = SimpleMemorySource()
     assert isinstance(src.name, str)
