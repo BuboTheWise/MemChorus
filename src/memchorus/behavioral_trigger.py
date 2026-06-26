@@ -124,6 +124,22 @@ class _PatternStore:
 
 _PATTERN_STORE = _PatternStore()           # module-level singleton
 
+# ---------------------------------------------------------------------------
+# H-3: Validate all priority keywords were assigned at module load time
+#      to catch future misconfigures early rather than silently dropping them
+# ---------------------------------------------------------------------------
+_assigned_keywords: set = set()
+for patterns in _PATTERN_STORE._groups.values():
+    for _, keyword in patterns:
+        _assigned_keywords.add(keyword)
+
+_expected_keywords: set = {kw for kw, _ in _PRIORITY_KEYWORDS if isinstance(kw, str)}
+if not _expected_keywords.issubset(_assigned_keywords):
+    raise RuntimeError(
+        f"BehavioralTrigger configuration error: keywords missing from DecisionPoint groups: "
+        f"{_expected_keywords - _assigned_keywords}"
+    )
+
 
 class BehavioralTrigger:
     """Detects decision points in agent conversation flow and fires memory hooks.

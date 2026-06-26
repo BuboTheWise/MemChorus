@@ -33,8 +33,12 @@ from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint
 class _MockOrchestrator:
     """Minimal mock that records save calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, available: bool = True) -> None:
         self.saved_calls = []  # [(key, value)]
+        self._available = available
+
+    def is_available(self) -> bool:
+        return self._available
 
     def save(self, key: str, value: dict) -> bool:
         self.saved_calls.append((key, value))
