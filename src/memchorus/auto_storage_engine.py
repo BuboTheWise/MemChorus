@@ -1,252 +1,154 @@
 """
-AutoStorageEngine: Automatic post-action outcome capture engine.
+auto_storage_engine -- automatic post-action outcome capture module.
 
-Captures significant outcomes (learnings, mistakes, decisions, results) after task
-completion or tool execution. Implements the "Mandatory post-action storage" requirement
-and Behavioral Guarantee #2 from MemChorus-Spec.md:
-
-  "Post-action storage happens automatically: Learnings, mistakes, and significant
-   outcomes are captured immediately rather than relying on the agent remembering
-   to save later."
-
-This is the write-side counterpart to AutoRecallEngine.
-
-Dependencies: stdlib only (hashlib, time, dataclasses, enum, typing, re).
-Does not modify orchestrator, trigger, or recall engine files.
+Provides ``AutoStorageEngine`` that intercepts text after task/tool completion,
+detects significance (LEARNING/MISTAKE/DECISION/RESULT), filters trivial
+content, deduplicates, and writes structured payloads via a MemoryOrchestrator.
 """
 
-import hashlib
+from __future__ import annotations
+
+import logging
 import re
-import time
+import time as _time_mod
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 1. Significance categories -- the four ways auto-storage classifies content
+# Enums and constants
 # ---------------------------------------------------------------------------
 
 
-class SignificanceCategory(Enum):
-    """What kind of significant content was detected in the text."""
+class SignificanceCategory(str, Enum):
+    """Significance class detected from text keywords."""
 
-    LEARNING = auto()   # Insights gained
-    MISTAKE = auto()    # Things that went wrong
-    DECISION = auto()   # Important decisions made
-    RESULT = auto()     # Significant outcomes / results
+    LEARNING = "LEARNING"
+    MISTAKE = "MISTAKE"
+    DECISION = "DECISION"
+    RESULT = "RESULT"
 
 
-# ---------------------------------------------------------------------------
-# 2. Keyword / phrase patterns per category (case-insensitive, word-boundary)
-# ---------------------------------------------------------------------------
-
-_CATEGORIES_AND_PATTERNS: List[tuple] = [
-    (SignificanceCategory.LEARNING, [
-        "learned", "realized", "understood", "found that",
-    ]),
-    (SignificanceCategory.MISTAKE, [
-        "went wrong", "wrong approach", "should have", "mistake was",
-        "i misinterpreted", "incorrectly", "error in",
-    ]),
-    (SignificanceCategory.DECISION, [
-        "decided", "chose", "go with", "settled on",
-        "opted for", "selected", "picked",
-    ]),
-    (SignificanceCategory.RESULT, [
-        "result", "outcome", "achieved", "success",
-        "completed", "finished", "verified",
-    ]),
+ALL_CATEGORIES: List[SignificanceCategory] = [
+    SignificanceCategory.LEARNING,
+    SignificanceCategory.MISTAKE,
+    SignificanceCategory.DECISION,
+    SignificanceCategory.RESULT,
 ]
 
-# Pre-compile regex patterns per category
-_compiled: Dict[SignificanceCategory, List[tuple]] = {}
-for cat, keywords in _CATEGORIES_AND_PATTERNS:
-    _compiled[cat] = [
-        (re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE | re.UNICODE), kw)
-        for kw in keywords
-    ]
+# Mapping of category -> search strings (case-insensitive)
+_SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
+    SignificanceCategory.LEARNING: [
+        ("learned", r'\blearned\b'),
+        ("realized", r'\brealized\b'),
+        ("understood", r'\bunderstood\b'),
+        ("found that", r'found\s+that'),
+    ],
+    SignificanceCategory.MISTAKE: [
+        ("went wrong", r'went\s+wrong'),
+        ("wrong approach", r'wrong\s+approach'),
+        ("should have", r'should\s+have\b'),
+        ("mistake was", r'mistake\s+was\b'),
+    ],
+    SignificanceCategory.DECISION: [
+        ("decided", r'\bdecided\b'),
+        ("chose", r'\bchose\b'),
+        ("go with", r'go\s+with'),
+        ("settled on", r'settled\s+on'),
+    ],
+    SignificanceCategory.RESULT: [
+        ("result", r'\bresult\b'),
+        ("outcome", r'\boutcome\b'),
+        ("achieved", r'\bachieved\b'),
+        ("success", r'\bsuccess(?!ful)?\b'),
+    ],
+}
+
+
+# Minimal stop-set for similarity comparison (pure-English frequent words).
+_STOP_WORDS: Set[str] = frozenset(
+    "a an the was were be been being have has had do does did may might can"
+    " could will would shall should of in on at to for with by from or if i "
+    "me my we our us it its that this these those which who whom but also than "
+    "how when where why what not no so yet each every neither".split()
+)
+
+# Patterns used by _is_trivial() -- precompiled once.
+_TRIVIAL_PATTERNS: List[re.Pattern] = [
+    re.compile(r'\b(omg|ok|yep)\s*$', re.I),
+    re.compile(r'^omg\b', re.I),
+]
+
 
 # ---------------------------------------------------------------------------
-# 3. Data class: the signature returned for each capture attempt
+# Public dataclass
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class CaptureResult:
-    """Result of a capture_outcome call."""
+    """Return value of ``AutoStorageEngine.capture_outcome()``."""
 
     saved: bool
-    key: Optional[str] = None
-    significance: Optional[SignificanceCategory] = None
-    outcome_type: str = "automatic"
+    key: str
+    significance: str  # enum-value string e.g. "LEARNING"
     reason: Optional[str] = None
+    outcome_type: str = "automatic"
+    importance_score: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# 4. AutoStorageEngine -- the main class
+# Significance detection
 # ---------------------------------------------------------------------------
 
 
-_CLASSIFICATION_THRESHOLD = 0.3   # minimum match count to qualify as category
+def _detect_significance(text: str) -> List[SignificanceCategory]:
+    """Scan *text* for keywords across all categories; return matched list."""
+    lower: str = text.lower()
+    out: List[SignificanceCategory] = []
+    for cat, entries in _SIG_KEYWORDS.items():
+        for label, pattern in entries:
+            if re.search(pattern, lower):
+                out.append(cat)
+                break  # one match per category is enough
+    return out
 
 
-class AutoStorageEngine:
-    """Automatically captures significant outcomes after task/tool completion.
+# ---------------------------------------------------------------------------
+# Importance scoring
+# ---------------------------------------------------------------------------
 
-    Constructor takes a MemoryOrchestrator instance.
-    Core method ``capture_outcome(text, outcome_type)`` analyses the text,
-    filters trivial content, checks deduplication, and calls orchestrator.save()
-    when appropriate.
-    """
 
-    def __init__(self, orchestrator: Any,
-                 dedup_window_seconds: float = 30.0,
-                 dedup_similarity_threshold: float = 0.6) -> None:
-        """Initialize the storage engine.
+def _score_importance(text: str, categories: List[SignificanceCategory]) -> float:
+    """Rough 0-1 importance score.  More matching categories & longer text = higher."""
+    if not categories:
+        return 0.0
+    # Base = fraction of matched categories out of total.
+    base = len(categories) / len(ALL_CATEGORIES)
+    # Length bonus up to 0.3 (diminishing at 50 tokens).
+    words = text.split()
+    length_bonus = min(len(words) / 150.0, 0.3)
+    return min(base + length_bonus, 1.0)
 
-        Args:
-            orchestrator: MemoryOrchestrator instance (or any object with save/retrieve).
-            dedup_window_seconds: Truncation period for duplicate detection (default 30 s).
-            dedup_similarity_threshold: Jaccard similarity to trigger merge (default 0.6).
-        """
-        self.orchestrator = orchestrator
-        self.dedup_window_seconds = dedup_window_seconds
-        self.dedup_similarity_threshold = dedup_similarity_threshold
 
-        # Sliding window of recent captures: [(timestamp, key, text), ...]
-        self._recent_captures: List[tuple] = []
+# ---------------------------------------------------------------------------
+# Key generation
+# ---------------------------------------------------------------------------
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
-    def capture_outcome(self, text: str, outcome_type: str = "automatic") -> Dict[str, Any]:
-        """Analyse *text* for significant content and capture it.
+def _gen_key(text: str, categories: List[SignificanceCategory]) -> str:
+    """Content-hash key with category tags and short timestamp."""
+    tag = "|".join(c.value for c in (categories or [SignificanceCategory.LEARNING]))
+    raw = f"{tag}:{text.strip()[:200]}"
+    h = re.sub(r'[^a-f0-9]', '', hash(raw) & 0xFFFFFFFF)[:8]  # fast, not cryptographic
+    ts = str(int(_time_mod.time()))[-4:]
+    return f"{tag}_{h}_{ts}"
 
-        Returns a dict with keys: saved, key, significance, outcome_type, reason.
-        """
-        filtered_text = text.strip()
 
-        # --- Length gate (AC-5) ---
-        if len(filtered_text) < 20 or self._is_trivial(filtered_text):
-            return {
-                "saved": False,
-                "key": None,
-                "significance": None,
-                "outcome_type": outcome_type,
-                "reason": "below_significance_threshold",
-            }
-
-        # --- Significance detection (AC-4) ---
-        category = self._detect_significance(filtered_text) or SignificanceCategory.RESULT
-
-        key = self._generate_key(filtered_text, category)
-
-        # --- Deduplication check (AC-6) ---
-        dedup_key = self._check_dedup(key, filtered_text)
-        if dedup_key is not None:
-            return {
-                "saved": True,
-                "key": dedup_key,
-                "significance": category.name.lower(),
-                "outcome_type": outcome_type,
-                "reason": "merged_into_existing",
-            }
-
-        # --- Persist (AC-2/3) ---
-        payload = {
-            "text": filtered_text,
-            "outcome_type": outcome_type,
-            "significance": str(category.name),
-            "timestamp": time.time(),
-            "category_name": self._safe_category_name(category),
-        }
-
-        saved = False
-        try:
-            if hasattr(self.orchestrator, "save"):
-                saved = self.orchestrator.save(key, payload)
-        except (AttributeError, TypeError):
-            pass  # graceful failure — AC-7
-
-        return {
-            "saved": saved,
-            "key": key,   # Always return the attempted key so callers can inspect what was tried
-            "significance": category.name.lower(),
-            "outcome_type": outcome_type,
-            "reason": None if saved else "orchestrator_unavailable",
-        }
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_trivial(text: str) -> bool:
-        """Return True if text is meaningless — single word, or all trivial confirmations."""
-        words = text.lower().split()
-        # Fewer than 2 words → trivial
-        if len(words) <= 1:
-            return True
-        # All words are in the trivial set → trivial
-        _TRIVIAL_WORDS = frozenset({
-            "ok", "done", "yep", "yeah", "yes", "no", "sure",
-            "cool", "fine", "great", "kk",
-        })
-        if all(w in _TRIVIAL_WORDS for w in words):
-            return True
-        return False
-
-    def _detect_significance(self, text: str) -> Optional[SignificanceCategory]:
-        """Return the best-matching SignificanceCategory, or None."""
-        best_cat: Optional[SignificanceCategory] = None
-        best_score = 0.0
-        for cat, patterns in _compiled.items():
-            for regex, keyword in patterns:
-                count = len(regex.findall(text))
-                if count > best_score * _CLASSIFICATION_THRESHOLD:
-                    best_score = count
-                    best_cat = cat
-        return best_cat
-
-    @staticmethod
-    def _generate_key(text: str, category: SignificanceCategory) -> str:
-        """Create a content-hash key with category prefix."""
-        h = hashlib.sha256(text.encode()).hexdigest()[:16]
-        now = time.strftime("%Y%m%d")
-        return "auto_{cat}_{dt}_{h}".format(
-            cat=category.name.lower(), dt=now, h=h,
-        )
-
-    def _check_dedup(self, key: str, text: str) -> Optional[str]:
-        """Return existing key if content is >60% similar to a recent capture."""
-        now = time.time()
-        cutoff = now - self.dedup_window_seconds
-
-        # Prune old entries first
-        self._recent_captures = [
-            (t, k, c) for t, k, c in self._recent_captures if t > cutoff
-        ]
-
-        tokens_new = set(text.lower().split())
-        for _timestamp, existing_key, existing_text in self._recent_captures:
-            if _timestamp < cutoff:
-                continue
-            tokens_existing = set(existing_text.lower().split())
-            if not tokens_existing or not tokens_new:
-                continue
-            jaccard_len = len(tokens_new & tokens_existing) / len(tokens_new | tokens_existing)
-            if jaccard_len > self.dedup_similarity_threshold:
-                return existing_key
-
-        # Not a duplicate — record it
-        self._recent_captures.append((now, key, text))
-        return None
-
-    @staticmethod
-    def _safe_category_name(category: SignificanceCategory) -> str:
-        for cat, _patterns in _CATEGORIES_AND_PATTERNS:
-            if cat == category:
-                return category.name
-        return "RESULT"
+# ---------------------------------------------------------------------------
+# Similarity helpers (pure-Python jaccard on meaningful word sets).
+# -------------------------------------------------------------------
