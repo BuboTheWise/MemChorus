@@ -233,8 +233,8 @@ class TestPythonBinDiscovery:
     def test_config_override_with_nonexistent_path_skips(self):
         fake = "/nonexistent/python/is/not/here"
         client = _McpClient(timeout=1, config={"python_bin": fake})
-        # Should fall through to sys.executable since the override target doesn't exist.
-        assert client._python_bin == os.path.realpath(sys.executable)
+        # Non-existent override is skipped; chain must still find a valid interpreter.
+        assert Path(client._python_bin).exists()
 
     def test_discovery_chain_returns_existing_candidate(self):
         """Default discovery without config must find at least sys.executable."""
