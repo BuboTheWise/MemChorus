@@ -106,7 +106,14 @@ class _PatternStore:
         # Group keywords by priority class
         self._groups: Dict[DecisionPoint, List[tuple]] = {dp: [] for dp in DecisionPoint}  # type: ignore[union-init, arg-type, assignment]
         for pattern_str, dp_class in _PRIORITY_KEYWORDS:
-            regex_str = r"\b" + re.escape(pattern_str) + r"\b"
+            # Handle multi-word patterns by wrapping each word with \b individually
+            words = pattern_str.lower().split()
+            if len(words) == 1:
+                regex_str = rf"\b{re.escape(words[0])}\b"
+            else:
+                parts = [rf"\b{re.escape(w)}\b" for w in words]
+                # .*? allows flexible spacing between words with non-greedy matching
+                regex_str = ".*?".join(parts)
             compiled = re.compile(regex_str, re.IGNORECASE | re.UNICODE)
             self._groups[dp_class].append((compiled, pattern_str))
 
