@@ -6,6 +6,7 @@ It serves as the resilient core that must remain functional even if other voices
 """
 
 import os
+import re as _re
 import json
 import datetime
 from typing import List, Dict, Any, Optional
@@ -37,7 +38,21 @@ class HermesDefaultMemorySource(MemorySource):
         """Initialize the memory storage directory."""
         self.memory_dir = self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories'))
         os.makedirs(self.memory_dir, exist_ok=True)
-        
+
+    @staticmethod
+    def _safe_key(key: str) -> str:
+        """Sanitize a memory key for use as a filename.
+
+        Strips path separators and normalizes to alphanumerics plus hyphens.
+        Prevents path traversal (../../etc/passwd) and ensures only flat files
+        land inside the memory directory. Mirrors what MemPalace does in
+        _key_to_room().
+        """
+        sanitized = key.lower().strip()
+        sanitized = _re.sub(r'[^a-z0-9\-]', '-', sanitized)
+        parts = [p for p in sanitized.split('-') if p]
+        return '-'.join(parts)[:128]
+
     def _read_memory_file(self, file_path: str) -> List[Dict[str, Any]]:
         """
         Read memory entries from a file.
@@ -114,7 +129,7 @@ class HermesDefaultMemorySource(MemorySource):
             if not isinstance(value, (str, int, float, bool, dict, list)):
                 value = str(value)
                 
-            file_path = os.path.join(self.memory_dir, f"{key}.json")
+            file_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
             with open(file_path, 'w') as f:
                 json.dump(value, f)
             return True
@@ -132,7 +147,7 @@ class HermesDefaultMemorySource(MemorySource):
             Any: The memory content if found, None otherwise
         """
         try:
-            file_path = os.path.join(self.memory_dir, f"{key}.json")
+            file_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     return json.load(f)

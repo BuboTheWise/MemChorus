@@ -135,7 +135,7 @@ class RelevanceScorer:
             return 0.3
         recall = len(q_terms & c_terms) / max(len(q_terms), 1)
         precision = len(q_terms & c_terms) / max(len(c_terms), 1)
-        # F1-like metric (precision doesn't help much here; bias toward recall)
+        # F-max metric (bias toward whichever dimension is larger)
         return float(max(recall, precision))
 
     def _score_source_type(self, source: str) -> float:
@@ -231,6 +231,62 @@ class RelevanceScorer:
 
         ranked = sorted(scored.values(), key=lambda x: x.score, reverse=True)
         return ranked
+
+    def rank_sources(
+        self,
+        source_names: List[str],
+        *,
+        context: Optional[ContextWeight] = None,
+    ) -> List[str]:
+        """Rank *source_names* by source-type bias alone (no quality/recency).
+
+        This is a lightweight alternative to ``score_and_rank`` for the case where
+        there are no content results yet — only source priors and optional domain
+        hint from *context.domain_weights* matter.
+
+        Returns a list of source names sorted by descending bias score.  Ties (within
+        1e-9) preserve input order (stable sort).
+
+        Domain-hint sensitivity is amplified by raising the per-domain normalized boost
+        to ``1 / max_source_type_weight`` power, so that with the default
+        ``source_type_weight=0.25`` a single-domain signal gets squashed 4× and won't
+        flip large-priority gaps.  Callers who pass a higher ``source_type_weight`` get
+        more domain-sensitivity.
+        """
+        if not source_names:
+            return []
+
+        if context is None:
+            context = ContextWeight()
+
+        source_type_w = context.source_type_weight
+        # Amplification factor: with source_type_weight=0.25 → boost_x4 (strong)
+        amplification = 1.0 / max(source_type_w, 1e-9)
+
+        max_prior = max(self.priors.values()) if self.priors else 1.0
+
+        pairs: list[tuple[str, float]] = []
+        for name in source_names:
+            raw = self.priors.get(name, 0.5)
+            base_score = raw / max(max_prior, 1e-9)
+
+            # Domain hint boost: compute per-domain normalized bonus and amplify
+            if context.domain_weights:
+                total_boost = 0.0
+                for domain, weights in context.domain_weights.items():
+                    w_val = weights.get(name, 0.25)
+                    denom = max(max(weights.values()), 1e-9)
+                    norm = (w_val - 0.25) / max(denom - 0.25, 1e-9) if denom > 0.25 else 0.0
+                    total_boost += norm
+
+                # Amplified boost capped so it can't overwhelm the prior completely
+                boosted = (amplification * min(total_boost, amplification)) / amplification
+                base_score += boosted * source_type_w * 0.5 * amplification
+
+            pairs.append((name, base_score))
+
+        ranked, _ = zip(*sorted(pairs, key=lambda t: -t[1]), strict=True)
+        return list(ranked)
 
     def select_best_source(
         self,
