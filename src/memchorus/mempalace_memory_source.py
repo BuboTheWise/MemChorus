@@ -7,14 +7,19 @@ Fallback behaviour: when MCP is unreachable the source degrades to a local
 file cache so the orchestrator never loses its enhancement voice.
 """
 import json
+import logging
 import os
 import re
+import shutil
+import sys
 import asyncio
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from memchorus.memory_source import MemorySource
+
+logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
@@ -38,50 +43,94 @@ class _McpClient:
     save/retrieve/search are not firehose operations -- the overhead is acceptable.
     """
 
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, timeout: float = 30.0, config: Optional[Dict[str, Any]] = None):
         self.timeout = float(timeout)
         self._connected = False
+        self._config = config or {}
         # Discover a suitable Python interpreter instead of assuming pipx
         self._python_bin = self._discover_python()
 
     def _discover_python(self) -> str:
-        """Find a suitable Python interpreter for the mcp subprocess.
+        """Discover a Python interpreter for the MCP subprocess.
 
-        Tries locations in priority order:
-        1. Current interpreter (sys.executable) — works when memchorus and \
-mempalace share an env
-        2. pipx venv path — legacy / explicit install location
-        3. ``python3`` on PATH — system-wide or conda environments
-        4. ``/usr/bin/python3`` as absolute fallback
+        Discovery chain (highest → lowest priority):
+        1. ``config.get("python_bin")`` -- explicit user override
+        2. ``shutil.which("mempalace-python")`` -- dedicated shim on PATH
+        3. pipx venv locations:
+           - ``~/.local/share/pipx/venvs/mempalace/bin/python``
+           - ``~/.local/pipx/venvs/mempalace/bin/python``
+        4. ``sys.executable`` -- shares env with this process
+        5. ``python3`` on PATH -- system-wide / conda environments
+        6. ``/usr/bin/python3`` as absolute fallback
 
-        Returns whichever candidate exists and is executable.
+        Returns the first candidate confirmed to exist and be executable, plus logs
+        a diagnostic explaining how the path was resolved.
         """
-        import shutil
-        import sys
+        # Step 1: explicit config override
+        user_path = self._config.get("python_bin", None)
+        if user_path:
+            expanded = os.path.expanduser(user_path)
+            real = os.path.realpath(expanded)
+            if Path(real).exists():
+                logger.info(
+                    "python_bin resolved via explicit config override: %s", real
+                )
+                return real
+            else:
+                logger.warning(
+                    "config.python_bin points to non-existent file: %s (expanded: %s) -- skipping",
+                    user_path, expanded,
+                )
 
-        candidates = [
-            sys.executable,
+        # Step 2: dedicated PATH shim
+        mp_python = shutil.which("mempalace-python")
+        if mp_python:
+            logger.info(
+                "python_bin resolved via PATH shim (mempalace-python): %s", mp_python
+            )
+            return mp_python
+
+        # Step 3: pipx venv locations
+        for pipx_candidate in [
             os.path.expanduser("~/.local/share/pipx/venvs/mempalace/bin/python"),
-        ]
+            os.path.expanduser("~/.local/pipx/venvs/mempalace/bin/python"),
+        ]:
+            if Path(pipx_candidate).is_file():
+                logger.info(
+                    "python_bin resolved via pipx venv: %s", pipx_candidate
+                )
+                return pipx_candidate
 
-        # Also check for python3 on PATH via shutil.which (portable).
+        # Step 4: sys.executable (shares env with this process)
+        py = sys.executable
+        if Path(py).exists():
+            logger.info(
+                "python_bin resolved via sys.executable (same env): %s", py
+            )
+            return py
+
+        # Step 5: python3 on PATH
         py3 = shutil.which("python3")
         if py3:
-            candidates.append(py3)
+            logger.info(
+                "python_bin resolved via python3 on PATH: %s", py3
+            )
+            return py3
 
-        candidates.append("/usr/bin/python3")
+        # Step 6: absolute fallback
+        abs_fallback = "/usr/bin/python3"
+        if Path(abs_fallback).exists():
+            logger.warning(
+                "python_bin fell back to absolute path (no other candidates): %s", abs_fallback
+            )
+            return abs_fallback
 
-        for candidate in candidates:
-            # Use path.exists() where possible; fall back to shutil.which.
-            if Path(candidate).exists():
-                return candidate
-            result = shutil.which(candidate)
-            if result is not None:
-                return result
-
-        # All candidates exhausted — current interpreter is our best bet anyway.
-        import sys
-        return sys.executable
+        # All paths exhausted -- sys.executable is our best guess
+        logger.warning(
+            "python_bin could not verify any candidate via Path.exists or shutil.which; "
+            "falling back to sys.executable: %s", py
+        )
+        return py
 
     def connect(self) -> bool:
         """Start server subprocess, run initialize handshake, return True/False."""
@@ -242,6 +291,9 @@ class MemPalaceMemorySource(MemorySource):
     ``mcp_timeout`` Seconds before an MCP call is considered failed (default 10).
     ``skip_mcp``    If true, skip live MCP connection entirely (local fallback only).
                    Useful for testing (default false).
+    ``python_bin``  Override the auto-detected Python interpreter for the MCP subprocess.
+                    Accepts an absolute path or a path relative to ``~``. When set the
+                    discovery chain skips directly to verifying the candidate.
     """
 
     def __init__(
@@ -261,7 +313,7 @@ class MemPalaceMemorySource(MemorySource):
 
         # MCP client -- attempts a real connection eagerly unless disabled.
         mcp_timeout = float(self.config.get("mcp_timeout", 10))
-        self._client = _McpClient(timeout=mcp_timeout)
+        self._client = _McpClient(timeout=mcp_timeout, config=self.config)
         self._connected = False
 
         if not self.config.get("skip_mcp", False):
@@ -387,6 +439,7 @@ class MemPalaceMemorySource(MemorySource):
             "available": self.is_available(),
             "mcp_connected": mcp_up,
             "fallback_dir": str(self._cache_dir),
+            "python_bin": getattr(self._client, "_python_bin", "unknown"),
             "description": (
                 "MemPalace MCP (live)" if mcp_up else "MemPalace (local fallback)"
             ),
@@ -515,4 +568,3 @@ class MemPalaceMemorySource(MemorySource):
             })
 
         return ok
-

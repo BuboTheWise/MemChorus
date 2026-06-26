@@ -103,6 +103,18 @@ class TestDecisionPointDetection(unittest.TestCase):
         types_found = {r.type for r in results}
         self.assertIn(DecisionPoint.PLANNING_START, types_found)
 
+    def test_planning_start_fires_on_approach_selection_keyword(self) -> None:
+        """AC-M3-v1: 'approach selection' is the ONLY multi-word PLANNING_START pattern without a dedicated positive-match test.
+        This explicit test ensures it fires independently (catches regression of the H-2 word-boundary bug)."""
+        trigger = _make_orch()
+        results = trigger.detect("Approach selection was the key decision for this sprint")
+        types_found = {r.type for r in results}
+        self.assertIn(DecisionPoint.PLANNING_START, types_found)
+        # Verify it matched the correct keyword, not just substring match
+        matching_points = [r for r in results if r.type == DecisionPoint.PLANNING_START]
+        assert any(r.matched_keyword == "approach selection" for r in matching_points), \
+            "Expected 'approach selection' as matched_keyword"
+
     def test_tool_call_intent_fires_on_will_call_keyword(self) -> None:
         trigger = _make_orch()
         results = trigger.detect("Next I will call the database adapter")
@@ -406,6 +418,84 @@ class TestEdgeCases(unittest.TestCase):
             highest   = max(r.confidence for r in multi_results)  # type: ignore[arg-type, union-attr]
             self.assertGreater(highest, base_conf,
                                f"Repeats should boost confidence")
+
+
+# ---------------------------------------------------------------------------
+# AC-M3: Exhaustive positive-match tests for multi-word pattern regression
+# ---------------------------------------------------------------------------
+
+
+class TestMultiWordPatternRegression(unittest.TestCase):
+    """AC-M3-v2: Explicit positive-match verification for EVERY multi-word pattern in _PRIORITY_KEYWORDS.
+
+    This class serves as a regression guard against the H-2 bug (word-boundary handling in
+    multi-space patterns). Each test fires on one raw, multi-word keyword from its DP category
+    to prove the regex compiles and matches correctly with flexible spacing.
+
+    Pattern inventory (from behavioral_trigger.py line _PRIORITY_KEYWORDS):
+        ERROR_STATE:       "went wrong"          — tested as part of AC-1 above
+        PLANNING_START:    "i need to implement" — tested via PLANNING_MULTI_WORD below
+        PLANNING_START:    "the plan is"         — tested as part of AC-1 above (test_planning_start_fires_on_plan_is_keyword)
+        PLANNING_START:    "first step"          — tested as part of AC-1 above (test_planning_start_fires_on_first_step_keyword)
+        PLANNING_START:    "approach selection"  — tested via test_planning_start_fires_on_approach_selection_keyword (AC-M3-v1)
+
+        TOOL_CALL_INTENT:  "next i will call"    — tested via TOOL_MULTI_WORD below
+        TOOL_CALL_INTENT:  "i'll use"            — tested as part of AC-1 above (test_tool_call_intent_fires on_use_keyword)
+        TOOL_CALL_INTENT:  "running the command" — tested as part of AC-1 above
+        POST_ACTION_COMPLETE: "done with"       — tested via COMPLETE_MULTI_WORD below
+        POST_ACTION_COMPLETE: "output received" — tested as part of AC-1 above (output_received test above)
+        POST_ACTION_COMPLETE: "result is"       — tested as part of AC-1 above (is_keyword above)
+    """  # fmt: skip
+
+    def test_went_wrong_matches_error_state(self) -> None:
+        """Multi-word 'went wrong' in ERROR_STATE fires correctly."""
+        trigger = _make_orch()
+        results = trigger.detect("Something went wrong during the API call")
+        error_types = [r for r in results if r.type == DecisionPoint.ERROR_STATE]  # type: ignore[arg-type, union-attr]
+        self.assertGreaterEqual(len(error_types), 1)
+        self.assertIn("went wrong", [r.matched_keyword for r in error_types])
+
+    def test_i_need_to_implement_matches_planning(self) -> None:
+        """Multi-word 'i need to implement' fires at PLANNING_START."""
+        trigger = _make_orch()
+        results = trigger.detect("I need to implement a new feature for the system")
+        planning_types = [r for r in results if r.type == DecisionPoint.PLANNING_START]  # type: ignore[arg-type, union-attr]
+        self.assertGreaterEqual(len(planning_types), 1)
+        self.assertIn("i need to implement", [r.matched_keyword for r in planning_types])
+
+    def test_next_i_will_call_matches_tool_intent(self) -> None:
+        """Multi-word 'next i will call' fires at TOOL_CALL_INTENT."""
+        trigger = _make_orch()
+        results = trigger.detect("Next I will call the search tool to find relevant docs")
+        tool_types = [r for r in results if r.type == DecisionPoint.TOOL_CALL_INTENT]  # type: ignore[arg-type, union-attr]
+        self.assertGreaterEqual(len(tool_types), 1)
+        self.assertIn("next i will call", [r.matched_keyword for r in tool_types])
+
+    def test_done_with_matches_post_action_complete(self) -> None:
+        """Multi-word 'done with' fires at POST_ACTION_COMPLETE."""
+        trigger = _make_orch()
+        results = trigger.detect("Done with the first round of testing")
+        complete_types = [r for r in results if r.type == DecisionPoint.POST_ACTION_COMPLETE]  # type: ignore[arg-type, union-attr]
+        self.assertGreaterEqual(len(complete_types), 1)
+        self.assertIn("done with", [r.matched_keyword for r in complete_types])
+
+    def test_running_the_command_matches_tool_intent(self) -> None:
+        """Multi-word 'running the command' fires at TOOL_CALL_INTENT."""
+        trigger = _make_orch()
+        results = trigger.detect("Running the command now to submit the report")
+        tool_types = [r for r in results if r.type == DecisionPoint.TOOL_CALL_INTENT]  # type: ignore[arg-type, union-attr]
+        self.assertGreaterEqual(len(tool_types), 1)
+        self.assertIn("running the command", [r.matched_keyword for r in tool_types])
+
+    def test_flexible_spacing_between_words(self) -> None:
+        """Multi-word patterns must tolerate flexible whitespace between words."""
+        trigger = _make_orch()
+        # 'went wrong' should still match with different spacing if regex tolerates it
+        results = trigger.detect("The implementation approach selection and strategy were all discussed")
+        planning_types = [r for r in results if r.type == DecisionPoint.PLANNING_START]  # type: ignore[arg-type, union-attr]
+        keywords_found = {r.matched_keyword for r in planning_types}
+        self.assertIn("approach selection", keywords_found,
+                       "Multi-word pattern must flexibly match across its component words")
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@ setup(
     name="memchorus",
     version="1.0.0",
     author="BuboTheWise",
-    author_email="bubo@wisdom.systems",
     description="Memory orchestration system for Hermes agents",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",

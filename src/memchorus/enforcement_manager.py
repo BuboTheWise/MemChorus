@@ -158,4 +158,12 @@ class BehavioralEnforcementManager:
 
     @property
     def is_available(self) -> bool:
-        return self._orchestrator is not None
+        if self._orchestrator is None:
+            return False
+        # Also delegate to the orchestrator so that a degraded state
+        # (all underlying sources down) propagates outward rather than
+        # being hidden behind the orchestrator shell.
+        try:
+            return self._orchestrator.is_available()  # type: ignore[union-attr]
+        except Exception:
+            return False
