@@ -203,8 +203,11 @@ class MemoryOrchestrator:
                 return self.memory_sources[source_name].save(key, value)
             return False
 
-        # --- resolve profile (auto-infer when caller omitted it) --------
-        effective_profile = profile or MemoryProfile.AUTO
+        # --- resolve profile (auto-infer from content when omitted) -----
+        if profile is not None:
+            effective_profile = profile
+        else:
+            effective_profile = self._infer_profile(value)
         
         # --- get ranked target sources for this profile -----------------
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
