@@ -1,12 +1,4 @@
-"""Tests for RelevanceScorer.rank_sources() helper.
-
-Covers:
-- Default priors rank hermes_default before mempalace
-- Custom priors can flip the order
-- Domain hints influence ranking (memory -> hermes_default, graph -> mempalace)
-- Empty source list returns empty
-- Unknown source names fall back to neutral prior 0.5
-"""
+"""Tests for RelevanceScorer.rank_sources() helper."""
 
 import os
 import sys
