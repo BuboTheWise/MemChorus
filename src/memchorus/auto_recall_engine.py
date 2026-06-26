@@ -186,25 +186,15 @@ class AutoRecallEngine:
         self._cache.clear()
 
 
-# ---------------------------------------------------------------------------
-# Stub for BehavioralTrigger if the file doesn't exist yet (import-safe fallback)
-# ---------------------------------------------------------------------------
-if "DecisionPoint" not in globals():
-    # behavioral_trigger.py is missing — provide a minimal enum so this module still loads.
-    class DecisionPoint(Enum):  # type: ignore[misc, no-redef]
-        ERROR_STATE = auto()
-        PLANNING_START = auto()
-        TOOL_CALL_INTENT = auto()
-        POST_ACTION_COMPLETE = auto()
-
-    @dataclass
-    class DetectedPoint:  # type: ignore[misc, no-redef]
-        type: DecisionPoint
-        confidence: float
-        matched_keyword: str
-        text_span: Optional[str] = None
-
-    logger.warning(
-        "AutoRecallEngine: behavioral_trigger.py not found — using stub classes. "
-        "TODO: import from memchorus.behavioral_trigger when available."
-    )
+# NOTE: No stub/try-except fallback around the top-level import on line 30.
+# The unguarded ``from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint``
+# either succeeds (putting DecisionPoint into globals, so this block is dead code) or raises
+# ImportError immediately and aborts module loading — the if-statement below never executes
+# because Python never reaches it when the import fails.  A stub here would give false
+# confidence: the module would appear to load but all decision-point logic would silently use
+# locally-defined enums with no real BehavioralTrigger wiring, defeating enforcement.
+# The correct fix for missing behavior_trigger is: ensure behavioral_trigger.py ships
+# correctly alongside this module; don't silently degrade enforcement to stub classes in-use.
+# If a packaging scenario ever requires graceful degradation (e.g., wheels that omit optional
+# dependencies), replace the top-level import with ``try … except ImportError`` and gate the
+# entire class behind an availability check, not a stub enum.

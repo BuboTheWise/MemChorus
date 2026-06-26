@@ -304,8 +304,10 @@ class HermesDefaultMemorySource(MemorySource):
             }
             # Save the action log in a separate file to track proactive behavior
             try:
-                action_file = os.path.join(self.memory_dir, f"{action_key}.json")
-                with open(action_file, 'w') as f:
+                # Sanitize every part of the filename; action_key contains the
+                # user-supplied key and must not escape memory_dir.
+                safe_action_file = os.path.join(self.memory_dir, f"{self._safe_key(action_key)}.json")
+                with open(safe_action_file, 'w') as f:
                     json.dump(action_log, f)
             except Exception:
                 pass  # Quiet failure on additional logging - core save is what matters
