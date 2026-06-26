@@ -92,3 +92,46 @@ class MemorySource(ABC):
             Dict[str, Any]: Metadata about this source
         """
         pass
+
+    @abstractmethod
+    def proactive_check(
+        self, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Proactively discover memories relevant to the current decision/action.
+
+        Spec §Triggered behavior mandates that hooks must be automatically invoked
+        — not merely exist on paper. This method lets every registered source
+        contribute context before an action fires, making proactive recall
+        chorus-wide rather than being hardcoded to a single voice.
+
+        Args:
+            context (Dict[str, Any], optional): Context about the pending action
+
+        Returns:
+            Dict[str, Any]: Relevant memories or recommendations
+        """
+        pass
+
+    @abstractmethod
+    def proactive_save(
+        self,
+        key: str,
+        value: Any,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Proactively persist a memory immediately after an action/decision completes.
+
+        Pairs with ``proactive_check`` to close the triggered-behaviour loop:
+        recall relevant context → perform action → capture outcome.
+
+        Args:
+            key (str): Unique identifier for the memory
+            value (Any): The memory content to store
+            context (Dict[str, Any], optional): Context about what was decided/done
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        pass

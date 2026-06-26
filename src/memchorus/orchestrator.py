@@ -133,57 +133,104 @@ class MemoryOrchestrator:
         except Exception:
             return False
     
-    def save(self, key: str, value: Any, source_name: Optional[str] = None) -> bool:
+    def _infer_profile(self, value: Any) -> MemoryProfile:
         """
-        Save a memory to the appropriate source.
-        
-        The orchestrator decides where to save based on:
-        - Explicit source specification
-        - Source availability and efficiency
-        - Memory characteristics
-        
+        Infer the memory profile from the content's characteristics when AUTO.
+
+        Heuristics:
+        - Large payloads (>4500 str bytes or >1000 dict/list items) → LARGE_DATA_BLOCK
+        - Dict-like structures with key:value pairs → USER_PREFERENCE
+        - Lists containing tuples/edges → RELATIONSHIP_GRAPH
+        - Everything else defaults to EPHEMERAL as a safe fallback
+
+        Args:
+            value (Any): The memory content being persisted
+
+        Returns:
+            MemoryProfile: Classified profile based on value shape and size
+        """
+        # --- large-data early exit ----------------------------------
+        if isinstance(value, str) and len(value.encode('utf-8', errors='replace')) > _MAX_KV_STRING_BYTES:
+            return MemoryProfile.LARGE_DATA_BLOCK
+        if isinstance(value, (dict, list)) and len(value) > _JSON_LARGE_LIMIT:
+            return MemoryProfile.LARGE_DATA_BLOCK
+
+        # --- structural hints ---------------------------------------
+        if isinstance(value, dict):
+            return MemoryProfile.USER_PREFERENCE
+        if isinstance(value, list):
+            # Detect relationship-graph signatures (tuples/2-element lists representing edges)
+            has_edges = False
+            for item in value:
+                if isinstance(item, (tuple, list)) and len(item) == 2:
+                    has_edges = True
+                    break
+            if has_edges:
+                return MemoryProfile.RELATIONSHIP_GRAPH
+
+        return MemoryProfile.EPHEMERAL
+
+    def save(self,
+             key: str,
+             value: Any,
+             source_name: Optional[str] = None,
+             profile: Optional[MemoryProfile] = None) -> bool:
+        """
+        Save a memory to the appropriate source using intelligent placement.
+
+        Placement strategy (order of precedence):
+        1. Explicit ``source_name`` → write there directly and return.
+        2. Profile hint (explicit or AUTO-inferred) → consult ``_PROFILE_SOURCE_HINT``
+           for preferred targets; try each in order, falling back to available ones.
+        3. As a final safety net, save to any source that is currently available
+
+        This avoids duplication: once the memory is successfully stored at the
+        first acceptable target we stop iterating even if additional sources
+        match the profile preference list.
+
         Args:
             key (str): Unique identifier for the memory
             value (Any): The memory content to store
-            source_name (str, optional): Specific source to save to
-            
+            source_name (str, optional): Specific source to save to when caller overrides smart placement
+            profile (MemoryProfile, optional): Classification hint; defaults to AUTO inference
+
         Returns:
-            bool: True if successful, False otherwise
+            bool: True if successful storage occurred at any registered target, False otherwise
         """
-        # If specific source is provided, use it — fail if unavailable
+        # --- explicit source override takes precedence ------------------
         if source_name:
             if source_name in self.memory_sources:
                 return self.memory_sources[source_name].save(key, value)
-            # Explicit source requested but not registered -> fail gracefully
             return False
+
+        # --- resolve profile (auto-infer when caller omitted it) --------
+        effective_profile = profile or MemoryProfile.AUTO
         
-        # Otherwise, save to the most appropriate source
-        # For v1.0, we'll save to both sources (redundancy for resilience)
-        success_count = 0
-        
-        # Save to Hermes default memory (resilient core if available)
-        if self.memory_sources.get('hermes_default') and self.memory_sources['hermes_default'].is_available():
-            if self.memory_sources['hermes_default'].save(key, value):
-                success_count += 1
-        
-        # Save to MemPalace (enhancement voice if available)
-        if self.memory_sources.get('mempalace') and self.memory_sources['mempalace'].is_available():
-            if self.memory_sources['mempalace'].save(key, value):
-                success_count += 1
+        # --- get ranked target sources for this profile -----------------
+        preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
+
+        # ---- preferred targets first ---------------------------------
+        for t in preferred_targets:
+            src = self.memory_sources.get(t)
+            if src and src.is_available() and src.save(key, value):
+                return True
+
                 
-        return success_count > 0
+        # ---- safety net: try ANY available source -----------------------
+        for src in self.memory_sources.values():
+            if src.is_available() and src.save(key, value):
+                return True
+        
+        return False
     
     def retrieve(self, key: str) -> Optional[Any]:
         """
         Retrieve a memory from the most relevant source.
         
-        Uses RelevanceScorer to rank available sources by a computed relevance
-        score (source-type bias for key-based retrieval). Sources with higher
-        priority scores are tried first -- if that source has the key, return it.
-        If unavailable or missing, fall through to the next-best source.
-        
-        Unlike the original hard-coded priority chain ['hermes_default', 'mempalace'],
-        this method respects the scorer's ranking so new sources can compete on score.
+        Uses RelevanceScorer.rank_sources() to rank available sources by source-type
+        bias (ignoring quality/recency since there is no content yet). Sources ranked
+        higher are tried first; if one has the key, return it. This avoids creating
+        dummy result dicts that run useless recency/quality math on empty data.
         
         Args:
             key (str): Unique identifier for the memory
@@ -191,17 +238,12 @@ class MemoryOrchestrator:
         Returns:
             Any: The memory content if found, None otherwise
         """
-        # Build candidate list ranked by scorer's source-type bias
-        candidates = self._scorer.score_and_rank(
-            [  # dummy results -- only the "source" key matters for bias ranking
-                {"key": src_name, "content": "", "source": s.name}
-                for src_name, s in self.memory_sources.items()
-            ],
-            query="",
+        candidate_sources = self._scorer.rank_sources(
+            list(self.memory_sources.keys()),
         )
         
-        for candidate in candidates:
-            source = self.memory_sources.get(candidate.source)
+        for src_name in candidate_sources:
+            source = self.memory_sources.get(src_name)
             if source and source.is_available():
                 result = source.retrieve(key)
                 if result is not None:
@@ -231,6 +273,7 @@ class MemoryOrchestrator:
         
         # Inject domain-level weightings before scoring
         all_results = []
+        remaining_fetch_budget = limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
             if not source.is_available():
                 continue
@@ -253,8 +296,8 @@ class MemoryOrchestrator:
                         r["score"] = 0.0
                 all_results.extend(results)
                 
-                limit -= len(results)
-                if limit <= 0:
+                remaining_fetch_budget -= len(results)
+                if remaining_fetch_budget <= 0:
                     break
             except Exception:
                 continue
@@ -262,7 +305,7 @@ class MemoryOrchestrator:
         # Score and rank via the relevance engine
         ranked = self._scorer.score_and_rank(all_results, query, context)
         
-        # Convert RankedResult -> plain dict with score field
+        # Convert RankedResult -> plain dict with score field — use original limit
         return [
             {
                 "key": r.key,
