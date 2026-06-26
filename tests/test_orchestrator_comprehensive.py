@@ -153,9 +153,9 @@ def test_single_source_operations_work_through_that_path_only():
         assert retrieved is not None
         assert retrieved['only_source'] is True
 
-        # Search by key name (orchestrator.search matches filenames, not content)
+        # Search by key name (orchestrator.search matches any source with data)
         results = orch.search('single_path')
-        assert len(results) > 0
+        assert len(results) > 0, f"Expected results from search; got {results!r}. Check if data landed in a searchable source."
         for r in results:
             assert r['source'] == 'hermes_default'
 
@@ -261,6 +261,71 @@ def test_save_with_mempalace_name_routes_to_mem_palace():
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_search_limit_returns_requested_amount_with_staggered_sources():
+    """orchestrator.search(limit=N) must return up to N ranked results.
+
+    Source A returns 7, Source B returns 5 -> total 12 candidates in ranked pool.
+    With limit=10 the orchestrator should slice exactly 10 (not 3 as the old
+    decrement-in-loop bug would produce).
+
+    Also verifies that when total available < limit only that many are returned.
+    """
+    # --- mock source that returns exactly `count` results ------------------
+    from unittest.mock import MagicMock, PropertyMock
+
+    def make_mock_source(name, count):
+        mock = MagicMock()
+        mock.name = name
+        mock.is_available.return_value = True
+        mock.get_source_info.return_value = {}
+        results = [
+            {'key': f'{name}_result_{i}', 'content': f'content {name} {i}', 'source': name, 'score': 0.0}
+            for i in range(count)
+        ]
+        mock.search.return_value = results
+        return mock
+
+    # Build orchestrator with two registered sources providing staggered counts
+    config = {'default_source': 'hermes_default', 'hermes_default_config': {}, 'mempalace_config': {}}
+    orch = MemoryOrchestrator(config)
+
+    # Replace real sources with mocked ones
+    source_a = make_mock_source('srcA', 7)   # 7 results
+    source_b = make_mock_source('srcB', 5)   # 5 results
+    # Put them in a known iteration order
+    orch.memory_sources = {'srcA': source_a, 'srcB': source_b}
+
+    assert all(s.is_available() for s in orch.memory_sources.values())
+
+    # Test Case 1: total available (12) >= requested limit (10) -> should get exactly 10
+    results = orch.search('test_query', limit=10)
+    assert isinstance(results, list), f"Expected list, got {type(results)}"
+    assert len(results) == 10, f"Expected exactly 10 results for limit=10, got {len(results)} (ranked pool had 12 candidates)"
+
+    # Each returned result must have required fields
+    for r in results:
+        assert 'key' in r
+        assert 'score' in r
+        assert r['source'] in ('srcA', 'srcB')
+
+    # Verify both sources contributed (they shouldn't all come from one)
+    sources_represented = {r['source'] for r in results}
+    assert len(sources_represented) == 2, f"Expected results from both sources, got {sources_represented}"
+
+
+    # Test Case 2: total available (4) < requested limit (10) -> should get exactly 4
+    orch.memory_sources['srcA'] = make_mock_source('srcA', 3)
+    orch.memory_sources['srcB'] = make_mock_source('srcB', 1)
+    results = orch.search('test_query', limit=10)
+    assert len(results) == 4, f"Expected exactly 4 results (total available), got {len(results)}"
+
+
+    # Test Case 3: single source with few results < limit
+    orch.memory_sources = {'srcC': make_mock_source('srcC', 2)}
+    results = orch.search('single_source_query', limit=10)
+    assert len(results) == 2, f"Expected exactly 2 results from single source, got {len(results)}"
 
 
 def test_unregister_nonexistent_source_returns_false():

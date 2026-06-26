@@ -41,11 +41,47 @@ class _McpClient:
     def __init__(self, timeout: float = 30.0):
         self.timeout = float(timeout)
         self._connected = False
-        self._python_bin = os.path.expanduser(
-            "~/.local/share/pipx/venvs/mempalace/bin/python"
-        )
+        # Discover a suitable Python interpreter instead of assuming pipx
+        self._python_bin = self._discover_python()
 
-    # -- lifecycle ----------------------------------------------------------------
+    def _discover_python(self) -> str:
+        """Find a suitable Python interpreter for the mcp subprocess.
+
+        Tries locations in priority order:
+        1. Current interpreter (sys.executable) — works when memchorus and \
+mempalace share an env
+        2. pipx venv path — legacy / explicit install location
+        3. ``python3`` on PATH — system-wide or conda environments
+        4. ``/usr/bin/python3`` as absolute fallback
+
+        Returns whichever candidate exists and is executable.
+        """
+        import shutil
+        import sys
+
+        candidates = [
+            sys.executable,
+            os.path.expanduser("~/.local/share/pipx/venvs/mempalace/bin/python"),
+        ]
+
+        # Also check for python3 on PATH via shutil.which (portable).
+        py3 = shutil.which("python3")
+        if py3:
+            candidates.append(py3)
+
+        candidates.append("/usr/bin/python3")
+
+        for candidate in candidates:
+            # Use path.exists() where possible; fall back to shutil.which.
+            if Path(candidate).exists():
+                return candidate
+            result = shutil.which(candidate)
+            if result is not None:
+                return result
+
+        # All candidates exhausted — current interpreter is our best bet anyway.
+        import sys
+        return sys.executable
 
     def connect(self) -> bool:
         """Start server subprocess, run initialize handshake, return True/False."""
@@ -407,3 +443,76 @@ class MemPalaceMemorySource(MemorySource):
             except Exception:
                 pass
         return None
+
+
+    # ------------------------------------------------------------------
+    # Proactive methods (spec §Triggered behaviour – chorus-wide invocation)
+    # ------------------------------------------------------------------
+
+    def proactive_check(
+        self, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Search MemPalace for memories relevant to the pending action.
+
+        Uses a simple keyword query built from whatever values appear in *context*.
+        Falls back to local cache when MCP is unavailable.
+        """
+        if not context:
+            return {
+                "status": "ready",
+                "found_memories": 0,
+                "source": self._name,
+                "mcp_connected": self._connected and self._client.is_alive,
+            }
+
+        query = " ".join(str(v) for v in context.values() if v)
+        findings: List[Dict[str, Any]] = []
+
+        # Try MCP first.
+        if self._connected and self._client.is_alive:
+            mp_hits = self._client.search(query=query, limit=5)
+            if mp_hits:
+                for r in (isinstance(mp_hits, list) and mp_hits or []):
+                    content_val = (
+                        r.get("content", str(r)) if isinstance(r, dict) else str(r)
+                    )
+                    findings.append({"key": "mempalace_hit", "content": self._from_str(str(content_val))})
+
+        # Also try local cache.
+        cache_hits = []
+        for f in self._cache_dir.glob("*.json"):
+            if any(word in f.stem.lower() for word in query.lower().split()):
+                val = self._retrieve_local(f.stem)
+                if val is not None:
+                    cache_hits.append({"key": f.stem, "content": val})
+
+        return {
+            "status": "ready",
+            "found_memories": len(findings) + len(cache_hits),
+            "source": self._name,
+            "mcp_connected": self._connected and self._client.is_alive,
+            "recommendations": findings + cache_hits,
+        }
+
+    def proactive_save(
+        self, key: str, value: Any, context: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Save a memory after an action completes.
+
+        Always writes to local cache for reliability; also attempts MCP push
+        when the live server is available. Returns True as soon as *any*
+        persistence path succeeds (graceful degradation per spec).
+        """
+        ok = self.save(key, value)
+
+        if ok and context:
+            action_key = f"proactive_{key}"
+            self._cache_locally(action_key, {
+                "action": "proactive_save",
+                "memory_key": key,
+                "context": context,
+                "source": self._name,
+            })
+
+        return ok
+
