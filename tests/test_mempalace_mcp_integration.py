@@ -14,10 +14,14 @@ import sys
 import json
 import tempfile
 import shutil
+import pathlib as pl
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+Path = pl.Path
+
+# --- imports from source ---
 from memchorus.memory_source import MemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource, _McpClient
 
@@ -204,3 +208,56 @@ class TestMcpClientUnit:
         client = _McpClient(timeout=1)
         result = client.kg_query("entity")
         assert result is None
+
+
+# =========================================================================== #
+#  SECTION E — python_bin discovery chain tests                              #
+# =========================================================================== #
+
+class TestPythonBinDiscovery:
+    """Verify the python_bin discovery chain in _McpClient."""
+
+    def test_config_override_with_valid_path(self):
+        fake = "/usr/bin/python3"
+        client = _McpClient(timeout=1, config={"python_bin": fake})
+        assert client._python_bin == os.path.realpath(fake)
+
+    def test_config_override_with_tilde_path(self, tmp_cache):
+        # Tilde paths should be expanded, then real-paths resolved.
+        rel = "~/.local/share/pipx/venvs/mempalace/bin/python"
+        client = _McpClient(timeout=1, config={"python_bin": rel})
+        expanded = os.path.expanduser(rel)
+        # The path doesn't exist, so it skips the override and falls through.
+        assert client._python_bin != None  # should still resolve via sys.executable
+
+    def test_config_override_with_nonexistent_path_skips(self):
+        fake = "/nonexistent/python/is/not/here"
+        client = _McpClient(timeout=1, config={"python_bin": fake})
+        # Should fall through to sys.executable since the override target doesn't exist.
+        assert client._python_bin == os.path.realpath(sys.executable)
+
+    def test_discovery_chain_returns_existing_candidate(self):
+        """Default discovery without config must find at least sys.executable."""
+        client = _McpClient(timeout=1, config={})
+        assert Path(client._python_bin).exists()
+
+    def test_mem_palace_config_passes_python_bin_to_client(self, tmp_cache):
+        """MemPalaceMemorySource.__init__ must forward python_bin to _McpClient."""
+        config = {
+            "cache_dir": tmp_cache,
+            "skip_mcp": True,
+            "python_bin": "/usr/bin/python3",
+        }
+        src = MemPalaceMemorySource(config=config)
+        assert src._client._python_bin == os.path.realpath("/usr/bin/python3")
+
+    def test_source_info_includes_python_bin(self, tmp_cache):
+        """get_source_info should report which python_bin was resolved."""
+        config = {
+            "cache_dir": tmp_cache,
+            "skip_mcp": True,
+        }
+        src = MemPalaceMemorySource(config=config)
+        info = src.get_source_info()
+        assert "python_bin" in info
+        assert Path(info["python_bin"]).exists()

@@ -187,6 +187,33 @@ class TestGracefulDegradation(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# L-4 regression: is_available must propagate orchestrator degraded state
+# ---------------------------------------------------------------------------
+
+class TestL4AvailabilityPropagation(unittest.TestCase):
+    """L-4: EnforcementManager.is_available correctly reflects orchestrator health."""
+
+    def test_orchestrator_with_all_sources_down_returns_false(self) -> None:
+        # This is the L-4 bug scenario: _orchestrator is not None,
+        # but all underlying memory sources are down.  is_available()
+        # must return False, not True.
+        available_orch = _MockOrchestrator(available=False)
+        mgr = BehavioralEnforcementManager(orchestrator=available_orch)
+        self.assertFalse(mgr.is_available)
+
+    def test_orchestrator_with_sources_up_returns_true(self) -> None:
+        # Sanity check: when the orchestrator reports available, we agree.
+        available_orch = _MockOrchestrator(available=True)
+        mgr = BehavioralEnforcementManager(orchestrator=available_orch)
+        self.assertTrue(mgr.is_available)
+
+    def test_none_orchestrator_returns_false(self) -> None:
+        # Edge case: explicit None (not just a degraded orchestrator).
+        mgr = BehavioralEnforcementManager(orchestrator=None)
+        self.assertFalse(mgr.is_available)
+
+
+# ---------------------------------------------------------------------------
 # BE-2/BE-5: Timing and structured results
 # ---------------------------------------------------------------------------
 
