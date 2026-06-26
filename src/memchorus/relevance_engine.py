@@ -16,10 +16,13 @@ Design decisions (from Gap Analyses G1 + G2):
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Protocol
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public API types
@@ -119,7 +122,12 @@ class RelevanceScorer:
             return 0.5
         delta = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
         if delta < 0:
-            delta = 0  # future dates get neutral too
+            logger.warning(
+                "Recency scorer: timestamp %s is in the future (delta=%.2f days). "
+                "Check clock skew or manual edit on the data source.",
+                timestamp_str, abs(delta),
+            )
+            delta = 0
         decay = 0.5 ** (delta / max(self.half_life_days, 1))
         return float(decay)
 
@@ -136,7 +144,12 @@ class RelevanceScorer:
         recall = len(q_terms & c_terms) / max(len(q_terms), 1)
         precision = len(q_terms & c_terms) / max(len(c_terms), 1)
         # F-max metric (bias toward whichever dimension is larger)
-        return float(max(recall, precision))
+        # F1 harmonic mean of recall and precision
+        # Penalizes imbalance: if one dimension is zero, quality should be zero
+        if recall + precision == 0:
+            return 0.0
+        f1 = 2 * (precision * recall) / (precision + recall)
+        return float(f1)
 
     def _score_source_type(self, source: str) -> float:
         """Normalised prior for *source* in [0, 1]."""

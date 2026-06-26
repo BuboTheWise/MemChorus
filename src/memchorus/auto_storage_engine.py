@@ -84,6 +84,9 @@ _TRIVIAL_PATTERNS: List[re.Pattern] = [
     re.compile(r'^omg\b', re.I),
 ]
 
+# Single-word confirmations that are trivial when there's little else to say.
+_TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
+
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -316,9 +319,7 @@ class AutoStorageEngine:
                 return True
 
         # Standalone trivial words when paired with little to no substantive content
-        TRIVIAL_WORDS = frozenset({"ok", "done", "yep", "yeah", "omg"})
-
-        for word in TRIVIAL_WORDS:
+        for word in _TRIVIAL_WORDS:
             if re.search(rf"\b{word}\b", text_lower):
                 # Remove stop-words and the matched trivial word from meaningful set
                 meaningful = {w for w in re.findall("[a-z]{2,}", text_lower)
