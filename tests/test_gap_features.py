@@ -310,8 +310,11 @@ class TestGAP008_RetrievalOptimization(unittest.TestCase):
 
         first = orch.retrieve(key)
         # Now delete the file so that a MISS would occur without cache
-        fpath = os.path.join(orch.memory_sources["hermes_default"].memory_dir, f"{key}.json")
-        os.remove(fpath)
+        from memchorus.hermes_memory_source import HermesDefaultMemorySource as _HMS
+        safe_key = _HMS._safe_key(key)
+        fpath = os.path.join(orch.memory_sources['hermes_default'].memory_dir, f"{safe_key}.json")
+        if os.path.exists(fpath):
+            os.remove(fpath)
 
         second = orch.retrieve(key)
         assert second == val, \
@@ -331,8 +334,11 @@ class TestGAP008_RetrievalOptimization(unittest.TestCase):
 
         orch.clear_cache()
         # After clearing cache + deleting file -> should be None
-        fpath = os.path.join(orch.memory_sources["hermes_default"].memory_dir, f"{key}.json")
-        os.remove(fpath)
+        from memchorus.hermes_memory_source import HermesDefaultMemorySource as _HMS_clear
+        safe_key_clear = _HMS_clear._safe_key(key)
+        fpath = os.path.join(orch.memory_sources['hermes_default'].memory_dir, f"{safe_key_clear}.json")
+        if os.path.exists(fpath):
+            os.remove(fpath)
         result = orch.retrieve(key)
         assert result is None, \
             "Cache cleared + file gone -> retrieve should return None"
