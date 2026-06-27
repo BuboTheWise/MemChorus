@@ -270,7 +270,8 @@ def test_proactive_save_with_context():
 
         # Action log should have been written to a separate file
         files = os.listdir(tmpdir)
-        action_logs = [f for f in files if f.startswith('action_action_test_key_')]
+        # Filenames are normalized through _safe_key (underscores -> hyphens)
+        action_logs = [f for f in files if 'action-' in f and 'action-test-key' in f]
         assert len(action_logs) >= 1, "Expected at least one action log file"
 
         # Verify the log content
