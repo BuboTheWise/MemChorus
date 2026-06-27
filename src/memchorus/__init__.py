@@ -19,13 +19,13 @@ __all__ = [
     'HermesDefaultMemorySource',
     'MemPalaceMemorySource',
     'MemoryOrchestrator',
-    # Behavioral enforcement v1.1.0
+    # Behavioral enforcement v1.1.01
     'BehavioralTrigger',
     'AutoRecallEngine',
     'AutoStorageEngine',
     'BehavioralEnforcementManager',
 ]
 
-__version__ = "1.1.0"
+__version__ = "1.1.02"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"

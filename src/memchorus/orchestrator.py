@@ -657,7 +657,7 @@ class MemoryOrchestrator:
         info = {
             'orchestrator': {
                 'name': 'memchorus_orchestrator',
-                'version': '1.0.0',
+                'version': __import__('memchorus').__version__,
                 'default_source': self._default_source_name,
                 'available_sources': len([s for s in self.memory_sources.values() if s.is_available()]),
                 'total_sources': len(self.memory_sources)
