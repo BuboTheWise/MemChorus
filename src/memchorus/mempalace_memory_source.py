@@ -23,12 +23,76 @@ logger = logging.getLogger(__name__)
 
 
 def _run_async(coro):
-    """Execute an async coroutine in a fresh event loop."""
-    loop = asyncio.new_event_loop()
+    """Execute an async coroutine in a fresh event loop.
+
+    Uses ``asyncio.run()`` which is the safe, modern way to execute a coroutine
+    from synchronous code.  On rare occasions (e.g. inside a test harness that
+    already drives its own event loop) calling ``asyncio.run()`` raises
+    ``RuntimeError('set_event_loop_policy')``.  We catch that fall‑back to the old
+    manual loop pattern while logging a warning so operators know an unusual
+    environment is in play.
+    """
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        return asyncio.run(coro)
+    except RuntimeError as exc:
+        if "set_event_loop" in str(exc):
+            # Already inside running event-loop — fall back to manual loop.
+            # The coroutine *will* run, but callers should prefer passing back an
+            # awaitable instead of mixing sync/async boundaries here.
+            logger.warning(
+                "_run_async: already-in-loop; falling back to new_event_loop: %s",
+                exc,
+            )
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        raise  # re-raise unexpected RuntimeErrors (e.g. "no running event loop")
+
+
+async def _call_tool_async(
+    python_bin: str,
+    server_args: list,
+    timeout: float,
+    name: str,
+    arguments: dict,
+) -> Any:
+    """Async core of _McpClient._call wrapped in proper error handling."""
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.session import ClientSession
+
+    server_params = StdioServerParameters(
+        command=python_bin,
+        args=server_args,
+    )
+
+    async with stdio_client(server_params) as (r_stream, w_stream):
+        async with ClientSession(
+            read_stream=r_stream,
+            write_stream=w_stream,
+            read_timeout_seconds=timedelta(seconds=timeout),
+        ) as session:
+            await session.initialize()
+            result = await session.call_tool(name, arguments=arguments)
+
+            # Parse the MCP tool result into JSON dict (or raw text if unparsable).
+            texts = []
+            try:
+                if hasattr(result, "content") and result.content:
+                    for block in result.content:
+                        if hasattr(block, "type"):
+                            # MCP SDK blocks have a 'type' discriminator.
+                            if getattr(block, "type", "") == "text":
+                                texts.append(str(getattr(block, "text", "")))
+            except Exception:
+                # Result object is malformed — move on to raw.
+                pass
+        raw = "\n".join(texts) if texts else ""
+        try:
+            return json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            return {"raw": raw} if raw else {}
 
 
 class _McpClient:
@@ -166,43 +230,59 @@ class _McpClient:
     # -- tool calling ---------------------------------------------------------------
 
     def _call(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Open subprocess + session, run one tool call, clean up."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp.client.session import ClientSession
+        """Open subprocess + session, run one tool call, clean up.
+
+        Handles broken-pipe / OSError via graceful degradation: if a previously‑alive
+        connection dies mid‑flight we reset ``_connected`` so the next call triggers a
+        fresh connect attempt and avoids repeatedly hammering a dead child process.
+        """
+        server_args = ["-m", "mempalace.mcp_server"]
 
         python_bin = self._python_bin
         if not Path(python_bin).exists():
             return None
 
-        server_params = StdioServerParameters(
-            command=python_bin,
-            args=["-m", "mempalace.mcp_server"],
-        )
-
-        async def _do_call():
-            async with stdio_client(server_params) as (r_stream, w_stream):
-                async with ClientSession(
-                    read_stream=r_stream,
-                    write_stream=w_stream,
-                    read_timeout_seconds=timedelta(seconds=self.timeout),
-                ) as session:
-                    await session.initialize()
-                    result = await session.call_tool(name, arguments=arguments)
-            return result
-
         try:
-            result = _run_async(asyncio.wait_for(_do_call(), timeout=self.timeout * 2))
-            texts = []
-            if hasattr(result, "content") and result.content:
-                for block in result.content:
-                    if hasattr(block, "text"):
-                        texts.append(str(block.text))
-            raw = "\n".join(texts) if texts else ""
-            try:
-                return json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                return {"raw": raw} if raw else {}
-        except Exception:
+            result = _run_async(
+                asyncio.wait_for(
+                    _call_tool_async(
+                        python_bin, server_args, self.timeout * 2, name, arguments
+                    ),
+                    timeout=self.timeout * 2,
+                )
+            )
+            # Success path — clear dead-connection flag if previously set.
+            if not self._connected:
+                logger.info("MemPalace MCP connection re-established after failure.")
+                try:
+                    self._connected = self.connect()
+                except Exception:
+                    self._connected = False
+            return result
+        except BrokenPipeError as exc:
+            logger.error("_call: broken pipe to MCP server: %s", exc)
+            self._connected = False  # force re-connect on next call
+            return None
+        except asyncio.TimeoutError as exc:
+            logger.error("_call: MCP call timed out: %s", exc)
+            self._connected = False  # reset; may recover on next attempt
+            return None
+        except OSError as exc:
+            logger.error(
+                "_call: OS error communicating with MCP server (%s): %s",
+                type(exc).__name__,
+                exc,
+            )
+            self._connected = False
+            return None
+        except Exception as exc:
+            # Catch-all: log anything else and degrade gracefully.
+            logger.error(
+                "_call: unexpected error during MCP call: %s (%s)",
+                type(exc).__name__,
+                exc,
+            )
+            self._connected = False
             return None
 
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
