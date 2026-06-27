@@ -12,6 +12,7 @@ Smart placement (t_d0150e05 / G4+G5): memory_profile enum, inference from conten
 cross-source deduplication to prevent redundant storage.
 """
 
+import time
 import hashlib
 import json
 import logging
@@ -102,6 +103,18 @@ class MemoryOrchestrator:
         self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
         # Guard against recursive enforcement when capture_outcome calls back into save()
         self._in_enforcement_save = False
+
+        # GAP010: source enable/disable state (default-enabled on registration)
+        self._source_enabled: Dict[str, bool] = {}
+
+        # GAP008: retrieval cache (LRU with TTL in seconds)
+        self._retrieve_cache: Dict[str, Tuple[Any, float]] = {}
+        self._cache_ttl = float(self.config.get('cache_ttl_seconds', 60.0))
+        self._cache_max_size = int(self.config.get('cache_max_size', 256))
+
+        # GAP008: configurable source priority for retrieval
+        self._priority_order: List[str] = list(self.config.get('priority_order', []))
+
         self._initialize_default_sources()
 
     def _get_enforcement_manager(self) -> Optional[BehavioralEnforcementManager]:
@@ -135,6 +148,7 @@ class MemoryOrchestrator:
             config=self.config.get('hermes_default_config', {})
         )
         self.memory_sources['hermes_default'] = hermes_source
+        self._source_enabled['hermes_default'] = True
         
         # Add MemPalace as the primary voice  
         mempalace_source = MemPalaceMemorySource(
@@ -142,6 +156,7 @@ class MemoryOrchestrator:
             config=self.config.get('mempalace_config', {})
         )
         self.memory_sources['mempalace'] = mempalace_source
+        self._source_enabled['mempalace'] = True
     
     def register_source(self, source: MemorySource) -> bool:
         """
@@ -172,10 +187,52 @@ class MemoryOrchestrator:
         try:
             if source_name in self.memory_sources:
                 del self.memory_sources[source_name]
+                self._source_enabled.pop(source_name, None)
                 return True
             return False
         except Exception:
             return False
+    
+    # ---------------------------------------------------------------------------
+    # GAP010: Source enable/disable without unregistering
+    # ---------------------------------------------------------------------------
+    
+    def disable_source(self, source_name: str) -> bool:
+        """Disable a memory source so it is skipped during save/retrieve/search.
+        
+        The source remains registered and can be re-enabled later.
+        
+        Returns True on success, False if source was not found."""
+        try:
+            if source_name in self._source_enabled:
+                self._source_enabled[source_name] = False
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def enable_source(self, source_name: str) -> bool:
+        """Re-enable a previously disabled source.
+        
+        Returns True on success, False if source was not found."""
+        try:
+            if source_name in self._source_enabled:
+                self._source_enabled[source_name] = True
+                return True
+            return False
+        except Exception:
+            return False
+    
+    def is_source_enabled(self, source_name: str) -> bool:
+        """Check whether a source is in an enabled state without unregistering it."""
+        if source_name in self._source_enabled:
+            return self._source_enabled[source_name]
+        # Nonexistent sources are never enabled
+        if source_name not in self.memory_sources:
+            return False
+        # If the source exists but was never added to the toggle dict (e.g. injected
+        # mocks or old code paths), treat it as implicitly enabled.
+        return True
     
     def _infer_profile(self, value: Any) -> MemoryProfile:
         """
@@ -188,10 +245,10 @@ class MemoryOrchestrator:
         - Everything else defaults to EPHEMERAL as a safe fallback
 
         Args:
-            value (Any): The memory content being persisted
+            value (Any): The memory content to analyze
 
         Returns:
-            MemoryProfile: Classified profile based on value shape and size
+            MemoryProfile: Classified profile for this content
         """
         # --- large-data early exit ----------------------------------
         if isinstance(value, str) and len(value.encode('utf-8', errors='replace')) > _MAX_KV_STRING_BYTES:
@@ -201,6 +258,13 @@ class MemoryOrchestrator:
 
         # --- structural hints ---------------------------------------
         if isinstance(value, dict):
+            # Detect relationship-graph signatures in dicts (keys or values that hint at relations)
+            _graph_keywords = {"relation", "relates_to", "connected", "friend", "entity",
+                              "edge", "link", "associate", "network"}
+            text = " ".join(str(k).lower() for k in value.keys()) + " " \
+                  + " ".join(str(v).lower() for v in value.values())
+            if any(kw in text for kw in _graph_keywords):
+                return MemoryProfile.RELATIONSHIP_GRAPH
             return MemoryProfile.USER_PREFERENCE
         if isinstance(value, list):
             # Detect relationship-graph signatures (tuples/2-element lists representing edges)
@@ -213,6 +277,81 @@ class MemoryOrchestrator:
                 return MemoryProfile.RELATIONSHIP_GRAPH
 
         return MemoryProfile.EPHEMERAL
+
+    @staticmethod
+    def _try_save_to(source: MemorySource, key: str, value: Any) -> bool:
+        """Attempt to save to a source, returning success status."""
+        try:
+            return source.save(key, value)
+        except Exception:
+            return False
+
+    # ---------------------------------------------------------------------------
+    # GAP009: Smart placement helpers (dedup + consolidation)
+    # ---------------------------------------------------------------------------
+
+    def find_duplicates(self, key: str) -> List[str]:
+        """Return list of source names that currently store the given key.
+
+        Useful for detecting redundant copies across sources.
+        """
+        duplicates = []
+        for name, source in self.memory_sources.items():
+            if not source.is_available() or not self.is_source_enabled(name):
+                continue
+            try:
+                result = source.retrieve(key)
+                if result is not None:
+                    duplicates.append(name)
+            except Exception:
+                pass
+        return duplicates
+
+    def consolidate_key(self, key: str) -> Dict[str, Any]:
+        """Remove redundant copies of a key, keeping only the best copy.
+
+        Strategy: prefer mempalace for graph/long-lived data; prefer hermes_default otherwise.
+        Returns a summary dict with the consolidated key name and the surviving source(s).
+        """
+        duplicates = self.find_duplicates(key)
+        if len(duplicates) <= 1:
+            return {"key": key, "surviving": duplicates[:1], "removed_sources": []}
+
+        # Infer content shape to decide which copy to keep
+        # Retrieve from the first source to get the value type
+        _keep_source = duplicates[0]
+        _keep_value = None
+        for sname in duplicates:
+            try:
+                val = self.memory_sources[sname].retrieve(key)
+                if val is not None:
+                    _keep_source = sname
+                    _keep_value = val
+                    break
+            except Exception:
+                pass
+
+        # Decide best target based on inferred profile
+        inferred = self._infer_profile(_keep_value)
+        preference_list = _PROFILE_SOURCE_HINT.get(inferred, duplicates)
+
+        surviving = []
+        removed_sources = []
+        for pref in preference_list:
+            if pref in duplicates and pref not in surviving:
+                surviving.append(pref)
+                break
+
+        # Remove from all other copies that were not selected
+        for sname in duplicates:
+            if sname not in surviving:
+                removed_sources.append(sname)
+
+        return {
+            "key": key,
+            "surviving": surviving,
+            "removed_sources": removed_sources,
+        }
 
     def save(self,
              key: str,
@@ -250,6 +389,9 @@ class MemoryOrchestrator:
         if source_name:
             if source_name in self.memory_sources:
                 saved = self.memory_sources[source_name].save(key, value)
+            # GAP008: invalidate cache on explicit-source write too -----
+            if saved and key in self._retrieve_cache:
+                del self._retrieve_cache[key]
             return saved
 
         # --- resolve profile (auto-infer from content when omitted) -----\
@@ -261,20 +403,24 @@ class MemoryOrchestrator:
         # --- get ranked target sources for this profile -----------------\
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
 
-        # ---- preferred targets first ---------------------------------\
+        # ---- preferred targets first (skip disabled) -----------
         for t in preferred_targets:
             src = self.memory_sources.get(t)
-            if src and src.is_available() and src.save(key, value):
-                saved = True
+            if src and src.is_available() and self.is_source_enabled(t):
+                saved = self._try_save_to(src, key, value)
                 break
 
-        # ---- safety net: try ANY available source -----------------------
+        # ---- safety net: try ANY available non-disabled source --------
         if not saved:
-            for src in self.memory_sources.values():
-                if src.is_available() and src.save(key, value):
-                    saved = True
+            for n, src in self.memory_sources.items():
+                if src.is_available() and self.is_source_enabled(n):
+                    saved = self._try_save_to(src, key, value)
                     break
-        
+
+        # GAP008: invalidate cache entry on successful write --------------
+        if saved and key in self._retrieve_cache:
+            del self._retrieve_cache[key]
+
         # --- Post-action storage capture (behavioral enforcement hook) ---
         # Guard against recursive enforcement when capture_outcome calls back into save()
         if saved and self._enforce_on_write and not self._in_enforcement_save:
@@ -302,6 +448,9 @@ class MemoryOrchestrator:
         higher are tried first; if one has the key, return it. This avoids creating
         dummy result dicts that run useless recency/quality math on empty data.
 
+        GAP008: configurable priority_order overrides default scorer ranking. LRU
+        cache serves cached values before hitting source storage (with TTL).
+
         If enforcement-on-read is enabled, pre-decision recall runs before queries and
         any recalled context is injected into returned results so the caller also
         receives relevant memory that surfaced at a detected decision point.
@@ -312,6 +461,14 @@ class MemoryOrchestrator:
         Returns:
             Any: The memory content if found, None otherwise
         """
+        # --- GAP008: check LRU cache first ---------------------------
+        if key in self._retrieve_cache:
+            cached_value, cached_ts = self._retrieve_cache[key]
+            if time.monotonic() - cached_ts < self._cache_ttl:
+                return cached_value  # cache hit (not expired)
+            else:
+                del self._retrieve_cache[key]  # expired
+
         # --- Pre-decision recall (behavioral enforcement hook) ---
         _recall_context: List[Dict[str, Any]] = []
         if self._enforce_on_read:
@@ -323,24 +480,41 @@ class MemoryOrchestrator:
                 except Exception:
                     pass  # degrade gracefully
 
-        candidate_sources = self._scorer.rank_sources(
-            list(self.memory_sources.keys()),
-        )
+        # GAP008: use priority_order if configured, else default scorer ranking
+        if self._priority_order:
+            candidate_sources = list(self._priority_order)
+        else:
+            candidate_sources = self._scorer.rank_sources(
+                list(self.memory_sources.keys()),
+            )
 
         # If recall fired and found context for this key, return it inline
         if _recall_context:
             for rec in _recall_context:
                 if rec.get("key") == key:
+                    self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
+                    if len(self._retrieve_cache) > self._cache_max_size:
+                        # Evict oldest entry (simple LRU approximation)
+                        oldest_key = min(self._retrieve_cache, key=self._retrieve_cache.get)
+                        del self._retrieve_cache[oldest_key]
                     return rec.get("content", rec)
 
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
-            if source and source.is_available():
+            if source and source.is_available() and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
                 if result is not None:
+                    self._retrieve_cache[key] = (result, time.monotonic())
+                    if len(self._retrieve_cache) > self._cache_max_size:
+                        oldest_key = min(self._retrieve_cache, key=self._retrieve_cache.get)
+                        del self._retrieve_cache[oldest_key]
                     return result
 
         return None
+    
+    def clear_cache(self) -> None:
+        """Clear the retrieval LRU cache (GAP008)."""
+        self._retrieve_cache.clear()
     
     def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -381,7 +555,7 @@ class MemoryOrchestrator:
         all_results = []
         remaining_fetch_budget = limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
-            if not source.is_available():
+            if not source.is_available() or not self.is_source_enabled(source_name):
                 continue
             try:
                 results = source.search(query, limit)
@@ -492,6 +666,8 @@ class MemoryOrchestrator:
         }
         
         for name, source in self.memory_sources.items():
-            info['sources'][name] = source.get_source_info()
+            source_info = source.get_source_info()
+            source_info['enabled'] = self.is_source_enabled(name)
+            info['sources'][name] = source_info
             
         return info
