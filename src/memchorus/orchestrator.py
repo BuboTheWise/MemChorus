@@ -12,13 +12,20 @@ Smart placement (t_d0150e05 / G4+G5): memory_profile enum, inference from conten
 cross-source deduplication to prevent redundant storage.
 """
 
+import hashlib
+import json
+import logging
+import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, ContextWeight
+from memchorus.enforcement_manager import BehavioralEnforcementManager
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -71,17 +78,54 @@ class MemoryOrchestrator:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initialize the MemoryOrchestrator.
-        
+
         Args:
             config (Dict[str, Any], optional): Configuration parameters for the orchestrator
+
+            Supported config keys:
+                enforce_on_read (bool): Enable pre-decision recall during search/retrieve (default True)
+                enforce_on_write (bool): Enable post-action storage during save (default True)
+                half_life_days (float): Relevance scoring decay (default 30.0)
+                default_source (str): Default source name (default 'hermes_default')
         """
         self.config = config or {}
         self.memory_sources: Dict[str, MemorySource] = {}
         self._default_source_name = self.config.get('default_source', 'hermes_default')
+
         # Relevance scoring engine (Gap G1/G2 fix)
         half_life_days = self.config.get('half_life_days', 30.0)
         self._scorer = RelevanceScorer(half_life_days=half_life_days)
+
+        # Behavioral enforcement pipeline
+        self._enforce_on_read = bool(self.config.get('enforce_on_read', True))
+        self._enforce_on_write = bool(self.config.get('enforce_on_write', True))
+        self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
+        # Guard against recursive enforcement when capture_outcome calls back into save()
+        self._in_enforcement_save = False
         self._initialize_default_sources()
+
+    def _get_enforcement_manager(self) -> Optional[BehavioralEnforcementManager]:
+        """Lazily instantiate BehavioralEnforcementManager once enforcement is needed.
+
+        Returns None if enforcement is disabled in config or sources are unavailable.
+        """
+        if self._enforcement_manager is not None:
+            return self._enforcement_manager
+
+        # Only bootstrap enforcement when both read and write are disabled is False
+        if not self._enforce_on_read and not self._enforce_on_write:
+            return None
+
+        try:
+            self._enforcement_manager = BehavioralEnforcementManager(orchestrator=self)
+            # Respect individual knobs on the manager too (recall for reads, storage for writes)
+            self._enforcement_manager.enable_recall(self._enforce_on_read)
+            self._enforcement_manager.enable_storage(self._enforce_on_write)
+        except Exception as exc:
+            logger.warning("MemoryOrchestrator: failed to create BehavioralEnforcementManager: %s", exc)
+            return None
+
+        return self._enforcement_manager
     
     def _initialize_default_sources(self):
         """Initialize the default memory sources."""
@@ -188,6 +232,10 @@ class MemoryOrchestrator:
         first acceptable target we stop iterating even if additional sources
         match the profile preference list.
 
+        If enforcement-on-write is enabled, post-action storage capture runs
+        after a successful save via BehavioralEnforcementManager so significant
+        outcomes are automatically captured for future recall.
+
         Args:
             key (str): Unique identifier for the memory
             value (Any): The memory content to store
@@ -198,82 +246,137 @@ class MemoryOrchestrator:
             bool: True if successful storage occurred at any registered target, False otherwise
         """
         # --- explicit source override takes precedence ------------------
+        saved = False
         if source_name:
             if source_name in self.memory_sources:
-                return self.memory_sources[source_name].save(key, value)
-            return False
+                saved = self.memory_sources[source_name].save(key, value)
+            return saved
 
-        # --- resolve profile (auto-infer from content when omitted) -----
+        # --- resolve profile (auto-infer from content when omitted) -----\
         if profile is not None:
             effective_profile = profile
         else:
             effective_profile = self._infer_profile(value)
         
-        # --- get ranked target sources for this profile -----------------
+        # --- get ranked target sources for this profile -----------------\
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
 
-        # ---- preferred targets first ---------------------------------
+        # ---- preferred targets first ---------------------------------\
         for t in preferred_targets:
             src = self.memory_sources.get(t)
             if src and src.is_available() and src.save(key, value):
-                return True
+                saved = True
+                break
 
-                
         # ---- safety net: try ANY available source -----------------------
-        for src in self.memory_sources.values():
-            if src.is_available() and src.save(key, value):
-                return True
+        if not saved:
+            for src in self.memory_sources.values():
+                if src.is_available() and src.save(key, value):
+                    saved = True
+                    break
         
-        return False
+        # --- Post-action storage capture (behavioral enforcement hook) ---
+        # Guard against recursive enforcement when capture_outcome calls back into save()
+        if saved and self._enforce_on_write and not self._in_enforcement_save:
+            em = self._get_enforcement_manager()
+            if em is not None:
+                self._in_enforcement_save = True
+                try:
+                    outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                    _storage_result = em.enforce(outcome_text)
+                    logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
+                                key, _storage_result.triggered_points, len(_storage_result.errors))
+                except Exception:
+                    pass  # degrade gracefully — the save itself already succeeded
+                finally:
+                    self._in_enforcement_save = False
+        
+        return saved
     
     def retrieve(self, key: str) -> Optional[Any]:
         """
         Retrieve a memory from the most relevant source.
-        
+
         Uses RelevanceScorer.rank_sources() to rank available sources by source-type
         bias (ignoring quality/recency since there is no content yet). Sources ranked
         higher are tried first; if one has the key, return it. This avoids creating
         dummy result dicts that run useless recency/quality math on empty data.
-        
+
+        If enforcement-on-read is enabled, pre-decision recall runs before queries and
+        any recalled context is injected into returned results so the caller also
+        receives relevant memory that surfaced at a detected decision point.
+
         Args:
             key (str): Unique identifier for the memory
-            
+
         Returns:
             Any: The memory content if found, None otherwise
         """
+        # --- Pre-decision recall (behavioral enforcement hook) ---
+        _recall_context: List[Dict[str, Any]] = []
+        if self._enforce_on_read:
+            em = self._get_enforcement_manager()
+            if em is not None:
+                try:
+                    _recall_result = em.enforce(key)
+                    _recall_context = getattr(_recall_result, 'recall_context', [])
+                except Exception:
+                    pass  # degrade gracefully
+
         candidate_sources = self._scorer.rank_sources(
             list(self.memory_sources.keys()),
         )
-        
+
+        # If recall fired and found context for this key, return it inline
+        if _recall_context:
+            for rec in _recall_context:
+                if rec.get("key") == key:
+                    return rec.get("content", rec)
+
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
             if source and source.is_available():
                 result = source.retrieve(key)
                 if result is not None:
                     return result
-        
+
         return None
     
     def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query across all sources.
-        
+
         Every source is queried; results are combined, scored with the RelevanceScorer,
         deduplicated (highest score per key wins), and sorted descending.
-        
+
+        If enforcement-on-read is enabled, pre-decision recall runs before queries and any
+        recalled context is injected into the result set so the caller also receives
+        relevant memory that surfaced at a detected decision point.
+
         Args:
             query (str): Search query string
             limit (int): Maximum number of results to return
             context: Optional ContextWeight for custom scoring preferences
             domain: Optional domain hint (e.g. 'memory', 'graph') that influences
                     source-type boosting in the scorer
-            
+
         Returns:
             List[Dict[str, Any]]: Sorted search results, each including a ``score`` field
         """
         if context is None:
             context = ContextWeight()
-        
+
+        # --- Pre-decision recall (behavioral enforcement hook) ---
+        _recall_context: List[Dict[str, Any]] = []
+        if self._enforce_on_read:
+            em = self._get_enforcement_manager()
+            if em is not None:
+                try:
+                    _recall_result = em.enforce(query)
+                    _recall_context = getattr(_recall_result, 'recall_context', [])
+                except Exception:
+                    pass  # degrade gracefully — base search continues
+
         # Inject domain-level weightings before scoring
         all_results = []
         remaining_fetch_budget = limit  # cap on raw results collected from sources
@@ -309,7 +412,7 @@ class MemoryOrchestrator:
         ranked = self._scorer.score_and_rank(all_results, query, context)
         
         # Convert RankedResult -> plain dict with score field — use original limit
-        return [
+        results = [
             {
                 "key": r.key,
                 "content": r.content,
@@ -319,7 +422,20 @@ class MemoryOrchestrator:
             }
             for r in ranked[:limit]
         ]
-    
+
+        # Inject pre-decision recalled context into the result set (deduped by key)
+        if _recall_context:
+            existing_keys = {r["key"] for r in results}
+            for rec in _recall_context:
+                rk = rec.get("key", "")
+                if rk and rk not in existing_keys:
+                    rec.setdefault("score", 0.5)
+                    rec["key"] = rk
+                    results.append(rec)
+                    existing_keys.add(rk)
+
+        return results
+
     def _sort_and_deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Sort and remove duplicate results from search.
