@@ -135,9 +135,9 @@ def find_stale_branches(repo_path, older_than_days=7):
     limited output.
     """
     repo = pathlib.Path(repo_path).resolve()
-    # Use for-each-ref with %(*committerdate:iso8601) and %(committerdate:iso8601)
-    # to get accurate commit dates without needing "Date:" in the line output.
-    fmt = "%(refname:short)|%(objectname:short)|%(committerdate:iso8601-strict)"
+    # Use for-each-ref with NUL separators (%00) so branch names or dates
+    # that contain '|' or spaces never break parsing.
+    fmt = "%(refname:short)%00%(objectname:short)%00%(committerdate:iso8601-strict)"
     out = _git(str(repo), "for-each-ref", "--sort=-committerdate", f"--format={fmt}", "refs/heads/")
     if out.returncode != 0:
         raise RuntimeError(f"git for-each-ref failed: {out.stderr.strip()}")
@@ -208,9 +208,11 @@ def compare_branch_to_master(branch_name, repo_path):
 
     target = "main" if "main" in main_names else ("master" if "master" in main_names else "master")
 
-    # rev-list ahead/behind: symmetric diff
+    # rev-list ahead/behind counts:
+    #   ahead  = commits in branch but not in target     -> target..branch
+    #   behind = commits in target but not in branch      -> branch..target
     ahead_out = _git(str(repo), "rev-list", "--count", f"{target}..{branch_name}")
-    behind_out = _git(str(repo), "rev-list", "--count", f"{branch_name}...{target}")
+    behind_out = _git(str(repo), "rev-list", "--count", f"{branch_name}..{target}")
 
     ahead = int(ahead_out.stdout.strip()) if ahead_out.returncode == 0 else None
     behind = int(behind_out.stdout.strip()) if behind_out.returncode == 0 else None
