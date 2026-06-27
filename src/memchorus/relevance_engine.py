@@ -170,6 +170,22 @@ class RelevanceScorer:
         max_w = max(weights.values()) if weights else 1.0
         return float(raw / max(max_w, 1e-9)) * context.source_type_weight
 
+    @staticmethod
+    def _guess_domain(query: str, context: ContextWeight) -> Optional[str]:
+        """Heuristic to pick the most relevant domain for a query based on keyword overlap."""
+        if not query or not context.domain_weights:
+            return None
+        q_terms = set(re.findall(r"\w+", query.lower()))
+        best_domain = None
+        best_count = 0
+        for domain in context.domain_weights:
+            d_terms = set(re.findall(r"\w+", domain.lower()))
+            hits = len(q_terms & d_terms)
+            if hits > best_count:
+                best_count = hits
+                best_domain = domain
+        return best_domain if best_count > 0 else None
+
     # ------------------------------------------------------------------
     # Public scoring
     # ------------------------------------------------------------------
@@ -203,9 +219,12 @@ class RelevanceScorer:
         quality = self._score_quality(query, content)
         recency = self._score_recency(ts)
 
-        # Use domain-aware bias when the caller injected a _domain hint; fall back
-        # to base source-type priors otherwise.  domain_bias already includes the
-        # context.source_type_weight multiplier so we do not add it again.
+        # Use domain-aware bias when the caller injected a _domain hint;
+        # if not explicitly set, try to infer it from query terms.
+        domain = result.get("_domain")
+        if domain is None:
+            domain = self._guess_domain(query, context)
+
         if domain:
             src_dim = self._score_domain_bias(source, domain, context)
         else:
@@ -260,11 +279,9 @@ class RelevanceScorer:
         Returns a list of source names sorted by descending bias score.  Ties (within
         1e-9) preserve input order (stable sort).
 
-        Domain-hint sensitivity is amplified by raising the per-domain normalized boost
-        to ``1 / max_source_type_weight`` power, so that with the default
-        ``source_type_weight=0.25`` a single-domain signal gets squashed 4× and won't
-        flip large-priority gaps.  Callers who pass a higher ``source_type_weight`` get
-        more domain-sensitivity.
+        The ``source_type_weight`` controls how much domain-appropriateness overrides
+        default priors: at 0 the ranking is pure prior; at 1 it ignores the prior
+        entirely and ranks only by domain fit.
         """
         if not source_names:
             return []
@@ -273,30 +290,32 @@ class RelevanceScorer:
             context = ContextWeight()
 
         source_type_w = context.source_type_weight
-        # Amplification factor: with source_type_weight=0.25 → boost_x4 (strong)
-        amplification = 1.0 / max(source_type_w, 1e-9)
-
         max_prior = max(self.priors.values()) if self.priors else 1.0
 
         pairs: list[tuple[str, float]] = []
         for name in source_names:
-            raw = self.priors.get(name, 0.5)
-            base_score = raw / max(max_prior, 1e-9)
+            # Normalized default prior (how reliable is this source by default?)
+            prior_component = (self.priors.get(name, 0.5) / max(max_prior, 1e-9))
 
-            # Domain hint boost: compute per-domain normalized bonus and amplify
+            # Domain-aware component (average normalized fit across all domains)
+            domain_component = None
             if context.domain_weights:
-                total_boost = 0.0
-                for domain, weights in context.domain_weights.items():
+                scores_for_domain = []
+                for weights in context.domain_weights.values():
                     w_val = weights.get(name, 0.25)
-                    denom = max(max(weights.values()), 1e-9)
-                    norm = (w_val - 0.25) / max(denom - 0.25, 1e-9) if denom > 0.25 else 0.0
-                    total_boost += norm
+                    max_w = max(weights.values()) if weights else 1.0
+                    norm_w = w_val / max(max_w, 1e-9)
+                    scores_for_domain.append(norm_w)
+                if scores_for_domain:
+                    domain_component = sum(scores_for_domain) / len(scores_for_domain)
 
-                # Amplified boost capped so it can't overwhelm the prior completely
-                boosted = (amplification * min(total_boost, amplification)) / amplification
-                base_score += boosted * source_type_w * 0.5 * amplification
+            # Blend: higher source_type_weight → domain fit matters more vs default prior
+            if domain_component is not None and source_type_w > 0:
+                final = (1 - source_type_w) * prior_component + context.source_type_weight * domain_component
+            else:
+                final = prior_component
 
-            pairs.append((name, base_score))
+            pairs.append((name, final))
 
         ranked, _ = zip(*sorted(pairs, key=lambda t: -t[1]), strict=True)
         return list(ranked)
