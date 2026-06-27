@@ -147,9 +147,15 @@ class HermesDefaultMemorySource(MemorySource):
             Any: The memory content if found, None otherwise
         """
         try:
+            # Try safe_key first (normalized for disk safety)
             file_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
+                    return json.load(f)
+            # Fallback: try the raw key name (pre-placed files outside save() may not be normalized)
+            file_path_raw = os.path.join(self.memory_dir, f"{key}.json")
+            if os.path.exists(file_path_raw):
+                with open(file_path_raw, 'r') as f:
                     return json.load(f)
             return None
         except Exception:
@@ -171,26 +177,34 @@ class HermesDefaultMemorySource(MemorySource):
         """
         results = []
         try:
-            # Check file-based search
+            # Check file-based search — also try safe-key normalized variant of the query
+            # so that underscores in the lookup term still match hyphen-normalized filenames.
+            variants = [query.lower()]
+            safe_q = self._safe_key(query).lower()
+            if safe_q not in variants:
+                variants.append(safe_q)
             for filename in os.listdir(self.memory_dir):
-                if filename.endswith('.json') and query.lower() in filename.lower():
-                    key = filename[:-5]  # Remove .json extension
-                    content = self.retrieve(key)
-                    if content:
-                        # Get file modification time if available
-                        import time
-                        try:
-                            mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
-                            ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
-                        except Exception:
-                            ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
-                        
-                        results.append({
-                            'key': key,
-                            'content': content,
-                            'source': self._name,
-                            'timestamp': ts
-                        })
+                if filename.endswith('.json'):
+                    # Does any variant of the query appear in this filename?
+                    hit = any(variant in filename.lower() for variant in variants)
+                    if hit:
+                        key_name = filename[:-5]  # Remove .json extension
+                        content = self.retrieve(key_name)
+                        if content:
+                            # Get file modification time if available
+                            import time
+                            try:
+                                mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
+                                ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
+                            except Exception:
+                                ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+
+                            results.append({
+                                'key': key_name,
+                                'content': content,
+                                'source': self._name,
+                                'timestamp': ts
+                            })
                 if len(results) >= limit:
                     break
                     

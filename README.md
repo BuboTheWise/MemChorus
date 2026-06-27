@@ -49,7 +49,7 @@ Graceful degradation is built in at every level. If MemPalace is unreachable, th
 
 ## Installation
 
-Requires Python 3.11+. Install as a local package:
+Requires Python 3.8+. Install as a local package:
 
 ```bash
 cd MemChorus
