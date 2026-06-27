@@ -167,7 +167,7 @@ orch = MemoryOrchestrator()  # auto-registers available sources
 
 ## Status
 
-v1.0.0 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, and smart placement are implemented and tested.
+v1.1.02 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, smart placement, and behavioral enforcement are implemented and tested.
 
 
 ## Tipping the Owl
@@ -179,4 +179,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.0.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.1.02 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
