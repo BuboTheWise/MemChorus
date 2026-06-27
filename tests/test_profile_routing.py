@@ -37,6 +37,8 @@ def _make_orch(hermes_dir: str, **extra_config):
         "default_source": "hermes_default",
         "hermes_default_config": {"memory_dir": hermes_dir},
         "mempalace_config": {"skip_mcp": True},  # avoid live MCP in tests
+        "enforce_on_read": False,   # routing tests don't exercise enforcement
+        "enforce_on_write": False,  # prevent post-save capture calls polluting save counts
     }
     config["mempalace_config"].update(extra_config.pop("mempalace_config", {}))
     config.update(extra_config)
