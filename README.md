@@ -40,7 +40,7 @@ Graceful degradation is built in at every level. If MemPalace is unreachable, th
 
 | Component | Role |
 |---|---|
-| `MemorySource` (ABC) | Pluggable backend interface — saves, retrieves, searches |
+| `MemorySource` (ABC) | Pluggable backend interface — 7 user-facing methods (`save`, `retrieve`, `search`, `proactive_check`, `proactive_save`, `get_source_info`, `is_available`) plus `__init__` |
 | `HermesDefaultMemorySource` | Local curated files (`MEMORY.md`, `USER.md`) on disk. Always available fallback. |
 | `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend. Structured knowledge graph and memory drawers via MCP protocol with semantic search, entity relationships, and diary journals. |
 | `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
@@ -56,16 +56,13 @@ cd MemChorus
 pip install -e .
 ```
 
-For Hermes agents already in a workspace, the installed egg-info is sufficient since `memchorus` lives inside `src/` on PYTHONPATH.
+For Hermes agents running under PEP 668 (externally-managed environments), use the virtual environment Python directly:
+
+```bash
+/home/bubo/.hermes/hermes-agent/venv/bin/pip install -e .
+```
 
 Verify the import works before using it:
-
-```python
-from memchorus.orchestrator import MemoryOrchestrator
-
-orch = MemoryOrchestrator()
-print(orch.get_orchestrator_info())  # shows registered sources and status
-```
 
 ### MemPalace backend
 
@@ -83,14 +80,24 @@ RUN_LIVE_MCP=1 pytest tests/test_mempalace_mcp_integration.py -v
 
 ## Usage Examples
 
-**Basic save and retrieve:**
+**Basic instantiate and register the built-in sources:**
 
 ```python
 from memchorus.orchestrator import MemoryOrchestrator
+from memchorus.hermes_memory_source import HermesDefaultMemorySource
+from memchorus.mempalace_memory_source import MemPalaceMemorySource
 
 orch = MemoryOrchestrator()
 
-# Simple key-value (routed to best source automatically)
+# Register the built-in backends (not auto-registered on instantiation)
+orch.register_source(HermesDefaultMemorySource('hermes_default'))
+mp_ready = True
+try:
+    orch.register_source(MemPalaceMemorySource('mempalace'))
+except Exception:
+    mp_ready = False  # graceful fallback — MemPalace is optional
+
+# Simple key-value (routed to best available source automatically)
 orch.save('user/pref/theme', 'dark_mode')
 result = orch.retrieve('user/pref/theme')
 
@@ -103,15 +110,34 @@ for r in results:
     print(r['source'], r['key'], r['score'])
 ```
 
+**Hermes plugin mode (auto-registered sources):**
+
+When MemChorus is enabled as a Hermes plugin (`hermes_mcp_memchorus`), the orchestrator auto-registers `hermes_default`. If live MCP tools are reachable, `mempalace` joins automatically — no manual wiring needed. Install via:
+
+```bash
+/home/bubo/.hermes/hermes-agent/venv/bin/python3 -c "
+import importlib; spec = importlib.util.find_spec('memchorus.hooks')
+if spec: print('Module memchorus.hooks found OK')
+"
+```
+
 **Registering additional sources:**
 
 ```python
 from memchorus.memory_source import MemorySource
 
 class MyCustomSource(MemorySource):
+    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
+        self._name = name
+        self._config = config or {}
+    
     def save(self, key, value): ...
     def retrieve(self, key): ...
     def search(self, query, limit): ...
+    def proactive_check(self): ...
+    def proactive_save(self): ...
+    def get_source_info(self): ...
+    def is_available(self): ...
 
 orch.register_source(MyCustomSource())
 ```
@@ -125,17 +151,22 @@ The design is built for extensibility from day one — no architectural changes 
 from memchorus.memory_source import MemorySource
 
 class MyMCPServer(MemorySource):
-    def __init__(self, server_command: str):
-        self._mcp = MCPClient(server_command)
+    def __init__(self, name: str, config: Optional[Dict[str, Any]] = None):
+        self._name = name
+        self._config = config or {}
         
     def save(self, key, value): ...
     def retrieve(self, key): ...  
     def search(self, query, limit): ...
+    def proactive_check(self): ...
+    def proactive_save(self): ...
+    def get_source_info(self): ...
+    def is_available(self): ...
 
-orch.register_source(MyMCPServer('python custom_server.py'))
+orch.register_source(MyMCPServer('mcp-server'))
 ```
 
-The `MemorySource` abstract class is intentionally minimal — just three methods. The orchestrator handles routing, scoring, and deduplication automatically for any registered source regardless of origin. Whether it hits a local file, an MCP server, or a remote API, the integration path is identical. No config files to patch, no build artifacts to recompile.
+The `MemorySource` abstract class defines 7 user-facing methods plus `__init__`. Implementing all of them gives the orchestrator maximum routing flexibility — if you only need read/write/search, provide no-ops for the rest. The orchestrator handles routing, scoring, and deduplication automatically for any registered source regardless of origin. Whether it hits a local file, an MCP server, or a remote API, the integration path is identical. No config files to patch, no build artifacts to recompile.
 
 ## Testing
 
@@ -158,11 +189,16 @@ The test suite covers relevance scoring, graceful degradation when sources are d
 
 ## For OpenClaw Agents
 
-Drop the package into your project's `PYTHONPATH` or install via `pip`. The orchestrator works identically — just register whichever memory backends are available in your environment and let MemChorus handle intelligent routing, scoring, and fallback.
+Drop the package into your project's `PYTHONPATH` or install via `pip`. The orchestrator works identically — just register whichever memory backends are available in your environment and let MemChorus handle intelligent routing, scoring, and fallback:
 
 ```python
 from memchorus.orchestrator import MemoryOrchestrator
-orch = MemoryOrchestrator()  # auto-registers available sources
+from memchorus.hermes_memory_source import HermesDefaultMemorySource
+
+orch = MemoryOrchestrator()
+orch.register_source(HermesDefaultMemorySource('hermes_default'))
+# Add more sources as needed:
+# orch.register_source(MemPalaceMemorySource('mempalace'))
 ```
 
 ## Status
