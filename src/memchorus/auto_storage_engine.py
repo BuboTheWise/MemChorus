@@ -263,7 +263,23 @@ class AutoStorageEngine:
         }
 
         try:
-            success = self.orchestrator.save(key, payload)  # type: ignore[union-attr]
+            # B-2 fix (t_b9205369): route through recommended_sources() so that
+            # enabled gating, priority tiering, and write restrictions are honoured.
+            # Map the detected significance category to a write_type token the
+            # orchestrator understands.
+            write_type = {"DECISION": "decision", "MEMORY": "memory",
+                          "RESULT": "general", "RELATIONSHIP": "graph"}.get(
+                              category_str.upper(), "general")
+
+            candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
+
+            success = False
+            for src_name in candidate_sources:
+                result = self.orchestrator.save(key, payload, source_name=src_name)  # type: ignore[union-attr]
+                if result:
+                    success = True
+                    break
+
         except Exception as exc:
             logger.warning("AutoStorageEngine: orchestrator save failed: %s", exc)
             success = False

@@ -40,7 +40,13 @@ class _MockOrchestrator:
     def is_available(self) -> bool:
         return self._available
 
-    def save(self, key: str, value: dict) -> bool:
+    def recommended_sources(
+        self, write_type: str = "general", max_results: int = 3
+    ) -> list[str]:
+        """Stubs the new B-2 method so existing tests continue to work."""
+        return ["mock"]
+
+    def save(self, key: str, value: dict, **kwargs) -> bool:
         self.saved_calls.append((key, value))
         return True
 
