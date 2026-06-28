@@ -83,12 +83,22 @@ _PRIORITY_KEYWORDS = [
     ("first step",            DecisionPoint.PLANNING_START),
     ("approach selection",    DecisionPoint.PLANNING_START),
     ("strategy",              DecisionPoint.PLANNING_START),
+    # B-1 fix: broader coverage for planning intent in typical agent speech
+    ("i need to plan",        DecisionPoint.PLANNING_START),
+    ("my plan",               DecisionPoint.PLANNING_START),
+    ("let me plan",           DecisionPoint.PLANNING_START),
+    ("planning to",           DecisionPoint.PLANNING_START),
 
     # --- TOOL_CALL_INTENT (priority 2) -----------------------------------
     ("next i will call",      DecisionPoint.TOOL_CALL_INTENT),
     ("i'll use",              DecisionPoint.TOOL_CALL_INTENT),
     ("running the command",   DecisionPoint.TOOL_CALL_INTENT),
     ("executing",             DecisionPoint.TOOL_CALL_INTENT),
+    # B-1 fix: broader coverage for tool-call intent in typical agent speech
+    ("let me run",            DecisionPoint.TOOL_CALL_INTENT),
+    ("tool call",             DecisionPoint.TOOL_CALL_INTENT),
+    ("i will use",            DecisionPoint.TOOL_CALL_INTENT),
+    ("call the",              DecisionPoint.TOOL_CALL_INTENT),
 
     # --- POST_ACTION_COMPLETE (priority 3) ----------------------------------
     ("completed",       DecisionPoint.POST_ACTION_COMPLETE),

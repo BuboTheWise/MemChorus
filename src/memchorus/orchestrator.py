@@ -103,6 +103,12 @@ class MemoryOrchestrator:
         self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
         # Guard against recursive enforcement when capture_outcome calls back into save()
         self._in_enforcement_save = False
+        # Read-side recursion guard (MC-001 / t_7d26af26): prevents orchestrator.search()
+        # and orchestrator.retrieve() from recursively triggering enforcement when the recall
+        # engine's nested search/recall fires an inner enforce().  Without this flag, pre-decision
+        # recall → AutoRecallEngine._do_search() → orchestrator.search() → enforce() recurses
+        # indefinitely until RecursionError.
+        self._in_enforcement_recall = False
 
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
@@ -471,14 +477,17 @@ class MemoryOrchestrator:
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
         _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
+        if self._enforce_on_read and not self._in_enforcement_recall:
             em = self._get_enforcement_manager()
             if em is not None:
                 try:
+                    self._in_enforcement_recall = True
                     _recall_result = em.enforce(key)
                     _recall_context = getattr(_recall_result, 'recall_context', [])
                 except Exception:
                     pass  # degrade gracefully
+                finally:
+                    self._in_enforcement_recall = False
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -542,14 +551,17 @@ class MemoryOrchestrator:
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
         _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
+        if self._enforce_on_read and not self._in_enforcement_recall:
             em = self._get_enforcement_manager()
             if em is not None:
                 try:
+                    self._in_enforcement_recall = True
                     _recall_result = em.enforce(query)
                     _recall_context = getattr(_recall_result, 'recall_context', [])
                 except Exception:
                     pass  # degrade gracefully — base search continues
+                finally:
+                    self._in_enforcement_recall = False
 
         # Inject domain-level weightings before scoring
         all_results = []
