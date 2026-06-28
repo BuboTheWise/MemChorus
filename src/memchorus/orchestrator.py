@@ -681,5 +681,62 @@ class MemoryOrchestrator:
             source_info = source.get_source_info()
             source_info['enabled'] = self.is_source_enabled(name)
             info['sources'][name] = source_info
-            
+
         return info
+
+    def recommended_sources(
+        self, write_type: str = "general", max_results: int = 3
+    ) -> List[str]:
+        """Return a ranked list of source names suitable for saving *write_type*.
+
+        Honours three acceptance criteria (B-2 bug fix t_b9205369):
+          AC1 - enabled gating: disabled sources never appear in results
+          AC2 - priority tiering: higher priority_tier sources come first
+          AC3 - write_restrictions: sources that refuse the write_type are excluded
+
+        Args:
+            write_type: Logical category of the data being written (default 'general')
+            max_results: Maximum number of source names to return (default 3)
+
+        Returns:
+            List[str]: Ordered source names best suited for this write operation
+        """
+        ranked: List[tuple] = []
+
+        for name, src in self.memory_sources.items():
+            # AC1 — enabled gating
+            if not self.is_source_enabled(name):
+                continue
+
+            # availability guard
+            try:
+                available = src.is_available()
+            except TypeError:
+                # is_available may be unbound if it's a dataclass method stub
+                available = True
+            if not available:
+                continue
+
+            # AC3 — write restrictions (empty/missing list means "accepts everything")
+            restriction_list = []
+            try:
+                cfg = getattr(src, 'config', {})
+                raw = cfg.get("write_restrictions", [])
+                if isinstance(raw, (list, tuple)):
+                    restriction_list = [str(r).lower() for r in raw]
+            except Exception:
+                pass
+            if restriction_list and write_type.lower() not in restriction_list:
+                continue
+
+            # AC2 — priority tiering (default 0 when absent)
+            try:
+                cfg = getattr(src, 'config', {})
+                tier = int(cfg.get("priority_tier", 0))
+            except (ValueError, TypeError):
+                tier = 0
+
+            ranked.append((-tier, name))  # negate for descending sort
+
+        ranked.sort()
+        return [name for _, name in ranked[:max_results]]
