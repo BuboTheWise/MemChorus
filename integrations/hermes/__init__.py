@@ -87,11 +87,15 @@ def _bootstrap() -> Optional["MemoryOrchestrator"]:  # noqa: F821
 # Hook handlers
 # ---------------------------------------------------------------------------
 
-def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict[str, str]]:
+def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict[str, Any]]:
     """Fire pre-decision recall and inject context before the LLM call.
 
     Hermes expects a dict with ``context`` key or a string — it appends this
     to the user message (see turn_context.py). An empty result is silently dropped.
+
+    Additionally, returns ``indicators`` so the gateway can render TUI icon
+    markers when MemChorus performs recall/storage on behalf of this plugin
+    without polluting conversation history with synthetic tool calls.
     """
     orch = _bootstrap()
     if orch is None:
@@ -119,7 +123,15 @@ def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict
         if context_parts:
             header = "── Pre-decision Memory Recall ──"
             block = f"{header}\n" + "\n".join(context_parts)
-            return {"context": block}
+            return {
+                "context": block,
+                "indicators": [
+                    {
+                        "name": "memory_search",
+                        "label": "MemChorus recall",
+                    }
+                ],
+            }
 
     except Exception as exc:
         logger.warning("pre_llm_call hook error (non-fatal): %s", exc)
@@ -127,19 +139,20 @@ def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict
     return None
 
 
-def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwargs: Any) -> None:
+def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwargs: Any) -> Optional[Dict[str, Any]]:
     """Capture meaningful outcomes after every tool execution.
 
-    Observer hook — returns nothing, storage fires asynchronously in enforce().
+    Observer hook — returns indicators so the gateway can show a storage icon
+    when MemChorus autonomously captures memory after a tool call completes.
     """
     orch = _bootstrap()
     if orch is None:
-        return
+        return None
 
     try:
         em = orch._get_enforcement_manager()
         if em is None:
-            return
+            return None
 
         text_to_analyse = f"[TOOL:{tool_name}]"
         if tool_result and isinstance(tool_result, dict):
@@ -148,10 +161,24 @@ def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwarg
                 text_to_analyse += f" {str(output)[:500]}"
 
         # Post-action capture fires the enforcement pipeline
-        em.enforce(text_to_analyse)
+        result = em.enforce(text_to_analyse)
+
+        # Announce storage activity to the TUI via indicators
+        stored = getattr(result, "stored_keys", [])
+        if stored:
+            return {
+                "indicators": [
+                    {
+                        "name": "memory_store",
+                        "label": f"MemChorus stored ({len(stored)} item{'s' if len(stored) != 1 else ''})",
+                    }
+                ],
+            }
 
     except Exception as exc:
         logger.warning("post_tool_call hook error (non-fatal): %s", exc)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
