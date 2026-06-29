@@ -83,7 +83,12 @@ sequenceDiagram
 | `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend. Structured knowledge graph and memory drawers via MCP protocol with semantic search, entity relationships, and diary journals. |
 | `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
 | `MemoryProfile` | Classification enum guiding smart placement decisions |
-| `RelevanceScorer` | Domain-aware ranking engine with keyword extraction and cached results |
+| `RelevanceScorer` | Domain-aware ranking engine with keyword extraction, recency decay (default half-life = 30 days), and cached results |
+| `LifecycleManager` (planned) | Memory lifecycle management — retention tracking per profile, content-assessment-driven eviction with soft-delete/archive phase, merge-at-write deduplication, periodic sweeps. [Design spec](docs/memory-lifecycle-design.md) |
+
+## Lifecycle Management
+
+MemChorus v1.1.x includes a planned lifecycle management layer (`LifecycleManager`) that addresses unbounded growth in write-only memory systems. The design spec covers: per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication, and periodic automated sweeps. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days` (existing), new `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour preserved. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 ## Installation
 
