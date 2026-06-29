@@ -36,6 +36,44 @@ The orchestrator exposes three core operations:
 
 Graceful degradation is built in at every level. If MemPalace is unreachable, the system falls back to Hermes default files transparently. No source failure brings down the whole layer.
 
+### Feedback Loop Injection Path (Extensibility)
+
+Custom feedback loops defined in `~/.hermes/custom_loops/*.yaml` are loaded at bootstrap and injected into the same hook surface that powers memory recall:
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Hook as pre_llm_call Hook
+    participant Loader as YAML Loader
+    participant Detector as Feedback Detector
+    participant Escalation as Escalation Engine
+    participant LLM as LLM API
+
+    Agent->>Hook: user_message arrives
+    Hook->>Loader: load_definitions() (cached after first call)
+    Loader->>Loader: scan ~/.hermes/custom_loops/*.yaml
+    Loader-->>Hook: validated loop definitions
+    Hook->>Detector: evaluate_conditions(user_message, state)
+    Detector->>Detector: check conversation_length, repetition_entropy, keyword_pattern
+    alt conditions match
+        Detector->>Escalation: determine_level(loop_name, trigger_count)
+        Escalation->>Escalation: check cooldown window
+        alt within cooldown
+            Escalation-->>Hook: skip (cooldown active)
+        else cooldown expired
+            Escalation->>Escalation: advance escalation step
+            Escalation-->>Hook: correction_prompt (filled template)
+        end
+    else no match
+        Detector-->>Hook: pass through (no intervention)
+    end
+    Hook->>Hook: inject into pre_llm_call context string
+    Hook->>LLM: augmented prompt sent
+    Note over Loader,Escalation: Memory recall and feedback loops share<br/>the same injection path — soft context,<br/>not authoritative system-prompt override
+```
+
+**Key property:** Feedback loop corrections travel through the exact same `pre_llm_call` context channel as memory recall — they are soft nudges injected into the prompt, never hard overrides. Malformed YAML definitions log warnings and get disabled silently; they cannot crash the gateway process.
+
 ## Architecture
 
 | Component | Role |
