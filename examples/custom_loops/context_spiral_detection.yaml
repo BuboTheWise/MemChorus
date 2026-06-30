@@ -1,0 +1,28 @@
+# Example: Context Spiral Detection Feedback Loop
+#
+# This feedback loop monitors for context spiral detection — a situation where the agent
+# repeatedly references or generates similar content in an expanding context window,
+# indicating diminishing returns on recall accuracy.
+#
+# Deploy this file into ~/.hermes/custom_loops/ to activate it.
+# The loader will validate its schema and enable the loop automatically.
+
+schema: schema_v1                      # REQUIRED: schema version discriminator
+name: context_spiral_detection         # REQUIRED: unique identifier for this loop
+
+trigger_event: pre_llm_call            # REQUIRED: fires before LLM call decisions
+
+conditions:                            # Optional — signal conditions to match
+  spiral_risk_level:                   # Signal type (lowercase-alphanumeric-underscore)
+    type: threshold                     # Numeric threshold type
+    value: 50                           # Risk level threshold
+
+correction_prompt: >                    # String template for correction prompt
+  Context window is approaching spiral detection risk level {{conditions.spiral_risk_level}}.
+  Consider summarizing recent exchanges instead of expanding further.
+  Current context depth: {{context_depth}}.
+  Available slots: {{remaining_slots}}.
+
+cooldown_interval: 120                   # Seconds between consecutive firings (default: 60)
+priority: 75                             # Higher priority = fires before lower-priority loops (default: 50)
+enabled: true                            # Toggle to disable without deleting the file

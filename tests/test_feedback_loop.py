@@ -84,7 +84,7 @@ class TestValidYamParsing(unittest.TestCase):
         """Minimal valid definition (only required fields, conditions omitted)."""
         d = validate_schema_v1(_mkloop_dict())
         self.assertIsInstance(d, FeedbackLoopDefinition)
-        self.assertEqual(d.schema, "schema_v1")
+        self.assertEqual(d.schema_version, "schema_v1")
         self.assertEqual(d.trigger_event, TriggerEvent.PRE_LLM_CALL)
         self.assertEqual(len(d.conditions), 0)
 
