@@ -14,6 +14,16 @@ from memchorus.auto_recall_engine import AutoRecallEngine
 from memchorus.auto_storage_engine import AutoStorageEngine
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 
+# Feedback loop detection + escalation (v1.1.03)
+from memchorus.feedback_loop.schema_v1 import (  # noqa: F401
+    ConditionSignal,
+    FeedbackLoopDefinition,
+    SUPPORTED_VERSIONS,
+    TriggerEvent,
+    validate_schema_v1,
+)
+from memchorus.feedback_loop.loader import load_feedback_loops  # noqa: F401
+
 __all__ = [
     'MemorySource',
     'HermesDefaultMemorySource',
@@ -24,8 +34,15 @@ __all__ = [
     'AutoRecallEngine',
     'AutoStorageEngine',
     'BehavioralEnforcementManager',
+    # Feedback loop detection + escalation v1.1.03
+    'ConditionSignal',
+    'FeedbackLoopDefinition',
+    'SUPPORTED_VERSIONS',
+    'TriggerEvent',
+    'validate_schema_v1',
+    'load_feedback_loops',
 ]
 
-__version__ = "1.1.02"
+__version__ = "1.1.03"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
