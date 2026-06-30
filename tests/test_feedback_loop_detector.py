@@ -379,7 +379,7 @@ class TestEscalationCooldown:
         from memchorus.feedback_loop.escalation import EscalationTracker as ET
         t = ET(default_cooldown=0.05)   # tiny cooldown for test speed
         t.record_trigger("loop1")
-        time.sleep(0.1)  # wait > cooldown
+        _time_mod.sleep(0.1)  # wait > cooldown
         assert t.check_cooldown("loop1", 0.05) is True
 
     def test_custom_cooldown_intervaled(self):
@@ -424,10 +424,10 @@ class TestEscalationLevels:
 
     def test_reset_clears_state(self):
         from memchorus.feedback_loop.escalation import EscalationTracker as ET
-        t = ET()
+        t = ET(level_threshold=2)   # advance every 2 triggers
         for _ in range(5):
             t.record_trigger("capped")
-        assert t.get_escalation_level("capped") == 3
+        assert t.get_escalation_level("capped") == 3   # capped at L3 regardless of more triggers
         # Reset and re-check
         t.reset_loop("capped")
         # After reset, the loop is gone — next fire starts from 0 again
@@ -460,7 +460,7 @@ class TestEdgeCases:
         cond = {
             "len": {"type": "conversation_length", "value": 50},
             "repet": {"type": "repetition_entropy", "value": 1.0},
-            "kword": {"pattern": "fix"},
+            "kword": {"type": "keyword_pattern", "pattern": "fix"},
         }
         ctx = TurnContext(
             conversation_length=60,
@@ -475,7 +475,8 @@ class TestEdgeCases:
         from memchorus.feedback_loop.detector import FeedbackLoopDetector as Det, TurnContext
         det = Det()
         r = det.detect("no_cond", {}, TurnContext())  # no conditions
-        assert any(not c.matched for c in r.matched_conditions)   # should have NoneMatch or similar
+        assert r.matched_conditions == []             # empty => no conditions to match
+        assert r.correction_prompt_filled is False    # nothing matched => no prompt filled
 
     def test_single_message_entropy(self):
         """Single message => entropy defaults to high (no repetition)."""
