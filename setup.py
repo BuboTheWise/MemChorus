@@ -38,6 +38,7 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        # No external dependencies for now
+        "pydantic>=2.0",       # schema_v1 validation
+        "pyyaml>=5.4",         # YAML loop definition loader
     ],
 )
