@@ -2,7 +2,7 @@
 
 Wraps Cthugha's schema/loader modules (schema_v1 + loader) and adds the
 missing runtime pieces: condition evaluation, escalation/cooldown tracking,
-and the injection adapter that fires inside `_on_pre_llm_call`.
+and the injection adapter that fires inside  _on_pre_llm_call .
 
 Design goal: if both memory recall AND a feedback loop fire on the same turn,
 the user sees two labelled blocks in the injected context -- one for memory,
@@ -13,6 +13,7 @@ signal came from where.
 from __future__ import annotations
 
 import logging
+import re as _re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,12 +33,14 @@ from memchorus.feedback_loop.loader import load_feedback_loops
 # Runtime turn context -- lightweight snapshot available at hook fire time
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TurnContext:
     """Turn-level data available at hook fire time."""
     user_message: str = ""
     conversation_length: int = 0
     tool_calls_this_turn: int = 0
+    empty_tool_responses: int = 0
     recent_messages: List[str] = field(default_factory=list)
 
 
@@ -46,89 +49,125 @@ class TurnContext:
 # ---------------------------------------------------------------------------
 
 class ConditionEvaluator:
-    """Evaluate loop conditions against turn context."""
+    """Evaluate loop conditions against turn context.
 
-    @staticmethod
-    def evaluate(definition: FeedbackLoopDefinition, context: TurnContext) -> bool:
+    The class-level _MATCHERS dict is the single dispatch table used by both
+    ``ConditionEvaluator._check_signal`` and ``FeedbackDetector._check_signal``.
+    New condition types are added here only -- no other module should define its
+    own matcher for a given signal.type.
+    """
+
+    # Dispatch table: signal.type -> (value, context) -> bool
+    _MATCHERS: Dict[str, Any] = {}
+
+    @classmethod
+    def evaluate(cls, definition: FeedbackLoopDefinition, context: TurnContext) -> bool:
         """Return True only if ALL conditions match (AND logic)."""
         for _key, signal in definition.conditions.items():
-            if not ConditionEvaluator._check_signal(signal, context):
+            if not cls._check_signal(signal, context):
                 return False
         # Empty conditions dict means "always fire" once the loop is enabled.
         return True
 
     @staticmethod
-    def _check_signal(signal: Any, context: TurnContext) -> bool:
+    def _resolve_field(signal: Any, field_name: str) -> Any:
+        val = getattr(signal, field_name, None)
+        if val is None and isinstance(signal, dict):
+            val = signal.get(field_name)
+        return val
+
+    @classmethod
+    def _check_signal(cls, signal: Any, context: TurnContext) -> bool:
         """Evaluate a single signal condition entry against turn context."""
-        sig_type = signal.type if hasattr(signal, 'type') else signal.get('type', '')
-        value = signal.value if hasattr(signal, 'value') else signal.get('value')
+        sig_type = cls._resolve_field(signal, "type") or ""
+        value = cls._resolve_field(signal, "value")
 
-        if sig_type == "conversation_length":
-            if isinstance(value, dict):
-                gt_threshold = value.get('gt')
-                if gt_threshold is not None and isinstance(gt_threshold, (int, float)):
-                    return context.conversation_length > gt_threshold
-                gte_threshold = value.get('gte')
-                if gte_threshold is not None and isinstance(gte_threshold, (int, float)):
-                    return context.conversation_length >= gte_threshold
-            elif isinstance(value, (int, float)):
-                return context.conversation_length >= value
+        # Use dispatcher for known types
+        matcher = ConditionEvaluator._MATCHERS.get(sig_type)
+        if matcher is not None:
+            try:
+                return bool(matcher(value, context))
+            except Exception as exc:
+                logger.warning("Matcher error for type %r: %s -- skipping", sig_type, exc)
+                return False
 
-        elif sig_type == "keyword_pattern":
-            pattern = value if isinstance(value, str) else str(value)
-            if pattern:
-                import re  # noqa: F811 -- lazy
-                try:
-                    match_text = (context.user_message +
-                                  " " + " ".join(context.recent_messages[-10:]))
-                    return bool(re.search(pattern, match_text, re.IGNORECASE))
-                except Exception:
-                    pass
+        if not sig_type:
+            logger.warning("Empty signal type -- skipping")
+            return False
 
-        elif sig_type == "repetition_entropy":
-            threshold = value if isinstance(value, (int, float)) else 0.5
-            entropy_score = ConditionEvaluator._entropy(context.recent_messages[-10:])
-            return entropy_score < threshold  # low entropy = high repetition
-
-        elif sig_type == "empty_tool_response_count":
-            limit = value if isinstance(value, (int, float)) else 0
-            return context.tool_calls_this_turn > limit
-
+        # Unknown type: skip safely
         logger.warning("Unknown signal type: %s -- skipping safely", sig_type)
         return False
 
     @staticmethod
-    def _entropy(messages: List[str]) -> float:
-        """Calculate word-set overlap ratio across messages.
+    def _match_conversation_length(value: Any, ctx: TurnContext) -> bool:
+        if isinstance(value, dict):
+            gt_val = value.get("gt")
+            if gt_val is not None and isinstance(gt_val, (int, float)):
+                return ctx.conversation_length > gt_val
+            gte_val = value.get("gte")
+            if gte_val is not None and isinstance(gte_val, (int, float)):
+                return ctx.conversation_length >= gte_val
+        elif isinstance(value, (int, float)):
+            return ctx.conversation_length >= value
+        return False
 
-        Returns 0 when all identical, 1 when highly diverse.
-        """
+    @staticmethod
+    def _match_tool_response_empty_count(value: Any, ctx: TurnContext) -> bool:
+        if isinstance(value, dict):
+            gt_val = value.get("gt")
+            if gt_val is not None and isinstance(gt_val, (int, float)):
+                return ctx.empty_tool_responses > gt_val
+            gte_val = value.get("gte")
+            if gte_val is not None and isinstance(gte_val, (int, float)):
+                return ctx.empty_tool_responses >= gte_val
+        elif isinstance(value, (int, float)):
+            return ctx.empty_tool_responses >= value
+        return False
+
+    @staticmethod
+    def _match_keyword_pattern(value: Any, ctx: TurnContext) -> bool:
+        pattern = str(value) if not isinstance(value, str) else value
+        if pattern:
+            match_text = ctx.user_message + " " + " ".join(ctx.recent_messages[-10:])
+            try:
+                return bool(_re.search(pattern, match_text, _re.IGNORECASE))
+            except Exception:
+                pass
+        return False
+
+    @staticmethod
+    def _match_repetition_entropy(value: Any, ctx: TurnContext) -> bool:
+        if not isinstance(value, (int, float)):
+            value = 0.5
+        messages = ctx.recent_messages[-10:]
         if len(messages) < 2:
-            return 1.0
-
-        word_sets = []
+            return False
+        word_sets: list[set] = []
         for msg in messages:
             words = set(msg.lower().split())
             if words:
                 word_sets.append(words)
-
-        if not word_sets:
-            return 0.8
-
+        if len(word_sets) < 2:
+            return False
         total_pairs = len(word_sets) * (len(word_sets) - 1) // 2
         if total_pairs == 0:
-            return 0.5
-
+            return False
         overlap_sum = 0.0
-        for i, s1 in enumerate(word_sets):
-            for j, s2 in enumerate(word_sets):
-                if i < j:
-                    union = s1 | s2
-                    if union:
-                        overlap_sum += len(s1 & s2) / len(union)
+        for i in range(len(word_sets)):
+            for j in range(i + 1, len(word_sets)):
+                union_ = word_sets[i] | word_sets[j]
+                if union_:
+                    overlap_sum += len(word_sets[i] & word_sets[j]) / len(union_)
+        entropy = 1.0 - (overlap_sum / total_pairs)
+        return entropy < value
 
-        avg_overlap = overlap_sum / total_pairs
-        return 1.0 - avg_overlap
+
+# Populate _MATCHERS after class body completes (class object now exists).
+ConditionEvaluator._MATCHERS["conversation_length"] = ConditionEvaluator._match_conversation_length
+ConditionEvaluator._MATCHERS["tool_response_empty_count"] = ConditionEvaluator._match_tool_response_empty_count
+ConditionEvaluator._MATCHERS["keyword_pattern"] = ConditionEvaluator._match_keyword_pattern
+ConditionEvaluator._MATCHERS["repetition_entropy"] = ConditionEvaluator._match_repetition_entropy
 
 
 # ---------------------------------------------------------------------------

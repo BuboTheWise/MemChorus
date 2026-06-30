@@ -97,7 +97,13 @@ class FeedbackLoopDefinition(_BaseModel):  # type: ignore[name-defined]
     enabled: Toggle loop on/off.
     """
 
-    schema: str = _Field(..., description="Schema version discriminator")  # type: ignore[call-arg]
+    model_config = {
+        "populate_by_name": True,  # allow both 'schema' (alias) and 'schema_version' 
+    }
+
+    schema_version: str = _Field(
+        ..., alias="schema", description="Schema version discriminator"
+    )  # type: ignore[call-arg]
     name: str = _Field(..., description="Unique loop identifier")  # type: ignore[call-arg]
     trigger_event: TriggerEvent = _Field(
         ..., description="When the loop fires"  # type: ignore[call-arg]
@@ -117,7 +123,7 @@ class FeedbackLoopDefinition(_BaseModel):  # type: ignore[name-defined]
 
     # -- validators -----------------------------------------------------------
 
-    @_fv("schema")  # type: ignore[arg-type]
+    @_fv("schema_version")  # type: ignore[arg-type]
     @classmethod
     def _validate_schema(cls, v: str) -> str:
         normed = v.strip()
