@@ -247,18 +247,18 @@ class TestDuplicateNames(unittest.TestCase):
     """F-5: Loader resolves duplicate names (first file wins)."""
 
     def test_duplicate_names_first_wins(self):
-        yaml_a = """
-            schema: schema_v1
-            name: dup_loop
-            trigger_event: pre_llm_call
-            cooldown_interval: 60
-        """
-        yaml_b = """
-            schema: schema_v1
-            name: dup_loop
-            trigger_event: post_tool_call
-            cooldown_interval: 120
-        """
+        yaml_a = (
+            "schema: schema_v1\n"
+            "name: dup_loop\n"
+            "trigger_event: pre_llm_call\n"
+            "cooldown_interval: 60"
+        )
+        yaml_b = (
+            "schema: schema_v1\n"
+            "name: dup_loop\n"
+            "trigger_event: post_tool_call\n"
+            "cooldown_interval: 120"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             td = Path(tmp)
             _tmp_yaml_file(td, "zz_a.yaml", yaml_a)
