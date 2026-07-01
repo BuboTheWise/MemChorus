@@ -16,6 +16,58 @@ The design is driven by two questions:
 
 The system must stay functional even if every enhancement source disappears. The Hermes default memory files (`MEMORY.md`, `USER.md`) form the resilient foundation that keeps an agent alive with core context regardless of what else breaks.
 
+## High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          AI Agent                               │
+│                    (Hermes / OpenClaw / custom)                 │
+└──────────────▲──────────────────────▲──────────────────────────┘
+               │ save/retrieve/search  │ feedback/escalation
+    ┌──────────┴──────────┐   ┌─────────┴──────────────────────┐
+    │                     │   │                                │
+    │  MemoryOrchestrator │   │  BehavioralEnforcementManager  │
+    │                     │   │                                │
+    │  ┌───────────────┐  │   │  ┌─────────────────────────┐  │
+    │  │ Relevance     │  │   │  │   BehavioralTrigger     │  │
+    │  │ Scorer +      │  │   │  ├─────────────────────────┤  │
+    │  │ Dedup Engine  │  │   │  │   AutoRecallEngine      │  │
+    │  └───────────────┘  │   │  ├─────────────────────────┤  │
+    │                     │   │  │   AutoStorageEngine     │  │
+    │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
+    │  │ Profile       │  │   │  │   FeedbackLoopDetector  │  │
+    │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
+    │  └───────────────┘  │   │  └─────────────────────────┘  │
+    └────┬──────────┬─────┘   └───────────────────────────────┘
+         │          │
+    ┌────▼─────┐  ┌──▼───────────┐  ┌───────────────────┐
+    │  Hermes  │  │   MemPalace  │  │   Custom Sources   │
+    │  Default │  │   (MCP)      │  │   (MemorySource    │
+    │  Memeory │  │              │  │    subclasses)     │
+    │ (JSON/   │  │ Structured   │  │                   │
+    │  YAML)   │  │ knowledge    │  │ e.g.: vector DBs, │
+    │          │  │ graph +      │  │   note stores,     │
+    │ Resilient│  │ semantic     │  │   remote APIs, ... │
+    │  core    │  │ search       │  │                   │
+    └──────────┘  └──────────────┘  └───────────────────┘
+```
+
+### Component Summary
+
+| Component | Role |
+|---|---|
+| `MemorySource` (ABC) | Pluggable backend interface — 7 user-facing methods (`save`, `retrieve`, `search`, `proactive_check`, `proactive_save`, `get_source_info`, `is_available`) plus `__init__` |
+| `HermesDefaultMemorySource` | Local curated files on disk. Always-available fallback. |
+| `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend via MCP protocol. Knowledge graph, semantic search, diary journals. |
+| `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
+| `RelevanceScorer` | Domain-aware ranking engine with keyword extraction, recency decay (default half-life = 30 days), and cached results |
+| `BehavioralTrigger` | Detects decision points in agent interaction streams for proactive memory surfacing |
+| `AutoRecallEngine` | Automatically queries relevant memories at detected decision points before the agent acts |
+| `AutoStorageEngine` | Captures significant outcomes after actions complete with deduplication guards |
+| `BehavioralEnforcementManager` | Wires Trigger → Recall → Storage into a unified pipeline; returns structured results per call |
+| `FeedbackLoopDetector` | Monitors for recursive/repetitive agent behavior patterns and escalates corrections |
+| `MemoryProfile` | Classification enum guiding smart placement decisions at write time |
+
 ## How It Works
 
 ```
@@ -26,7 +78,98 @@ Agent  -->  MemoryOrchestrator  -->  [Hermes Source]  -->  local memory files
 
 **On save:** The orchestrator classifies the memory using a `MemoryProfile` heuristic (ephemeral, long-lived knowledge, user preference, relationship graph, large data block, context-sensitive, or auto/default). Each profile carries placement hints that route the write to the most appropriate backend. Duplicate checks run before commit.
 
+### Write Path Detail
+
+```
+  orchestrate.save(key, value)
+         │
+         ▼
+   ┌───────────────┐
+   │ Explicit      │──► source_name provided? → write there, return
+   │ source        │
+   │ override?     │
+   └───────┬───────┘
+           │ no
+           ▼
+   ┌───────────────┐
+   │ Infer or use  │──► MemoryProfile from content shape
+   │ profile       │    (size, structure type, keywords)
+   └───────┬───────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Look up       │──► _PROFILE_SOURCE_HINT[profile]
+   │ preferred     │    returns ranked target list
+   │ targets       │
+   └───────┬───────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Write to      │──► First available, enabled source wins
+   │ first match   │    Single-target write (no duplication)
+   └───────┬───────┘
+           │ miss all preferred?
+           ▼
+   ┌───────────────┐
+   │ Safety-net    │──► Try ANY available non-disabled source
+   ◄───────────────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Invalidate    │──► Clear LRU cache entry for this key
+   │ LRU cache     │
+   └───────┬───────┘
+           │ enforcement-on-write enabled?
+           ▼
+   ┌───────────────┐
+   │ Capture       │──► BehavioralEnforcementManager.enforce(⋯)
+   │ outcome       │    auto-archives significant save events
+   └───────────────┘
+```
+
 **On retrieve:** Requests hit every available source in parallel. Results are scored using a domain-aware relevance engine that weighs keyword overlap, semantic proximity, and configurable context priorities. Top results surface first with deduplication applied across the combined result set.
+
+### Retrieve Path Detail
+
+```
+  orchestrate.retrieve(key)
+         │
+         ▼
+   ┌───────────────┐
+   │ Check LRU     │──► cached + within TTL? → return immediately
+   │ cache         │
+   └───────┬───────┘            (default TTL: 60s, max 256 entries)
+           │ miss / expired
+           ▼
+   ┌───────────────┐
+   │ Pre-decision  │──► enforcement-on-read enabled?
+   │ recall        │    → BehavioralTrigger + AutoRecallEngine fire
+   │ (optional)    │    → recalled context prepended to result
+   └───────┬───────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Rank sources  │──► priority_order config OR RelevanceScorer
+   │               │    determines candidate order
+   └───────┬───────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Query first   │──► First source that has the key wins
+   │ ranked source │
+   └───────┬───────┘
+           │ hit
+           ▼
+   ┌───────────────┐
+   │ Update LRU    │──► Store (value, timestamp) in cache
+   │ cache         │
+   └───────┬───────┘
+           │
+           ▼
+   ┌───────────────┐
+   │ Return        │──► value (+ any pre-decision recall context)
+   ◄───────────────┘
+```
 
 The orchestrator exposes three core operations:
 
@@ -51,7 +194,7 @@ sequenceDiagram
 
     Agent->>Hook: user_message arrives
     Hook->>Loader: load_definitions() (cached after first call)
-    Loader->>Loader: scan ~/.hermes/custom_loops/*.yaml
+    Loader->>Loader: scan config/custom_loops/*.yaml
     Loader-->>Hook: validated loop definitions
     Hook->>Detector: evaluate_conditions(user_message, state)
     Detector->>Detector: check conversation_length, repetition_entropy, keyword_pattern
@@ -74,17 +217,73 @@ sequenceDiagram
 
 **Key property:** Feedback loop corrections travel through the exact same `pre_llm_call` context channel as memory recall — they are soft nudges injected into the prompt, never hard overrides. Malformed YAML definitions log warnings and get disabled silently; they cannot crash the gateway process.
 
+## Behavioral Enforcement Pipeline
+
+The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
+
+```
+  enforce(input_text)
+         │
+         ▼
+   ┌─────────────────┐
+   │ Behavioral      │──► Detects decision points in text
+   │ Trigger         │    (planning verbs, choice phrases, etc.)
+   └────────┬────────┘
+            │ detected points
+            ▼
+   ┌─────────────────┐
+   │ AutoRecall      │──► Queries relevant memories for each
+   │ Engine          │    decision point. Returns context dicts.
+   └────────┬────────┘
+            │ recall context
+            ▼
+   ┌─────────────────┐
+   │ AutoStorage     │──► Captures outcomes with dedup window
+   │ Engine          │    (default: 30s window, 0.6 similarity)
+   └────────┬────────┘
+            │
+            ▼
+   ┌─────────────────┐
+   │ EnforcementResult│──► Structured summary returned to caller:
+   │ (dataclass)     │    triggered_points, recall_context lists,
+   │                 │    storage_outcome, timing_ms, errors[]
+   └─────────────────┘
+```
+
+Key guarantees from this pipeline:
+
+1. **Pre-decision recall automatically fires** — before planning, before choosing an approach, before making architectural decisions, relevant memories surface without the agent needing to think about querying them
+2. **Post-action storage happens automatically** — learnings, mistakes, and significant outcomes are captured immediately rather than relying on the agent remembering to save later
+3. **Continuously present in reasoning loops** — memories remain active participants during ongoing work, not passive archives sitting behind a manual query tool
+
 ## Architecture
 
-| Component | Role |
-|---|---|
-| `MemorySource` (ABC) | Pluggable backend interface — 7 user-facing methods (`save`, `retrieve`, `search`, `proactive_check`, `proactive_save`, `get_source_info`, `is_available`) plus `__init__` |
-| `HermesDefaultMemorySource` | Local curated files (`MEMORY.md`, `USER.md`) on disk. Always available fallback. |
-| `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend. Structured knowledge graph and memory drawers via MCP protocol with semantic search, entity relationships, and diary journals. |
-| `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
-| `MemoryProfile` | Classification enum guiding smart placement decisions |
-| `RelevanceScorer` | Domain-aware ranking engine with keyword extraction, recency decay (default half-life = 30 days), and cached results |
-| `LifecycleManager` (planned) | Memory lifecycle management — retention tracking per profile, content-assessment-driven eviction with soft-delete/archive phase, merge-at-write deduplication, periodic sweeps. [Design spec](docs/memory-lifecycle-design.md) |
+### Data Flow Overview
+
+```
+                ┌───────────┐   Write      ┌─────────────────┐
+  Agent ◄─────► │           ├─────────────►│   Hermes        │
+                │  Memory   │             │   Default       │
+                │ Orchestrator            │   (JSON/YAML)   │
+                │           ├─────────────►│   MemPalace    │
+                └───────────┘             │   (MCP server)  │
+                      ▲                   └─────────────────┘
+                      │
+                    Read ◄──── Returns scored + deduplicated results from
+                              best-matching source(s)
+```
+
+### Storage Routing Matrix
+
+| Memory Profile | Primary Target | Fallback | Rationale |
+|---|---|---|---|
+| `user_preference` | Hermes Default | MemPalace | Local config files ideal for preference storage |
+| `long_lived_knowledge` | MemPalace | Hermes Default | Structured KG persists and supports semantic search |
+| `ephemeral` | Hermes Default → MemPalace | Either | Cheap-to-write targets tried first |
+| `large_data_block` | Hermes Default → MemPalace | Either | Local files handle bulk data efficiently |
+| `relationship_graph` | MemPalace | — | Knowledge graph is the natural home for entities/edges |
+| `context_sensitive_pref` | Hermes Default | MemPalace | Contextual prefs belong in local config layer |
+| `auto` (inferred) | MemPalace → Hermes Default | Either | Content analysis decides; tries semantic first |
 
 ## Lifecycle Management
 
@@ -92,20 +291,25 @@ MemChorus v1.1.x includes a planned lifecycle management layer (`LifecycleManage
 
 ## Installation
 
-Requires Python 3.8+. Install as a local package:
+Requires Python 3.8+. Install from GitHub via pip (recommended for most users):
 
 ```bash
-cd MemChorus
-pip install -e .
+pip install 'memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master'
 ```
 
 For Hermes agents running under PEP 668 (externally-managed environments), use the virtual environment Python directly:
 
 ```bash
-/home/bubo/.hermes/hermes-agent/venv/bin/pip install -e .
+/home/user/.hermes/hermes-agent/venv/bin/pip install 'memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master'
 ```
 
+**Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
+
 Verify the import works before using it:
+
+```bash
+python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
+```
 
 ### MemPalace backend
 
@@ -158,7 +362,7 @@ for r in results:
 When MemChorus is enabled as a Hermes plugin (`hermes_mcp_memchorus`), the orchestrator auto-registers `hermes_default`. If live MCP tools are reachable, `mempalace` joins automatically — no manual wiring needed. Install via:
 
 ```bash
-/home/bubo/.hermes/hermes-agent/venv/bin/python3 -c "
+/home/user/.hermes/hermes-agent/venv/bin/python3 -c "
 import importlib; spec = importlib.util.find_spec('memchorus.hooks')
 if spec: print('Module memchorus.hooks found OK')
 "
@@ -223,6 +427,19 @@ RUN_LIVE_MCP=1 pytest -v
 
 The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery.
 
+### CI/CD Pipeline
+
+GitHub Actions runs the full test suite against Python 3.11 and 3.12 on every push to `master` and on all pull requests:
+
+```
+Push / PR ──► GitHub Actions workflow (ci.yml)
+                    │
+                    ├── Set up Python 3.11 ──► pip install deps ──► pytest
+                    ├── Set up Python 3.12 ──► pip install deps ──► pytest
+                    │
+                    └── Green matrix? ✓  Red matrix? ✗ (PR blocked)
+```
+
 ## Design Principles
 
 - **Memory as a chorus** — multiple distinct voices, each with strengths. The orchestrator blends them into a single coherent experience.
@@ -246,8 +463,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.1.02 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, smart placement, and behavioral enforcement are implemented and tested.
-
+v1.1.04 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, and CI/CD pipeline are implemented and tested (473 tests passing).
 
 ## Tipping the Owl
 
@@ -258,4 +474,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.1.02 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.1.04 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
