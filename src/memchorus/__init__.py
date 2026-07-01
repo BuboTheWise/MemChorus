@@ -43,6 +43,6 @@ __all__ = [
     'load_feedback_loops',
 ]
 
-__version__ = "1.1.03"
+__version__ = "1.1.04"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
