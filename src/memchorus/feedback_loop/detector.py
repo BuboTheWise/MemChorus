@@ -303,6 +303,14 @@ class FeedbackLoopDetector:
             elif hasattr(raw_signal, "__dict__"):
                 raw_signal = dict(raw_signal.__dict__)
 
+            # Extract nested "value" field so evaluators receive the
+            # threshold structure (e.g. {"gt": 30}) rather than a
+            # ConditionSignal wrapper dict that contains it.
+            if isinstance(raw_signal, dict) and "type" in raw_signal and "value" in raw_signal:
+                nested_value = raw_signal["value"]
+                if isinstance(nested_value, dict):
+                    raw_signal = {**raw_signal, **nested_value}
+
             signal_type = ""
             if isinstance(raw_signal, dict):
                 signal_type = raw_signal.get("type", "")
