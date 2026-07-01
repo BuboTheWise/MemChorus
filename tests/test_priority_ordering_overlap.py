@@ -77,12 +77,16 @@ def test_search_deduplicates_overlapping_results():
         # Create both dirs as available
         os.makedirs(mempalace_dir, exist_ok=True)
 
+        # orchestrator.save() writes to only the first matching target.
+        # To test dedup when a key lives in both sources, we save explicitly
+        # to each source (simulating e.g. a direct source-specific write).
         key = 'overlap_key_001'
         value = {'payload': 'identical payload in both'}
-        orchestrator_result = orch.save(key, value)
-        assert orchestrator_result is True  # Should save to both (default behavior)
 
-        # Verify both sources have the data
+        orch.memory_sources['hermes_default'].save(key, value)
+        orch.memory_sources['mempalace'].save(key, value)
+
+        # Verify both sources actually have the data before dedup test
         h_retrieved = orch.memory_sources['hermes_default'].retrieve(key)
         m_retrieved = orch.memory_sources['mempalace'].retrieve(key)
         assert h_retrieved is not None
