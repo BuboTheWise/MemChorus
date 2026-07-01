@@ -293,13 +293,47 @@ class _McpClient:
 
     # -- convenience wrappers -------------------------------------------------------
 
-    def search(self, query: str, limit: int = 5) -> Optional[List[Dict[str, Any]]]:
-        """mempalace_search -> list of dicts."""
-        result = self.call_tool("mempalace_search", {"query": query, "limit": limit})
+    @staticmethod
+    def _unwrap_responses(data: Any) -> Any:
+        """Unwrap MCP search envelope nesting.
+
+        MemPalace server returns results wrapped in envelope dicts with a
+        ``"results"`` key:  ``{"query": ..., "filters": ..., "results": [...]}``
+
+        Also handles a list of such envelopes by extracting inner hit dicts.
+        Passes through data that is already flat (no envelope detected).
+        """
+        if isinstance(data, dict) and "results" in data:
+            inner = data["results"]
+            return inner if isinstance(inner, list) else [inner]
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and "results" in item:
+                    inner = item["results"]
+                    if isinstance(inner, list):
+                        return inner
+        return data
+
+    def search(self, query: str, limit: int = 5, *, wing: Optional[str] = None, room: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """mempalace_search -\u003e list of dicts."""
+        args: Dict[str, Any] = {"query": query, "limit": limit}
+        if wing is not None:
+            args["wing"] = wing
+        if room is not None:
+            args["room"] = room
+        result = self.call_tool("mempalace_search", args)
         if result is None:
             return None
 
-        data = result.get("result", result) if isinstance(result, dict) else result
+        # Unwrap "result" / "results" envelope layers before anything else.
+        if isinstance(result, dict):
+            for candidate_key in ("result", "results"):
+                if candidate_key in result:
+                    result = result[candidate_key]
+                    break
+
+        data = self._unwrap_responses(result)
+
         if isinstance(data, str):
             try:
                 data = json.loads(data)
@@ -423,15 +457,21 @@ class MemPalaceMemorySource(MemorySource):
         return bool(self._cache_locally(key, value))
 
     def retrieve(self, key: str) -> Optional[Any]:
-        """Look up the memory.  Tries MCP search first; falls back to local."""
+        """Look up the memory.  Tries MCP first; falls back to local cache."""
         if self._connected and self._client.is_alive:
-            results = self._client.search(query=key, limit=3)
+            room = self._key_to_room(key)
+            results = self._client.search(
+                query="", wing="memchorus", room=room, limit=1
+            )
             if results:
                 for r in results:
+                    # MCP search returns hit dicts with a 'text' field.
                     r_content = (
-                        r.get("content", "") if isinstance(r, dict) else str(r)
+                        r.get("text", "") or r.get("content", "")
+                        if isinstance(r, dict)
+                        else str(r)
                     )
-                    if key.lower() in str(r_content).lower():
+                    if r_content:
                         return self._from_str(str(r_content))
 
         # Local cache fallback.
@@ -459,7 +499,9 @@ class MemPalaceMemorySource(MemorySource):
                     comp_key = f"{wing}/{room}" if wing and room else query
 
                     content_val = (
-                        r.get("content", str(r)) if isinstance(r, dict) else str(r)
+                        r.get("text", "") or r.get("content", str(r))
+                        if isinstance(r, dict)
+                        else str(r)
                     )
                     entry: Dict[str, Any] = {
                         "key": comp_key,
