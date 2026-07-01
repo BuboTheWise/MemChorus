@@ -24,3 +24,6 @@ final_test.sh
 # Docs moved outside repo
 Level-Set-Summary.md
 example_memchorus_usage_improved.py
+
+# QA report artifacts (versioned reports live in Bubo_Wisdom, not here)
+QA-Reports/
