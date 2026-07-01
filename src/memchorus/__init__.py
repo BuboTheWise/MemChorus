@@ -23,6 +23,7 @@ from memchorus.feedback_loop.schema_v1 import (  # noqa: F401
     validate_schema_v1,
 )
 from memchorus.feedback_loop.loader import load_feedback_loops  # noqa: F401
+from memchorus.feedback_loop.detector import FeedbackLoopDetector  # noqa: F401
 
 __all__ = [
     'MemorySource',
@@ -41,6 +42,7 @@ __all__ = [
     'TriggerEvent',
     'validate_schema_v1',
     'load_feedback_loops',
+    'FeedbackLoopDetector',
 ]
 
 __version__ = "1.1.04"
