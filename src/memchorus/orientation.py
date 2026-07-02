@@ -23,6 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Tunables — set at import time or overridden during bootstrap (by auto_bootstrap).
+DEFAULT_CACHE_TTL_SECONDS: float = 60.0
+
 
 # --------------------------------------------------------------------------- #
 # Cache helpers                                                               #
