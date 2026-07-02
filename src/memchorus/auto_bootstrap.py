@@ -198,8 +198,20 @@ def _bootstrap() -> Optional[Any]:
             default_source, mp_available,
         )
         orchestrator = MemoryOrchestrator(config=orchestrator_cfg)
-        return orchestrator
 
     except Exception as exc:
-        logger.error("Failed to create MemoryOrchistrator during bootstrap: %s", exc)
+        logger.error("Failed to create MemoryOrchitrator during bootstrap: %s", exc)
         return None
+
+    # --- Step 5b: propagate orientation config ----------------------------
+    # Make the orchestrator's resolved TTL available so orientation.search()
+    # doesn't hard-code 60 s when a different value was chosen.
+    orient_ttl = float(cache_ttl_seconds) if cache_ttl_seconds else 60.0
+    try:
+        import memchorus.orientation as orient_mod
+        orient_mod.DEFAULT_CACHE_TTL_SECONDS = orient_ttl
+    except Exception:
+        # Orientation not installed yet → harmless
+        pass
+
+    return orchestrator
