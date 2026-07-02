@@ -46,6 +46,40 @@ class _CacheEntry:
 
 
 # --------------------------------------------------------------------------- #
+# Cache registry — LRU store with TTL expiry                                  #
+# --------------------------------------------------------------------------- #
+
+class _CacheRegistry:
+    """Simple in-memory cache keyed by _CacheKey with per-entry TTL expiry."""
+
+    def __init__(self) -> None:
+        self._store: Dict[_CacheKey, _CacheEntry] = {}
+
+    def get(self, key: _CacheKey, ttl_seconds: float) -> Optional[List[Dict[str, Any]]]:
+        """Return cached results if the entry exists and has not expired."""
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        elapsed = time.monotonic() - entry.timestamp
+        if elapsed > ttl_seconds:
+            del self._store[key]  # evict expired entry
+            return None
+        return entry.results
+
+    def put(self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float) -> None:
+        """Store *results* under *key* with the given TTL."""
+        self._store[key] = _CacheEntry(
+            results=results,
+            timestamp=time.monotonic(),
+            ttl=int(ttl_seconds),
+        )
+
+    def clear(self) -> None:
+        """Evict all entries.  Useful for testing / manual management."""
+        self._store.clear()
+
+
+# --------------------------------------------------------------------------- #
 # Public module-level cache (singletons used across orchestrator instances)   #
 # --------------------------------------------------------------------------- #
 
