@@ -133,25 +133,20 @@ class MemChorusHooks:
             return None
 
         try:
-            project = os.environ.get("HERMES_KANBAN_TASK") or os.environ.get("HERMES_WORKSPACE")
-            if not project:
-                return None
+            kanban_task = os.environ.get("HERMES_KANBAN_TASK")
 
-            orientation_queries = orient_module._build_orientation_query()
-            if not orientation_queries:
-                return None
-
-            all_items: List[Dict[str, Any]] = []
-            for qdef in orientation_queries:
-                try:
-                    items = orchestrator.orientation_search(qdef)
-                    if items:
-                        all_items.extend(items)
-                except Exception as exc:  # pragma: no cover - per-query degradation
-                    logger.warning("Orientation query failed — skipping this one. %s", exc)
+            # Delegate the full orientation sequence to the module — it handles
+            # cache checks, project detection, query construction, and silent
+            # degradation all at once.
+            all_items = orient_module.orientation_search(
+                env_task=kanban_task,
+                orchestrator=orchestrator,
+                limit=5,
+                cache_ttl_seconds=60.0,
+            )
 
             if not all_items:
-                return None
+                return None  # empty → silent skip (AC-O3)
 
             result: Dict[str, Any] = {
                 "source": "memchorus_auto_orientation",
