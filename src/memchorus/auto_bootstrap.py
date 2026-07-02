@@ -214,4 +214,21 @@ def _bootstrap() -> Optional[Any]:
         # Orientation not installed yet → harmless
         pass
 
+    # --- Step 6: feedback loop auto-load ----------------------------------
+    try:
+        from memchorus.feedback_loop.integration import auto_load_custom_loops
+
+        _loop_diag = auto_load_custom_loops()
+        logger.info(
+            "Feedback loops loaded: %d definitions (warnings=%d, errors=%s)",
+            _loop_diag.get("loaded", 0),
+            len(_loop_diag.get("warnings", [])),
+            _loop_diag.get("error") or "none",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Feedback loop auto-load failed (non-fatal; hooks degrade gracefully): %s",
+            exc,
+        )
+
     return orchestrator
