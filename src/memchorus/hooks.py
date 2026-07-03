@@ -142,7 +142,7 @@ class MemChorusHooks:
                 env_task=kanban_task,
                 orchestrator=orchestrator,
                 limit=5,
-                cache_ttl_seconds=60.0,
+                cache_ttl_seconds=getattr(orient_module, "DEFAULT_CACHE_TTL_SECONDS", 60.0),
             )
 
             if not all_items:
