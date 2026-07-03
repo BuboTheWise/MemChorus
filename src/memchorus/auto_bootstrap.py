@@ -200,7 +200,7 @@ def _bootstrap() -> Optional[Any]:
         orchestrator = MemoryOrchestrator(config=orchestrator_cfg)
 
     except Exception as exc:
-        logger.error("Failed to create MemoryOrchitrator during bootstrap: %s", exc)
+        logger.error("Failed to create MemoryOrchestrator during bootstrap: %s", exc)
         return None
 
     # --- Step 5b: propagate orientation config ----------------------------
