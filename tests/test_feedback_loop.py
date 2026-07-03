@@ -265,8 +265,8 @@ class TestDuplicateNames(unittest.TestCase):
             _tmp_yaml_file(td, "zz_b.yaml", yaml_b)  # sorted after zz_a
 
             loops = load_feedback_loops(directory=str(td))
-            self.assertEqual(len(loops), 1)
-            self.assertEqual(loops[0].cooldown_interval, 60)
+            self.assertEqual(len(loops.definitions), 1)
+            self.assertEqual(loops.definitions[0].cooldown_interval, 60)
 
 
 # ===========================================================================
@@ -289,7 +289,7 @@ class TestUnsupportedSchemaVersion(unittest.TestCase):
             _tmp_yaml_file(td, "old.yaml", content)
 
             loops = load_feedback_loops(directory=str(td))
-            self.assertEqual(len(loops), 0)
+            self.assertEqual(len(loops.definitions), 0)
 
 
 # ===========================================================================
@@ -306,7 +306,7 @@ class TestMalformedFiles(unittest.TestCase):
             (td / "empty.yaml").touch()
 
             loops = load_feedback_loops(directory=str(td))
-            self.assertEqual(len(loops), 0)
+            self.assertEqual(len(loops.definitions), 0)
 
     @unittest.skipUnless(HAS_YAML, "PyYAML not installed; cannot test YAML parse errors")
     def test_bad_yaml_syntax(self):
@@ -317,7 +317,7 @@ class TestMalformedFiles(unittest.TestCase):
             _tmp_yaml_file(td, "bad.yaml", content)
 
             loops = load_feedback_loops(directory=str(td))
-            self.assertEqual(len(loops), 0)
+            self.assertEqual(len(loops.definitions), 0)
 
 
 # ===========================================================================
