@@ -463,7 +463,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.1.04 is released on master. The core orchestration loop, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, and CI/CD pipeline are implemented and tested (473 tests passing).
+v1.2.0 is released on master. Hermes plugin lifecycle hooks with auto-discovery via entry-points, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, CI/CD pipeline, auto-recall/auto-storage engines, and memory lifecycle design are implemented and tested (473 tests passing).
 
 ## Tipping the Owl
 
@@ -474,4 +474,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.1.04 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.2.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

@@ -318,6 +318,56 @@ def get_feedback_integration() -> Optional[FeedbackLoopIntegration]:
     return _feedback_integration
 
 
+def auto_load_custom_loops(loop_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Eagerly load custom feedback loop definitions from disk.
+
+    Called during bootstrap step [3] to ensure custom loops are available
+    before the first hook fires. This populates the singleton and returns
+    a diagnostic summary for bootstrap logging.
+
+    Parameters
+    ----------
+    loop_dir : str, optional
+        Directory to scan for ``*.yaml`` / ``*.yml`` definitions.
+        Defaults to ``~/.hermes/custom_loops/`` (handled by the loader).
+
+    Returns
+    -------
+    dict
+        ``{"loaded": <int>, "warnings": [<str>], "error": <str|None>}``
+        summarising the load outcome for the caller's log reporting.
+    """
+    global _feedback_integration
+
+    result: Dict[str, Any] = {
+        "loaded": 0,
+        "warnings": [],
+        "error": None,
+    }
+
+    try:
+        path = Path(loop_dir) if loop_dir else None
+        integration = FeedbackLoopIntegration.build(loop_dir=path)
+        _feedback_integration = integration
+
+        result["loaded"] = len(integration._definitions)
+        # Capture any warnings from the reload pass (e.g. duplicates skipped)
+        _, warns = integration._load_definitions()
+        result["warnings"] = warns
+
+        logger.info(
+            "auto_load_custom_loops: loaded %d feedback loop(s) from %s",
+            result["loaded"],
+            loop_dir or "default (~/.hermes/custom_loops/)",
+        )
+    except Exception as exc:
+        msg = f"auto_load_custom_loops failed (non-fatal): {exc}"
+        result["error"] = msg
+        logger.warning(msg)
+
+    return result
+
+
 def inject_feedback_corrections(
     turn_context: TurnContext,
     trigger_event: TriggerEvent = TriggerEvent.PRE_LLM_CALL,
