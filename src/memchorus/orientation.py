@@ -75,8 +75,6 @@ class _CacheRegistry:
 
     def clear(self) -> None:
         self._cache.clear()
-
-
 _cache = _CacheRegistry()
 
 
