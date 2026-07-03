@@ -185,15 +185,12 @@ def _bootstrap() -> Optional[Any]:
             default_source, exc,
         )
 
+    # AC-A3: probe failure warning already emitted above in except block.
+    # Log bootstrap status without duplicating the warning.
     logger.info(
         "MEMCHORUS auto_bootstrap complete \u2014 source '%s' available=%s",
         default_source, mp_available,
     )
-    if not mp_available:
-        logger.warning(
-            "mempalace unavailable at bootstrap time; falling back to %s only.",
-            default_source,
-        )
 
     # --- Step 4: Source wiring (build orchestrator config) ---
     orchestrator_cfg: Dict[str, Any] = {
