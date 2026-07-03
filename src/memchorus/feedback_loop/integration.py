@@ -243,8 +243,8 @@ class FeedbackLoopIntegration:
         """Load definitions using Cthugha's loader. Returns (definitions, warnings)."""
         directory = str(self._loop_dir) if self._loop_dir else None
         try:
-            defs = load_feedback_loops(directory=directory)
-            return defs, []
+            summary = load_feedback_loops(directory=directory)
+            return summary.definitions, summary.warnings
         except Exception as exc:
             logger.warning("Failed to load feedback loop definitions: %s", exc)
             return [], [str(exc)]
@@ -321,7 +321,7 @@ def get_feedback_integration() -> Optional[FeedbackLoopIntegration]:
 def auto_load_custom_loops(loop_dir: Optional[str] = None) -> Dict[str, Any]:
     """Eagerly load custom feedback loop definitions from disk.
 
-    Called during bootstrap step [3] to ensure custom loops are available
+    Called during bootstrap step [6] to ensure custom loops are available
     before the first hook fires. This populates the singleton and returns
     a diagnostic summary for bootstrap logging.
 
@@ -334,13 +334,15 @@ def auto_load_custom_loops(loop_dir: Optional[str] = None) -> Dict[str, Any]:
     Returns
     -------
     dict
-        ``{"loaded": <int>, "warnings": [<str>], "error": <str|None>}``
+        ``{"loaded": <int>, "skipped_files": <int>, "warnings": [<str>],
+           "error": <str|None>}``
         summarising the load outcome for the caller's log reporting.
     """
     global _feedback_integration
 
     result: Dict[str, Any] = {
         "loaded": 0,
+        "skipped_files": 0,
         "warnings": [],
         "error": None,
     }
@@ -350,14 +352,18 @@ def auto_load_custom_loops(loop_dir: Optional[str] = None) -> Dict[str, Any]:
         integration = FeedbackLoopIntegration.build(loop_dir=path)
         _feedback_integration = integration
 
-        result["loaded"] = len(integration._definitions)
-        # Capture any warnings from the reload pass (e.g. duplicates skipped)
-        _, warns = integration._load_definitions()
-        result["warnings"] = warns
+        # Use the raw loader output for diagnostics
+        from memchorus.feedback_loop.loader import load_feedback_loops as _raw_load
+
+        summary = _raw_load(directory=str(path) if path else None)
+        result["loaded"] = summary.loaded
+        result["skipped_files"] = summary.skipped_files
+        result["warnings"] = summary.warnings
 
         logger.info(
-            "auto_load_custom_loops: loaded %d feedback loop(s) from %s",
+            "auto_load_custom_loops: loaded %d feedback loop(s), skipped %d file(s) from %s",
             result["loaded"],
+            result["skipped_files"],
             loop_dir or "default (~/.hermes/custom_loops/)",
         )
     except Exception as exc:

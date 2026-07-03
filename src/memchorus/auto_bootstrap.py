@@ -14,9 +14,10 @@ Key properties
 Config precedence: env var > ~/.hermes/memchorus.yaml > hardcoded defaults.
 """
 
-# --- stdlib ----------------------------------------------------------------
+# stdlib -----------------------------------------------------------------
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ _DEFAULTS: Dict[str, Any] = {
     "default_source": "hermes_default",
     "half_life_days": 30.0,
     "cache_ttl_seconds": 60,
+    "custom_loops_dir": str(Path.home() / ".hermes" / "custom_loops"),
 }
 
 
@@ -118,10 +120,15 @@ def _bootstrap() -> Optional[Any]:
         if key in yaml_cfg:
             config[key] = yaml_cfg[key]  # type: ignore[typeddict-item]
 
+    # custom_loops_dir from YAML (expand ~ manually since yaml returns str)
+    if "custom_loops_dir" in yaml_cfg:
+        raw_dir = str(yaml_cfg["custom_loops_dir"])
+        config["custom_loops_dir"] = os.path.expanduser(raw_dir)
+
     auto_enabled_raw = yaml_cfg.get("auto_enabled", _DEFAULTS["auto_enabled"])
     config["auto_enabled"] = _resolve_boolean(auto_enabled_raw)
 
-    # Env var layer (high priority \u2014 overrides everything else)
+    # Env var layer (high priority — overrides everything else)
     env_auto = os.environ.get("MEMCHORUS_AUTO_ENABLED")
     if env_auto is not None:
         config["auto_enabled"] = _resolve_boolean(env_auto)
@@ -139,6 +146,11 @@ def _bootstrap() -> Optional[Any]:
     if env_ttl is not None:
         config["cache_ttl_seconds"] = _resolve_int(env_ttl)
 
+    # custom_loops_dir from env var (highest priority — overrides YAML + default)
+    env_loops = os.environ.get("MEMCHORUS_CUSTOM_LOOPS_DIR")
+    if env_loops is not None:
+        config["custom_loops_dir"] = os.path.expanduser(env_loops)
+
     # --- Step 2: Enabled gate ---
     enabled = config.pop("auto_enabled")
     if not enabled:
@@ -151,10 +163,12 @@ def _bootstrap() -> Optional[Any]:
     default_source = config.pop("default_source")
     half_life_days = config.pop("half_life_days")
     cache_ttl_seconds = config.pop("cache_ttl_seconds")
+    custom_loops_dir = config.pop("custom_loops_dir")
 
     logger.debug(
-        "Bootstrap config resolved: sources=%s, half_life=%.1f, ttl=%ss",
-        default_source, half_life_days, cache_ttl_seconds,
+        "Bootstrap config resolved: sources=%s, half_life=%.1f, ttl=%ss, "
+        "loops_dir=%s",
+        default_source, half_life_days, cache_ttl_seconds, custom_loops_dir,
     )
 
     # --- Step 3: MemPalace probe ---
@@ -215,17 +229,19 @@ def _bootstrap() -> Optional[Any]:
     try:
         from memchorus.feedback_loop.integration import auto_load_custom_loops
 
-        _loop_diag = auto_load_custom_loops()
+        _loop_diag = auto_load_custom_loops(loop_dir=custom_loops_dir)
         logger.info(
-            "Feedback loops loaded: %d definitions (warnings=%d, errors=%s)",
+            "Feedback loops loaded: %d definitions, %d skipped files, "
+            "%d warnings, errors=%s (dir=%s)",
             _loop_diag.get("loaded", 0),
+            _loop_diag.get("skipped_files", 0),
             len(_loop_diag.get("warnings", [])),
             _loop_diag.get("error") or "none",
+            custom_loops_dir,
         )
     except Exception as exc:
         logger.warning(
             "Feedback loop auto-load failed (non-fatal; hooks degrade gracefully): %s",
             exc,
         )
-
     return orchestrator

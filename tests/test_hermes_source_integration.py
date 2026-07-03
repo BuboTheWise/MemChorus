@@ -270,8 +270,11 @@ def test_proactive_save_with_context():
 
         # Action log should have been written to a separate file
         files = os.listdir(tmpdir)
-        # Filenames are normalized through _safe_key (underscores -> hyphens)
-        action_logs = [f for f in files if 'action-' in f and 'action-test-key' in f]
+        # Filenames are normalized through _safe_key (underscores -> hyphens).
+        # Action logs have a timestamp suffix: action-{key}-{date}-{time}.json
+        # Primary data files do NOT: {key}.json
+        # Use startswith to target only the timestamped action log files.
+        action_logs = [f for f in files if f.startswith('action-action-test-key-') and f.endswith('.json')]
         assert len(action_logs) >= 1, "Expected at least one action log file"
 
         # Verify the log content
