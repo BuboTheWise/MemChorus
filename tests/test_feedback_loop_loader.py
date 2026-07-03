@@ -60,16 +60,17 @@ def _import_loader():
 
 def _load_in_tmp(yaml_files: Dict[str, str]) -> List[Any]:
     """Create a temp dir, write *yaml_files*, load via ``load_feedback_loops``.
-    
-    Returns the list of FeedbackLoopDefinition instances.
+
+    Returns the list of FeedbackLoopDefinition instances (i.e.,
+    ``LoadSummary.definitions``).
     yaml_files maps basename → YAML content string.
     """
     load_fn, _ = _import_loader()
     tmp = Path(tempfile.mkdtemp())
     for fname, content in yaml_files.items():
         _tmp_yaml_file(tmp, fname, content)
-    result = load_fn(directory=str(tmp))
-    return result
+    summary = load_fn(directory=str(tmp))
+    return summary.definitions
 
 
 def _load_raw_in_tmp(yaml_files: Dict[str, str]) -> object:
@@ -256,7 +257,7 @@ class TestEdgeCases(TestCase):
         load_fn, _ = _import_loader()
         # Pass an empty temp dir
         result = load_fn(directory=str(tmp))
-        self.assertEqual(result, [])
+        self.assertEqual(list(result.definitions), [])
 
     def test_no_yaml_files_present(self):
         """Directory with only non-yaml files should return empty."""
@@ -274,13 +275,13 @@ class TestEdgeCases(TestCase):
         (tmp / "readme.md").write_text("hello")
         (tmp / "data.txt").write_text("world")
         result = load_fn(directory=str(tmp))
-        self.assertEqual(result, [])
+        self.assertEqual(list(result.definitions), [])
 
     def test_missing_directory(self):
         """If the specified path doesn't exist, return empty list."""
         load_fn, _ = _import_loader()
         result = load_fn(directory="/nonexistent/path/that/should/not/exist")
-        self.assertEqual(result, [])
+        self.assertEqual(list(result.definitions), [])
 
     def test_duplicate_names_across_files_first_wins(self):
         """When two files define the same name, first file (by sort order) takes precedence."""
@@ -333,6 +334,7 @@ class TestEdgeCases(TestCase):
             _tmp_yaml_file(tmp, "aa.yaml", yaml_a)
             _tmp_yaml_file(tmp, "zz.yaml", yaml_b)
             loops = load_fn(directory=str(tmp))
+            loops = loops.definitions  # LoadSummary -> list for iteration below
             stream.seek(0)
             log_output = stream.read()
             self.assertIn("duplicate", log_output.lower())
@@ -360,7 +362,7 @@ class TestEdgeCases(TestCase):
         load_fn, _ = _import_loader()
         (tmp / "whitespace.yaml").write_text("   \n  \n  ")
         result = load_fn(directory=str(tmp))
-        self.assertEqual(len(result), 0)
+        self.assertEqual(len(result.definitions), 0)
 
     def test_multiple_valid_loops(self):
         """Multiple valid YAML files should all load."""

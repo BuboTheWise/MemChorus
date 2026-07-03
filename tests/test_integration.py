@@ -38,7 +38,7 @@ class TestLoaderToEngineIntegration(unittest.TestCase):
             p = os.path.join(tmpdir, "loop.yaml")
             with open(p, 'w') as f:
                 f.write(yaml_content)
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
         self.assertEqual(len(loops), 1)
 
     def test_invalid_yaml_skipped(self):
@@ -51,7 +51,7 @@ class TestLoaderToEngineIntegration(unittest.TestCase):
             p = os.path.join(tmpdir, "bad.yaml")
             with open(p, 'w') as f:
                 f.write(yaml_bad)
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
         self.assertEqual(len(loops), 0)
 
     def test_disabled_loop_not_evaluated(self):
@@ -69,7 +69,7 @@ class TestLoaderToEngineIntegration(unittest.TestCase):
             p = os.path.join(tmpdir, "disabled.yaml")
             with open(p, 'w') as f:
                 f.write(yaml_a)
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
         self.assertEqual(len(loops), 1)
         self.assertFalse(loops[0].enabled)
 
@@ -99,7 +99,7 @@ class TestLoaderToEngineIntegration(unittest.TestCase):
                 f.write(yaml_high)
             with open(p2, 'w') as f:
                 f.write(yaml_low)
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
 
         self.assertEqual(len(loops), 2)
 
@@ -216,7 +216,7 @@ class TestEndToEndPipeline(unittest.TestCase):
             from memchorus.feedback_loop.escalation import EscalationTracker
             from memchorus.feedback_loop.engine import FeedbackDetector, TurnContext
 
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
 
         self.assertEqual(len(loops), 1)
         loop_def = loops[0]
@@ -247,7 +247,7 @@ class TestEndToEndPipeline(unittest.TestCase):
             from memchorus.feedback_loop.escalation import EscalationTracker
             from memchorus.feedback_loop.engine import FeedbackDetector, TurnContext
 
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
 
         self.assertEqual(len(loops), 1)
         detector = FeedbackDetector([loops[0]], EscalationTracker())
@@ -315,7 +315,7 @@ class TestMultiLoopFromConfig(unittest.TestCase):
             from memchorus.feedback_loop.escalation import EscalationTracker
             from memchorus.feedback_loop.engine import FeedbackDetector, TurnContext
 
-            loops = load_feedback_loops(tmpdir)
+            loops = load_feedback_loops(tmpdir).definitions
 
         # Both loop definitions should be loaded as they're in separate files.
         self.assertEqual(len(loops), 2)

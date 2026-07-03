@@ -1,16 +1,18 @@
 """Loader for declarative feedback loop YAML definitions.
 
 Scans ``~/.hermes/custom_loops/`` (or a configurable directory) for ``*.yaml`` /
-``*.yml`` files, validates each against schema_v1, and returns a list of valid
-``FeedbackLoopDefinition`` instances. Malformed or unknown-schema entries are logged
-as warnings and silently skipped — the gateway never crashes from bad YAML.
+``*.yml`` files, validates each against schema_v1, and returns a ``LoadSummary``
+with the validated ``FeedbackLoopDefinition`` instances plus per-file diagnostic
+counts. Malformed or unknown-schema entries are logged as warnings and silently
+skipped — the gateway never crashes from bad YAML.
 
 Usage::
 
     from memchorus.feedback_loop.loader import load_feedback_loops
 
-    loops = load_feedback_loops()  # defaults to ~/.hermes/custom_loops/
-    for loop in loops:
+    summary = load_feedback_loops()  # defaults to ~/.hermes/custom_loops/
+    print(f"Loaded {summary.loaded} loops, skipped {summary.skipped_files} files")
+    for loop in summary.definitions:
         print(loop.name, "->", loop.trigger_event)
 """
 
@@ -19,6 +21,9 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from dataclasses import dataclass
+from typing import NamedTuple
 
 from memchorus.feedback_loop.schema_v1 import (
     FeedbackLoopDefinition,
@@ -34,13 +39,22 @@ DEFAULT_DIRECTORY = str(Path.home() / ".hermes" / "custom_loops")
 _YAML_EXTENSIONS = {".yaml", ".yml"}
 
 
+class LoadSummary(NamedTuple):
+    """Diagnostics for a ``load_feedback_loops`` scan pass."""
+    definitions: List[FeedbackLoopDefinition]
+    loaded: int
+    skipped_files: int
+    warnings: List[str]
+
+
 def load_feedback_loops(
     directory: Optional[str] = None,
-) -> List[FeedbackLoopDefinition]:
+) -> LoadSummary:
     r"""Load all valid feedback loop definitions from a directory.
 
     Scans the given directory for ``*.yaml`` / ``*.yml`` files, validates each
-    against schema_v1 rules, and returns only successfully validated definitions.
+    against schema_v1 rules, and returns a ``LoadSummary`` with validated definitions
+    plus diagnostics. Invalid entries are silently skipped with warning logs.
 
     Parameters
     ----------
@@ -50,14 +64,17 @@ def load_feedback_loops(
 
     Returns
     -------
-    List[FeedbackLoopDefinition]
-        Validated loop definitions (one per file). Invalid entries are silently
-        skipped with a warning log.
+    LoadSummary
+        Named tuple carrying:
+        - ``definitions``: list of validated loop definitions
+        - ``loaded``: count of successfully loaded definitions
+        - ``skipped_files``: count of files that failed validation
+        - ``warnings``: human-readable warning strings
 
     Notes
     -----
     Duplicate names raise a warning and the later file is skipped — earlier files
-    take precedence to match Linux glob ordering semantics.
+    take precedence to match sorted glob ordering semantics.
     """
     target = Path(directory or DEFAULT_DIRECTORY)
     return _load_from_directory(target)
@@ -68,19 +85,22 @@ def load_feedback_loops(
 # ---------------------------------------------------------------------------
 
 
-def _load_from_directory(root: Path) -> List[FeedbackLoopDefinition]:
+def _load_from_directory(root: Path) -> LoadSummary:
     """Internal loader used by ``load_feedback_loops`` and tests."""
+
+    warnings: List[str] = []
+    skipped_files = 0
 
     # --- missing directory is graceful (empty list) -----------------------
     if not root.exists():
         logger.debug("feedback_loop_loader: directory does not exist: %s", root)
-        return []
+        return LoadSummary(definitions=[], loaded=0, skipped_files=0, warnings=[])
 
     if not root.is_dir():
-        logger.warning(
-            "feedback_loop_loader: expected a directory, got a file: %s", root
-        )
-        return []
+        msg = f"feedback_loop_loader: expected a directory, got a file: {root}"
+        logger.warning(msg)
+        warnings.append(msg)
+        return LoadSummary(definitions=[], loaded=0, skipped_files=0, warnings=warnings)
 
     seen_names: Dict[str, Path] = {}  # name -> source path (first winner)
     results: List[FeedbackLoopDefinition] = []
@@ -91,30 +111,36 @@ def _load_from_directory(root: Path) -> List[FeedbackLoopDefinition]:
 
     if not candidate_files:
         logger.debug("feedback_loop_loader: no YAML files found in %s", root)
-        return []
+        return LoadSummary(definitions=[], loaded=0, skipped_files=0, warnings=warnings)
 
     for fpath in candidate_files:
         validated = _load_single_file(fpath)
         if validated is None:
             # Invalid file — already warned by ``_load_single_file``.
+            skipped_files += 1
             continue
 
         # --- duplicate name check -------------------------------------------
         dup = seen_names.get(validated.name)
         if dup is not None:
-            logger.warning(
-                "feedback_loop_loader: duplicate loop name %r (first defined in %s); "
-                "skipping %s",
-                validated.name,
-                dup,
-                fpath,
+            msg = (
+                f"feedback_loop_loader: duplicate loop name {validated.name!r} "
+                f"(first defined in {dup}); skipping {fpath}"
             )
+            logger.warning(msg)
+            warnings.append(msg)
+            skipped_files += 1
             continue
 
         seen_names[validated.name] = fpath
         results.append(validated)
 
-    return results
+    return LoadSummary(
+        definitions=results,
+        loaded=len(results),
+        skipped_files=skipped_files,
+        warnings=warnings,
+    )
 
 
 def _load_single_file(fpath: Path) -> Optional[FeedbackLoopDefinition]:

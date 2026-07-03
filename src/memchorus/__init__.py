@@ -22,7 +22,7 @@ from memchorus.feedback_loop.schema_v1 import (  # noqa: F401
     TriggerEvent,
     validate_schema_v1,
 )
-from memchorus.feedback_loop.loader import load_feedback_loops  # noqa: F401
+from memchorus.feedback_loop.loader import load_feedback_loops, LoadSummary  # noqa: F401
 from memchorus.feedback_loop.detector import FeedbackLoopDetector  # noqa: F401
 
 __all__ = [
@@ -42,6 +42,7 @@ __all__ = [
     'TriggerEvent',
     'validate_schema_v1',
     'load_feedback_loops',
+    'LoadSummary',
     'FeedbackLoopDetector',
     # Auto-bootstrap v1.2
     '_instance',
