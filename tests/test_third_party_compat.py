@@ -260,13 +260,20 @@ class TestEscalationTracker(unittest.TestCase):
 
     def test_cooldown_respected(self):
         """should_fire respects cooldown_interval."""
+        import time as _time
         from memchorus.feedback_loop.integration import EscalationTracker
         tracker = EscalationTracker()
-        tracker.init_state("cool_loop")
-        # First call: no cooldown hit yet -> should fire
+        # Initialise with a known timestamp well in the past so first call fires
+        tracker._state["cool_loop"] = {
+            "trigger_count": 0,
+            "last_fired_at": _time.monotonic() - 2000,
+            "level": 1,
+            "threshold_per_level": 3,
+        }
+        # Cooldown has expired -> should fire
         self.assertTrue(tracker.should_fire("cool_loop", cooldown_interval=999))
 
-        # Record a trigger to set last_fired_at
+        # Record a trigger to set last_fired_at to now
         tracker.record_trigger("cool_loop")
         # Immediately after, cooldown not expired -> should NOT fire
         self.assertFalse(tracker.should_fire("cool_loop", cooldown_interval=999))
@@ -296,7 +303,6 @@ class TestFeedbackLoaderCompat(unittest.TestCase):
 
     def test_yaml_and_yml_both_loaded(self):
         """Both .yaml and .yml extensions are accepted."""
-        from memchorus.feedback_loop.schema_v1 import SUPPORTED_VERSIONS
 
         good_yaml = textwrap.dedent(f"""\
             schema: schema_v1
@@ -317,22 +323,22 @@ class TestFeedbackLoaderCompat(unittest.TestCase):
                 f.write(good_yaml)
             with open(os.path.join(tmpdir, "two.yml"), "w") as f:
                 f.write(good_yml)
-            loops = load_feedback_loops(tmpdir)
-        self.assertEqual(len(loops), 2)
+            summary = load_feedback_loops(tmpdir)
+        self.assertEqual(len(summary.definitions), 2)
 
     def test_empty_file_skipped(self):
         """Empty YAML files are silently skipped."""
         from memchorus.feedback_loop.loader import load_feedback_loops
         with tempfile.TemporaryDirectory() as tmpdir:
             open(os.path.join(tmpdir, "empty.yaml"), "w").close()  # create empty file
-            loops = load_feedback_loops(tmpdir)
-        self.assertEqual(len(loops), 0)
+            summary = load_feedback_loops(tmpdir)
+        self.assertEqual(len(summary.definitions), 0)
 
     def test_nonexistent_directory_returns_empty(self):
-        """Loading from a path that doesn't exist returns [] without error."""
+        """Loading from a path that doesn't exist returns empty definitions without error."""
         from memchorus.feedback_loop.loader import load_feedback_loops
-        loops = load_feedback_loops("/tmp/nonexistent_memchorus_dir_123456")
-        self.assertEqual(loops, [])
+        summary = load_feedback_loops("/tmp/nonexistent_memchorus_dir_123456")
+        self.assertEqual(summary.definitions, [])
 
     def test_malformed_yaml_skipped_gracefully(self):
         """Invalid YAML syntax is logged as warning and skipped."""
@@ -341,8 +347,8 @@ class TestFeedbackLoaderCompat(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "broken.yaml"), "w") as f:
                 f.write(broken)
-            loops = load_feedback_loops(tmpdir)
-        self.assertEqual(len(loops), 0)
+            summary = load_feedback_loops(tmpdir)
+        self.assertEqual(len(summary.definitions), 0)
 
     def test_unsupported_schema_version_skipped(self):
         """Files with unsupported schema versions are skipped."""
@@ -356,8 +362,8 @@ class TestFeedbackLoaderCompat(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "future.yaml"), "w") as f:
                 f.write(bad_schema)
-            loops = load_feedback_loops(tmpdir)
-        self.assertEqual(len(loops), 0)
+            summary = load_feedback_loops(tmpdir)
+        self.assertEqual(len(summary.definitions), 0)
 
 
 # =================================================================== #
