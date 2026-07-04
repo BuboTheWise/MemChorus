@@ -43,7 +43,7 @@ The system must stay functional even if every enhancement source disappears. The
     ┌────▼─────┐  ┌──▼───────────┐  ┌───────────────────┐
     │  Hermes  │  │   MemPalace  │  │   Custom Sources   │
     │  Default │  │   (MCP)      │  │   (MemorySource    │
-    │  Memeory │  │              │  │    subclasses)     │
+    │  Memory  │  │              │  │     subclasses)    │
     │ (JSON/   │  │ Structured   │  │                   │
     │  YAML)   │  │ knowledge    │  │ e.g.: vector DBs, │
     │          │  │ graph +      │  │   note stores,     │
@@ -463,7 +463,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.2.0 is released on master. Hermes plugin lifecycle hooks with auto-discovery via entry-points, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, CI/CD pipeline, auto-recall/auto-storage engines, and memory lifecycle design are implemented and tested (473 tests passing).
+v1.2.0 is released on master. Hermes plugin lifecycle hooks with auto-discovery via entry-points, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, CI/CD pipeline (Python 3.11 + 3.12), deterministic lazy initialization, auto-recall/auto-storage engines, and memory lifecycle design are implemented and tested (526 tests passing).
 
 ## Tipping the Owl
 
