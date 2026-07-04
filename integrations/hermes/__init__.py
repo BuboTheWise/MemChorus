@@ -7,11 +7,18 @@ moments without any manual agent intervention:
 - **pre_llm_call**: Fires before every API call. Runs pre-decision recall
   via ``BehavioralEnforcementManager.enforce()``, then injects relevant
   memory into the turn context so the model sees it before reasoning begins.
+  Also evaluates feedback loop corrections from custom YAML definitions.
 
 - **post_tool_call**: Fires after each tool execution. Captures meaningful
   outcomes for autonomous storage via the enforcement pipeline.
 
-This is a standalone plugin — install by placing this directory under the
+Feedback loop extension: if ~/.hermes/custom_loops/ contains valid loop
+definitions, they are loaded once on first fire and evaluated alongside
+memory recall. Corrections merge into the same ``context`` string --
+soft nudges, never hard overrides. Malformed YAML entries log warnings
+and are silently skipped.
+
+This is a standalone plugin -- install by placing this directory under the
 Hermes plugins path (e.g. ~/.hermes/plugins/memchorus-integration/) or
 by enabling ``plugins.enabled`` in config.yaml when installed system-wide.
 """
@@ -22,6 +29,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Feedback loop integration -- injected alongside memory recall in pre_llm_call.
+# Lazy import to avoid hard failures if the feedback_loop module is absent.
+_feedback_mod_available = False
+
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: only import MemChorus on first hook fire so a missing
@@ -52,7 +64,7 @@ def _bootstrap() -> Optional["MemoryOrchestrator"]:  # noqa: F821
         return None
 
     try:
-        # Config dict — not keyword args! The orchestrator __init__ already
+        # Config dict -- not keyword args! The orchestrator __init__ already
         # registers 'hermes_default' + 'mempalace' sources, so we don't
         # duplicate that work here.
         config = {
@@ -84,16 +96,43 @@ def _bootstrap() -> Optional["MemoryOrchestrator"]:  # noqa: F821
 
 
 # ---------------------------------------------------------------------------
+# Feedback loop integration -- loads once on demand via lazy import
+# ---------------------------------------------------------------------------
+
+def _try_load_feedback_module() -> bool:
+    """Import feedback_loop integration from the live-installed memchorus package.
+
+    Returns True if the module loaded successfully. The globals
+    `inject_feedback_corrections`, `TurnContext` and `TriggerEvent` become
+    available only while ``_feedback_mod_available`` is True, so callers must
+    check that flag before using them.
+    """
+    global _feedback_mod_available
+    if not _feedback_mod_available:
+        try:
+            from memchorus.feedback_loop.integration import (  # noqa: F401, E402
+                inject_feedback_corrections,
+                TurnContext,
+                TriggerEvent,
+            )
+            _feedback_mod_available = True
+        except Exception as exc:
+            logger.debug("Feedback loop module not available (non-fatal): %s", exc)
+
+    return _feedback_mod_available
+
+
+# ---------------------------------------------------------------------------
 # Hook handlers
 # ---------------------------------------------------------------------------
 
 def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict[str, Any]]:
     """Fire pre-decision recall and inject context before the LLM call.
 
-    Hermes expects a dict with ``context`` key or a string — it appends this
+    Hermes expects a dict with ``context`` key or a string -- it appends this
     to the user message (see turn_context.py). An empty result is silently dropped.
 
-    Additionally, returns ``indicators`` so the gateway can render TUI icon
+    Additionally returns ``indicators`` so the gateway can render TUI icon
     markers when MemChorus performs recall/storage on behalf of this plugin
     without polluting conversation history with synthetic tool calls.
     """
@@ -101,48 +140,80 @@ def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict
     if orch is None:
         return None
 
+    context_parts: List[str] = []
+
+    # --- Memory recall ---
     try:
         em = orch._get_enforcement_manager()
         if em is None:
             return None
 
-        # Trigger pre-decision recall on the incoming user message content
         result = em.enforce(user_message)
-
-        # Extract recall hits and format for injection.
-        context_parts: List[str] = []
         if result.recall_context:
             seen_keys = set()
-            for hit in result.recall_context[:5]:  # cap to avoid bloat
+            for hit in result.recall_context[:5]:
                 key = hit.get("key", "")
                 content = hit.get("content", "")
                 if key and content and key not in seen_keys:
                     context_parts.append(f"[MEMORY:{key}] {str(content)[:300]}")
                     seen_keys.add(key)
 
-        if context_parts:
-            header = "── Pre-decision Memory Recall ──"
-            block = f"{header}\n" + "\n".join(context_parts)
-            return {
-                "context": block,
-                "indicators": [
-                    {
-                        "name": "memory_search",
-                        "label": "MemChorus recall",
-                    }
-                ],
-            }
-
     except Exception as exc:
         logger.warning("pre_llm_call hook error (non-fatal): %s", exc)
 
-    return None
+    # --- Feedback loop corrections ---
+    feedback_block = None
+    if _try_load_feedback_module():
+        try:
+            from memchorus.feedback_loop.integration import (  # noqa: E402, RUF100
+                inject_feedback_corrections,
+                TurnContext,
+                TriggerEvent,
+            )
+            turn_ctx = TurnContext(user_message=user_message)
+            feedback_block = inject_feedback_corrections(
+                turn_ctx, trigger_event=TriggerEvent.PRE_LLM_CALL
+            )
+        except Exception as exc:
+            logger.warning("Feedback injection failed (non-fatal): %s", exc)
+
+    if not context_parts and not feedback_block:
+        return None
+
+    # --- Build return dict ---
+    injected_lines: List[str] = []
+    indicators: List[Dict[str, str]] = []
+
+    if context_parts:
+        injected_lines.append("-- Pre-decision Memory Recall --")
+        injected_lines.extend(context_parts)
+        indicators.append(
+            {
+                "name": "memory_search",
+                "label": "MemChorus recall",
+            }
+        )
+
+    # Merge memory block and feedback loop blocks into a single injection string
+    if feedback_block:
+        injected_lines.append(feedback_block)
+        indicators.append(
+            {
+                "name": "feedback_steering",
+                "label": "Feedback loop active",
+            }
+        )
+
+    return {
+        "context": "\n".join(injected_lines),
+        "indicators": indicators,
+    }
 
 
 def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwargs: Any) -> Optional[Dict[str, Any]]:
     """Capture meaningful outcomes after every tool execution.
 
-    Observer hook — returns indicators so the gateway can show a storage icon
+    Observer hook -- returns indicators so the gateway can show a storage icon
     when MemChorus autonomously captures memory after a tool call completes.
     """
     orch = _bootstrap()
@@ -170,7 +241,7 @@ def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwarg
                 "indicators": [
                     {
                         "name": "memory_store",
-                        "label": f"MemChorus stored ({len(stored)} item{'s' if len(stored) != 1 else ''})",
+                        "label": f"MemChorus stored ({len(stored)} item{'s' if len(stored) != 1 else ''})"
                     }
                 ],
             }
@@ -182,7 +253,7 @@ def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwarg
 
 
 # ---------------------------------------------------------------------------
-# Plugin entry point — called by the Hermes plugin loader on startup.
+# Plugin entry point -- called by the Hermes plugin loader on startup.
 # ---------------------------------------------------------------------------
 
 def register(ctx) -> None:  # noqa: ANN001
@@ -195,5 +266,5 @@ def register(ctx) -> None:  # noqa: ANN001
     ctx.register_hook("post_tool_call", _on_post_tool_call)
     logger.debug("Registered post_tool_call hook")
 
-    # Bootstrap once at registration — not on every turn.
+    # Bootstrap once at registration -- not on every turn.
     _bootstrap()
