@@ -342,21 +342,22 @@ class TestLazySingleton(unittest.TestCase):
         _reset_bootstrap_state()
 
     def test_getattr_triggers_bootstrap(self):
-        """Accessing any attribute on memchorus triggers lazy bootstrap.
+        """Accessing any lazy symbol on memchorus triggers bootstrap.
 
         Other tests may leak bootstrap side effects, so we only assert that
-        _bootstrap_done ends True after accessing a symbol."""
+        _bootstrap_done ends True after accessing a symbol from _LAZY_SYMBOLS.
+        Direct module attributes (e.g. __version__) correctly bypass __getattr__."""
         import memchorus
-        _ = memchorus.__version__
+        _ = memchorus.MemoryOrchestrator  # lazy symbol — forces __getattr__ → bootstrap
         self.assertTrue(memchorus._bootstrap_done)
 
     def test_instance_set_after_bootstrap(self):
         """After bootstrap, _instance is set (may be None if disabled)."""
         import memchorus
-        # Trigger bootstrap by access
+        # Trigger bootstrap by accessing a lazy symbol (forces __getattr__)
         os.environ["MEMCHORUS_AUTO_ENABLED"] = "false"
         try:
-            _ = memchorus.__version__
+            _ = memchorus.MemoryOrchestrator  # lazy symbol — triggers bootstrap
             self.assertTrue(memchorus._bootstrap_done)
             # When disabled, _instance is None
             if hasattr(memchorus, "_instance"):
@@ -373,8 +374,8 @@ class TestLazySingleton(unittest.TestCase):
         original_getattr = memchorus.__dict__.get("__getattr__")
         patches = []
         try:
-            # First access triggers bootstrap
-            _ = memchorus.__version__
+            # First access triggers bootstrap (lazy symbol forces __getattr__)
+            _ = memchorus.MemoryOrchestrator
             second_access_done = [False]
 
             class BootstrapCounter:
@@ -382,7 +383,7 @@ class TestLazySingleton(unittest.TestCase):
                     self.count = count
 
             # After first bootstrap, _bootstrap_done is True — subsequent accesses don't re-run
-            _ = memchorus.MemoryOrchestrator  # won't trigger bootstrap again
+            _ = memchorus.MemorySource  # won't trigger bootstrap again
             self.assertTrue(memchorus._bootstrap_done)
         finally:
             pass

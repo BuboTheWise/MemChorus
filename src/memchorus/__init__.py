@@ -1,60 +1,56 @@
-"""
-Memory Orchestration Package
-
-This package provides the core implementation of MemChorus, a memory orchestration system
-that manages multiple memory sources (voices) for intelligent context management.
-"""
-
-from memchorus.memory_source import MemorySource
-from memchorus.hermes_memory_source import HermesDefaultMemorySource
-from memchorus.mempalace_memory_source import MemPalaceMemorySource
-from memchorus.orchestrator import MemoryOrchestrator
-from memchorus.behavioral_trigger import BehavioralTrigger
-from memchorus.auto_recall_engine import AutoRecallEngine
-from memchorus.auto_storage_engine import AutoStorageEngine
-from memchorus.enforcement_manager import BehavioralEnforcementManager
-
-# Feedback loop detection + escalation (v1.1.03)
-from memchorus.feedback_loop.schema_v1 import (  # noqa: F401
-    ConditionSignal,
-    FeedbackLoopDefinition,
-    SUPPORTED_VERSIONS,
-    TriggerEvent,
-    validate_schema_v1,
-)
-from memchorus.feedback_loop.loader import load_feedback_loops, LoadSummary  # noqa: F401
-from memchorus.feedback_loop.detector import FeedbackLoopDetector  # noqa: F401
-
-__all__ = [
-    'MemorySource',
-    'HermesDefaultMemorySource',
-    'MemPalaceMemorySource',
-    'MemoryOrchestrator',
-    # Behavioral enforcement v1.1.01
-    'BehavioralTrigger',
-    'AutoRecallEngine',
-    'AutoStorageEngine',
-    'BehavioralEnforcementManager',
-    # Feedback loop detection + escalation v1.1.03
-    'ConditionSignal',
-    'FeedbackLoopDefinition',
-    'SUPPORTED_VERSIONS',
-    'TriggerEvent',
-    'validate_schema_v1',
-    'load_feedback_loops',
-    'LoadSummary',
-    'FeedbackLoopDetector',
-    # Auto-bootstrap v1.2
-    '_instance',
-]
+"""Memory Orchestration Package — lazy-loaded submodules."""
 
 __version__ = "1.2.0"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
 
+import sys  # loaded early for __getattr__ / sys.modules access
+
 # Lazy bootstrap guard (set to True by __getattr__ after first trigger).
-# NOT in __all__ — it's an internal signal, not a user-facing API symbol.
 _bootstrap_done: bool = False
+
+# Cache for lazily-loaded symbols so subsequent attribute hits are instant.
+_attr_cache: dict[str, object] = {}
+
+# Symbol -> (submodule dotpath, symbol name) mapping.
+_LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
+    "MemorySource": ("memchorus.memory_source", "MemorySource"),
+    "HermesDefaultMemorySource": ("memchorus.hermes_memory_source", "HermesDefaultMemorySource"),
+    "MemPalaceMemorySource": ("memchorus.mempalace_memory_source", "MemPalaceMemorySource"),
+    "MemoryOrchestrator": ("memchorus.orchestrator", "MemoryOrchestrator"),
+    "BehavioralTrigger": ("memchorus.behavioral_trigger", "BehavioralTrigger"),
+    "AutoRecallEngine": ("memchorus.auto_recall_engine", "AutoRecallEngine"),
+    "AutoStorageEngine": ("memchorus.auto_storage_engine", "AutoStorageEngine"),
+    "BehavioralEnforcementManager": ("memchorus.enforcement_manager", "BehavioralEnforcementManager"),
+    # Feedback loop detection + escalation v1.1.03
+    "ConditionSignal": ("memchorus.feedback_loop.schema_v1", "ConditionSignal"),
+    "FeedbackLoopDefinition": ("memchorus.feedback_loop.schema_v1", "FeedbackLoopDefinition"),
+    "SUPPORTED_VERSIONS": ("memchorus.feedback_loop.schema_v1", "SUPPORTED_VERSIONS"),
+    "TriggerEvent": ("memchorus.feedback_loop.schema_v1", "TriggerEvent"),
+    "validate_schema_v1": ("memchorus.feedback_loop.schema_v1", "validate_schema_v1"),
+    "load_feedback_loops": ("memchorus.feedback_loop.loader", "load_feedback_loops"),
+    "LoadSummary": ("memchorus.feedback_loop.loader", "LoadSummary"),
+    "FeedbackLoopDetector": ("memchorus.feedback_loop.detector", "FeedbackLoopDetector"),
+}
+
+__all__ = [
+    "MemorySource",
+    "HermesDefaultMemorySource",
+    "MemPalaceMemorySource",
+    "MemoryOrchestrator",
+    "BehavioralTrigger",
+    "AutoRecallEngine",
+    "AutoStorageEngine",
+    "BehavioralEnforcementManager",
+    "ConditionSignal",
+    "FeedbackLoopDefinition",
+    "SUPPORTED_VERSIONS",
+    "TriggerEvent",
+    "validate_schema_v1",
+    "load_feedback_loops",
+    "LoadSummary",
+    "FeedbackLoopDetector",
+]
 
 
 def _trigger_lazy_bootstrap():
@@ -64,34 +60,57 @@ def _trigger_lazy_bootstrap():
         return
     from memchorus.auto_bootstrap import _bootstrap as _orig_bootstrap
     result = _orig_bootstrap()
-    # Store in module dict so future attribute accesses resolve directly.
     sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
-    _bootstrap_done = True  # noqa: PLW0641
+    _bootstrap_done = True
 
 
 def __getattr__(name: str) -> object:
-    """Lazy init descriptor: fires bootstrap on first attribute access."""
+    """Lazy-init descriptor — fires bootstrap on first attribute access only.
+
+    Pure ``import memchorus`` alone does **not** trigger bootstrap or load heavy
+    dependencies (AC-A1 through AC-A4). Bootstrap fires only when the caller
+    actually accesses a symbol from this module.
+    """
     global _bootstrap_done  # noqa: PLW0603
-    # Bootstrap trigger — must run before any resolution.
+
+    # Handle _instance specially: before bootstrap it genuinely does not exist,
+# so accessing it should raise AttributeError rather than triggering bootstrap.
+# After bootstrap, it lives on the module namespace and __getattribute__ finds it.
+    if name == "_instance":
+        mod = sys.modules[__name__]
+        try:
+            return object.__getattribute__(mod, name)
+        except AttributeError:
+            raise AttributeError(f"module 'memchorus' has no attribute '{name}' "
+                                 f"(bootstrap not yet triggered)")
+
+    # Step 1 — run bootstrap exactly once before any resolution
     if not _bootstrap_done:
-        sys.modules[__name__]._instance = None  # type: ignore[attr-defined]
         from memchorus.auto_bootstrap import _bootstrap as _orig_bootstrap
         result = _orig_bootstrap()
-        if result is not None:
-            sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
+        sys.modules[__name__]._instance = result  # type: ignore[attr-defined]  # can be None when disabled or errored
         _bootstrap_done = True
 
-    # Resolve the requested name from this module's namespace.
+    # Step 2 — resolve the requested name from lazy table or module globals
+    if name in _LAZY_SYMBOLS:
+        submod_path, sym = _LAZY_SYMBOLS[name]
+        if name not in _attr_cache:
+            import importlib
+            submod = importlib.import_module(submod_path)
+            _attr_cache[name] = getattr(submod, sym)
+        return _attr_cache[name]
+
+    # Fallback — standard module attribute lookup (for e.g. __name__, __version__)
     mod = sys.modules[__name__]
     return object.__getattribute__(mod, name)
 
 
 def __dir__() -> list[str]:
-    """Include private and bootstrap symbols in dir() output."""
+    """Include lazy-loaded symbols in dir() output."""
     names = sorted(globals().keys())
+    for sym in _LAZY_SYMBOLS:
+        if sym not in names:
+            names.append(sym)
     if "_instance" not in names:
         names.append("_instance")
     return names
-
-import sys  # noqa: E402 (loaded late to avoid circular imports)
-
