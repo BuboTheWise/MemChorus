@@ -1,9 +1,14 @@
-# MemChorus v1.1.0 — Comprehensive QA Audit Report
+> **⚠ RESOLVED — SUPERSEDED BY v1.2.0**
+> This audit documents findings against v1.1.0 that have been fully addressed in v1.2.0 (released 2026-07-04).
+> All critical and high-severity findings below are closed. Retained here only for historical reference.
+
+# MemChorus v1.1.0 — Comprehensive QA Audit Report (RESOLVED)
 
 **Auditor:** Bubo (default profile / Orchestrator)
 **Date:** 2026-06-25
 **Scope:** Full source tree audit against ground truth Spec (MemChorus-Spec.md, 87+ lines) and Requirements (MemChorus-Requirements.md, 612 lines)
 **Git reference:** `master` @ commit `0dbe608`, tag `v1.1.0`
+**Resolution status:** All findings fixed in v1.2.0 (`a49222a`). CI: 526 tests passing, Python 3.11 + 3.12 green.
 
 ---
 
