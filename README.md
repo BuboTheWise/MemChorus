@@ -463,7 +463,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.2.0 is released on master. Hermes plugin lifecycle hooks with auto-discovery via entry-points, both backends, relevance scoring, graceful degradation, smart placement, behavioral enforcement, feedback loop detection with escalation, CI/CD pipeline (Python 3.11 + 3.12), deterministic lazy initialization, and auto-recall/auto-storage engines are implemented and tested (526 tests passing). Memory lifecycle management is designed and planned for a future release.
+v1.3.0 is released on master. Includes everything from v1.2 plus the full lifecycle management layer: LifecycleManager with SweepScheduler, per-profile retention periods (ephemeral/operational/log_long_lived/knowledge_permanent), content-assessment-driven eviction engine with two-phase soft-delete archive before hard-deletion, AuditLogger for compliance tracing, merge-at-write deduplication hooks, and periodic automated sweeps. All lifecycle features are opt-in (lifecycle.enabled: false default) — existing write-only behaviour preserved. 577 tests passing across all modules.
 
 ## Tipping the Owl
 

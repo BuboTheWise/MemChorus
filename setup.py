@@ -42,4 +42,9 @@ setup(
         "pydantic>=2.0",       # schema_v1 validation
         "pyyaml>=5.4",         # YAML loop definition loader
     ],
+    entry_points={
+        "hermes_agent.plugins": [
+            "memchorus = memchorus.hooks",
+        ],
+    },
 )

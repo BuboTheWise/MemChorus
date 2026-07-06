@@ -66,8 +66,9 @@ class MemChorusHooks:
             if not input_text:
                 return None
 
-            # Ask orchestrator to retrieve at decision point (pre-decision recall)
-            context_items = orchestrator.retrieve(input_text, limit=3)
+            # Use search() (not retrieve()) for pre-decision recall — retrieve(key)
+            # only does exact-key lookup and doesn't accept a limit param.
+            context_items = orchestrator.search(input_text, limit=3)
 
             if not context_items:
                 return None
@@ -99,14 +100,18 @@ class MemChorusHooks:
             if not tool_output:
                 return None
 
-            # Ask orchestrator to smart-place this output based on content profile
-            saved_ids = orchestrator.save_auto(tool_output)
-            if not saved_ids:
+            # Orchestrator.save(key, value) is the actual API — no save_auto() exists.
+            # Derive a deterministic key from the tool output hash for smart placement.
+            import hashlib
+            content_hash = hashlib.md5(str(tool_output).encode()).hexdigest()[:16]
+            auto_key = f"auto_tool_{content_hash}"
+            saved = orchestrator.save(auto_key, str(tool_output))
+            if not saved:
                 return None
 
             result: Dict[str, Any] = {
                 "source": "memchorus_auto_storage",
-                "saved_ids": list(saved_ids),
+                "saved_ids": [auto_key],
             }
             return result
 
@@ -178,3 +183,35 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
 
     joined = "\n".join(lines)
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
+
+
+# ---------------------------------------------------------------------------
+# Hermes plugin entry point — called by Hermes gateway at startup
+# ---------------------------------------------------------------------------
+
+_instance_holder: List[Any] = [None]  # mutable container for the registered instance
+
+
+def register(ctx: Any) -> None:
+    """Hermes plugin registration callback.
+
+    Called by the Hermes gateway when the plugin is discovered via entry points
+    or directory scanning. Registers lifecycle hook callbacks with PluginContext.
+    """
+    # Trigger lazy bootstrap of orchestrator singleton BEFORE registering hooks.
+    # This ensures _instance exists when hooks fire — without it every hook
+    # silently returns None (see t_a0d7e8c8). Bubo hit this lazily via MCP tool
+    # access, but Cthugha never touches memchorus directly so bootstrap was
+    # deferred forever.
+    __import__('memchorus', fromlist=['_trigger_lazy_bootstrap'])._trigger_lazy_bootstrap()
+
+    hooks = MemChorusHooks()
+    _instance_holder[0] = hooks  # keep a reference so GC doesn't collect
+
+    # Register all three lifecycle hooks
+    ctx.register_hook("pre_llm_call", hooks.on_pre_llm_call)
+    ctx.register_hook("post_tool_call", hooks.on_post_tool_call)
+    ctx.register_hook("on_session_start", hooks.on_session_start)
+
+    logger.info("MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start",
+                __import__('memchorus').__version__)
