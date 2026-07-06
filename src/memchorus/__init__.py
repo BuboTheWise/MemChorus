@@ -1,6 +1,6 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
 
@@ -31,6 +31,10 @@ _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
     "load_feedback_loops": ("memchorus.feedback_loop.loader", "load_feedback_loops"),
     "LoadSummary": ("memchorus.feedback_loop.loader", "LoadSummary"),
     "FeedbackLoopDetector": ("memchorus.feedback_loop.detector", "FeedbackLoopDetector"),
+    # Lifecycle management — Phase 1 (§6.2 / §8)
+    "AuditLogger": ("memchorus.lifecycle_manager", "AuditLogger"),
+    "LifecycleManager": ("memchorus.lifecycle_manager", "LifecycleManager"),
+    "SweepScheduler": ("memchorus.lifecycle_manager", "SweepScheduler"),
 }
 
 __all__ = [
@@ -50,6 +54,10 @@ __all__ = [
     "load_feedback_loops",
     "LoadSummary",
     "FeedbackLoopDetector",
+    # Lifecycle management
+    "AuditLogger",
+    "LifecycleManager",
+    "SweepScheduler",
 ]
 
 
