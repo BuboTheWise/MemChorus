@@ -10,6 +10,9 @@ priority chain that defeats the "chorus" principle.
 
 Smart placement (t_d0150e05 / G4+G5): memory_profile enum, inference from content,
 cross-source deduplication to prevent redundant storage.
+
+Lifecycle management (§8 Phase 1): config schema, LifecycleManager skeleton,
+SweepScheduler, AuditLogger — all opt-in, disabled by default for backward compat (§9).
 """
 
 import time
@@ -19,7 +22,11 @@ import logging
 import dataclasses
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from memchorus.lifecycle_manager import LifecycleManager
+
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
@@ -88,6 +95,16 @@ class MemoryOrchestrator:
                 enforce_on_write (bool): Enable post-action storage during save (default True)
                 half_life_days (float): Relevance scoring decay (default 30.0)
                 default_source (str): Default source name (default 'hermes_default')
+                lifecycle_config (Dict[str, Any]): Optional lifecycle management config (§6.2).
+
+                    Nested sub-keys:
+                        enabled (bool): Master toggle — disabled by default (§9 backward compat)
+                        sweep_interval_hours (int): Sweep frequency in hours (default 8, §6.1)
+                        retention_days (Dict[str, int|None]): Per-profile TTL mapping (§3.1)
+                        eviction (Dict[str, Any]): Eviction policy thresholds (§4.1)
+                        archive (Dict[str, Any]): Archival config — grace period + penalty (§4.2)
+                        merge_at_write (Dict[str, bool]): Pre-save dedup toggle (§5.1)
+                        audit (Dict[str, Any]): Audit logger path, max entries, enabled flag (§6.4)
         """
         self.config = config or {}
         self.memory_sources: Dict[str, MemorySource] = {}
@@ -121,6 +138,10 @@ class MemoryOrchestrator:
         # GAP008: configurable source priority for retrieval
         self._priority_order: List[str] = list(self.config.get('priority_order', []))
 
+        # Lifecycle management (§6.2 / Phase 1 — opt-in)
+        self._lifecycle_manager: Optional['LifecycleManager'] = None
+        self._initialize_lifecycle()
+
         self._initialize_default_sources()
 
     def _get_enforcement_manager(self) -> Optional[BehavioralEnforcementManager]:
@@ -145,6 +166,35 @@ class MemoryOrchestrator:
             return None
 
         return self._enforcement_manager
+
+    def _initialize_lifecycle(self) -> None:
+        """Initialize lifecycle management (opt-in, disabled by default — §9).
+
+        Reads ``lifecycle_config`` from the orchestrator config, merges it with
+        sensible defaults from `DEFAULT_LIFECYCLE_CONFIG`, and only instantiates
+        a LifecycleManager when the master ``enabled`` toggle is True.
+
+        If the user explicitly requested lifecycle tracking but left enabled=False
+        by accident, we still create the manager so that ``self.lifecycle_manager``
+        exists for inspection — just with its scheduler stopped.
+        """
+        from memchorus.lifecycle_manager import LifecycleManager, _resolve_lifecycle_config
+
+        raw_lifecycle = self.config.get("lifecycle_config", None)
+        resolved = _resolve_lifecycle_config(raw_lifecycle)
+
+        # Even if disabled, instantiate the manager so that callers can inspect config/audit
+        self._lifecycle_manager = LifecycleManager(
+            config=resolved,
+            orchestrator=self,
+        )
+
+        if self._lifecycle_manager.is_enabled:
+            logger.info("MemoryOrchestrator: lifecycle management enabled")
+        else:
+            logger.debug(
+                "MemoryOrchestrator: lifecycle disabled (lifecycle_config.enabled=False or not set)"
+            )
     
     def _initialize_default_sources(self):
         """Initialize the default memory sources."""
