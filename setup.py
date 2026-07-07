@@ -41,6 +41,7 @@ setup(
     install_requires=[
         "pydantic>=2.0",       # schema_v1 validation
         "pyyaml>=5.4",         # YAML loop definition loader
+        "mcp>=1.0",            # stdio transport for MemPalace MCP client
     ],
     entry_points={
         "hermes_agent.plugins": [
