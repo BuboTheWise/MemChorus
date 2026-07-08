@@ -132,12 +132,47 @@ class RelevanceScorer:
         return float(decay)
 
     @staticmethod
+    def _extract_content_text(content: Any) -> str:
+        """Extract readable text from any content type for quality scoring.
+
+        Handles plain strings, dicts (keys + leaf values joined), lists (elements joined).
+        This fixes the bug where dict/list content from MemPalace _from_str()
+        was losing all semantic overlap with query terms when converted via str().
+        """
+        if not content:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                try:
+                    parts.append(RelevanceScorer._extract_content_text(item))
+                except (TypeError, ValueError):
+                    parts.append(str(item))
+            return " ".join(parts)
+        if isinstance(content, dict):
+            parts = []
+            for key, val in content.items():
+                parts.append(str(key))
+                try:
+                    parts.append(RelevanceScorer._extract_content_text(val))
+                except (TypeError, ValueError):
+                    parts.append(str(val))
+            return " ".join(parts)
+        # Fallback to string representation for anything else
+        try:
+            return str(content)
+        except Exception:
+            return ""
+
+    @staticmethod
     def _score_quality(query: str, content: Any) -> float:
         """Unigram overlap between ``query`` and *content* as a float in [0, 1]."""
         if not query or not content:
             return 0.3  # neutral when either side is empty
+        c_text = RelevanceScorer._extract_content_text(content).lower()
         q_terms = set(re.findall(r"\w+", query.lower()))
-        c_text = str(content).lower()
         c_terms = set(re.findall(r"\w+", c_text))
         if not q_terms or not c_terms:
             return 0.3
