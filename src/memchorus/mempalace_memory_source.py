@@ -10,12 +10,15 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import sys
 import asyncio
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from memchorus.memory_source import MemorySource
 
@@ -51,9 +54,114 @@ def _run_async(coro):
         raise  # re-raise unexpected RuntimeErrors (e.g. "no running event loop")
 
 
+class _McpTransportDetector:
+    """Detect MCP transport configuration from Hermes config.yaml.
+
+    Reads ``$HERMES_HOME/config.yaml`` (or ``~/.hermes/config.yaml``) and looks
+    for the key path ``mcp_servers.mempalace.command``.  When present the value
+    is split with ``shlex.split()`` into a command + args list suitable for
+    subprocess launch.
+
+    Returns a dict like::
+
+        {"command": "/path/to/python",
+         "args": ["-m", "mempalace.mcp_server"],
+         "resolved_from": "config.yaml mcp_servers.mempalace.command"}
+
+    or ``None`` when no override is configured, allowing the caller to fall
+    through to the existing discovery chain.
+    """
+
+    @staticmethod
+    def _find_config() -> Optional[Path]:
+        """Locate the Hermes config.yaml file."""
+        hermes_home = os.environ.get("HERMES_HOME", None)
+        candidates: List[Path] = []
+
+        if hermes_home and hermes_home != "~/.hermes":
+            candidates.append(Path(hermes_home) / "config.yaml")
+
+        home_config = Path.home() / ".hermes" / "config.yaml"
+        if home_config not in candidates:
+            candidates.append(home_config)
+
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    @staticmethod
+    def detect(config_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+        """Parse config.yaml and return transport override, or None.
+
+        Parameters
+        ----------
+        config_path :
+            Explicit path to the Hermes config file.  When omitted, auto-locates
+            via ``_find_config()``.
+        """
+        target = config_path if config_path is not None else _McpTransportDetector._find_config()
+
+        if target is None:
+            logger.debug("_McpTransportDetector: no config.yaml found")
+            return None
+
+        try:
+            with open(target) as f:
+                data = yaml.safe_load(f)
+        except Exception as exc:
+            logger.warning(
+                "_McpTransportDetector: failed to parse %s: %s", target, exc
+            )
+            return None
+        if not isinstance(data, dict):
+            logger.warning("_McpTransportDetector: config.yaml is not a mapping")
+            return None
+
+        # Navigate mcp_servers -> mempalace -> command
+        mcp_servers = data.get("mcp_servers", {})
+        if not isinstance(mcp_servers, dict):
+            return None
+
+        mempalace_cfg = mcp_servers.get("mempalace", {})
+        if not isinstance(mempalace_cfg, dict):
+            return None
+
+        command_raw = mempalace_cfg.get("command", None)
+        if not command_raw or not isinstance(command_raw, str):
+            return None
+
+        try:
+            parts = shlex.split(command_raw)
+        except ValueError as exc:
+            logger.warning(
+                "_McpTransportDetector: invalid command string in config.yaml: %s", exc
+            )
+            return None
+
+        if not parts:
+            return None
+
+        # Split into [command, *args]
+        resolved = {
+            "command": parts[0],
+            "args": parts[1:],
+            "resolved_from": f"config.yaml mcp_servers.mempalace.command ({target})",
+        }
+
+        logger.info(
+            "_McpTransportDetector: config override detected -> command=%r, args=%r, source=%s",
+            resolved["command"],
+            resolved["args"],
+            resolved["resolved_from"],
+        )
+
+        return resolved
+
+
 async def _call_tool_async(
-    python_bin: str,
-    server_args: list,
+    command: str,
+    args: list,
     timeout: float,
     name: str,
     arguments: dict,
@@ -63,8 +171,8 @@ async def _call_tool_async(
     from mcp.client.session import ClientSession
 
     server_params = StdioServerParameters(
-        command=python_bin,
-        args=server_args,
+        command=command,
+        args=args,
     )
 
     async with stdio_client(server_params) as (r_stream, w_stream):
@@ -105,14 +213,44 @@ class _McpClient:
 
     The cost is starting a Python subprocess for each operation, but MemChorus
     save/retrieve/search are not firehose operations -- the overhead is acceptable.
+
+    **Transport resolution chain (v2.2):**
+    0. ``config.yaml mcp_servers.mempalace.command`` — user override from Hermes config
+       (highest priority, checked by ``_McpTransportDetector``)
+    1. ``config.get("python_bin")`` — explicit user override passed to the constructor
+    2. ``shutil.which("mempalace-python")`` — dedicated shim on PATH
+    3. pipx venv locations (existing)
+    4. ``sys.executable`` (existing)
+    5. ``python3`` on PATH (existing)
+    6. ``/usr/bin/python3`` fallback, lowest priority (existing)
     """
 
     def __init__(self, timeout: float = 30.0, config: Optional[Dict[str, Any]] = None):
         self.timeout = float(timeout)
         self._connected = False
         self._config = config or {}
-        # Discover a suitable Python interpreter instead of assuming pipx
-        self._python_bin = self._discover_python()
+
+        # Step 0: Check Hermes config.yaml for mcp_servers.mempalace.command override
+        self._transport_override: Optional[Dict[str, Any]] = _McpTransportDetector.detect()
+
+        if self._transport_override:
+            logger.info(
+                "MCP transport: using config.yaml override -> %s",
+                self._transport_override.get("resolved_from"),
+            )
+        else:
+            # Fall back to the existing python_bin discovery chain.
+            self._python_bin = self._discover_python()
+
+    def _get_transport(self) -> tuple[str, list]:
+        """Return (command, args) for launching the MCP subprocess.
+
+        Priority 0: config.yaml override from ``_McpTransportDetector``.
+        Fallback: self._python_bin + standard module path.
+        """
+        if self._transport_override:
+            return (self._transport_override["command"], list(self._transport_override["args"]))
+        return (self._python_bin, ["-m", "mempalace.mcp_server"])
 
     def _discover_python(self) -> str:
         """Discover a Python interpreter for the MCP subprocess.
@@ -201,14 +339,22 @@ class _McpClient:
         from mcp.client.stdio import StdioServerParameters, stdio_client
         from mcp.client.session import ClientSession
 
-        python_bin = self._python_bin
-        if not Path(python_bin).exists():
+        cmd, args = self._get_transport()
+        if not Path(cmd).exists():
+            logger.warning("MCP transport command does not exist: %s", cmd)
             return False
 
+        is_override = bool(self._transport_override)
         server_params = StdioServerParameters(
-            command=python_bin,
-            args=["-m", "mempalace.mcp_server"],
+            command=cmd,
+            args=args,
         )
+
+        if is_override:
+            logger.info(
+                "connect: using config.yaml transport override (command=%r, args=%r)",
+                cmd, args,
+            )
 
         async def _do_init():
             async with stdio_client(server_params) as (r_stream, w_stream):
@@ -236,17 +382,16 @@ class _McpClient:
         connection dies mid‑flight we reset ``_connected`` so the next call triggers a
         fresh connect attempt and avoids repeatedly hammering a dead child process.
         """
-        server_args = ["-m", "mempalace.mcp_server"]
+        cmd, args = self._get_transport()
 
-        python_bin = self._python_bin
-        if not Path(python_bin).exists():
+        if not Path(cmd).exists():
             return None
 
         try:
             result = _run_async(
                 asyncio.wait_for(
                     _call_tool_async(
-                        python_bin, server_args, self.timeout * 2, name, arguments
+                        cmd, args, self.timeout * 2, name, arguments
                     ),
                     timeout=self.timeout * 2,
                 )
