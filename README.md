@@ -287,7 +287,7 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.1.x includes a planned lifecycle management layer (`LifecycleManager`) that addresses unbounded growth in write-only memory systems. The design spec covers: per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication, and periodic automated sweeps. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days` (existing), new `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour preserved. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+MemChorus v1.4.0 includes a fully implemented lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) that addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `operational`, `long_lived`, `knowledge_permanent`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days`, `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 ## Installation
 
@@ -463,7 +463,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.3.0 is released on master. Includes everything from v1.2 plus the full lifecycle management layer: LifecycleManager with SweepScheduler, per-profile retention periods (ephemeral/operational/log_long_lived/knowledge_permanent), content-assessment-driven eviction engine with two-phase soft-delete archive before hard-deletion, AuditLogger for compliance tracing, merge-at-write deduplication hooks, and periodic automated sweeps. All lifecycle features are opt-in (lifecycle.enabled: false default) — existing write-only behaviour preserved. 577 tests passing across all modules.
+v1.4.0 is released on master. Includes everything from v1.3 plus: **MCP transport autodetect** (reads `mcp_servers.mempalace.command` from config.yaml so users can override hardcoded module paths), **feedback loop auto-load** at bootstrap with `LoadSummary` diagnostics for load-time visibility, and a fix for the **RelevanceScorer zero-score bug** where dict/list content lost semantic query overlap. The full lifecycle management layer remains fully implemented: LifecycleManager with SweepScheduler, per-profile retention periods (ephemeral/operational/log_long_lived/knowledge_permanent), content-assessment-driven eviction engine with two-phase soft-delete archive before hard-deletion, AuditLogger for compliance tracing, merge-at-write deduplication hooks, and periodic automated sweeps. All lifecycle features are opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour preserved. 593 tests collected across all modules.
 
 ## Tipping the Owl
 
@@ -474,4 +474,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.2.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.4.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
