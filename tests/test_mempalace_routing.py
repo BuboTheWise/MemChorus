@@ -291,3 +291,309 @@ class TestSaveUsesRoutedWing:
         )
         wing = src._resolve_wing("MISTAKE")
         assert wing == "memchorus_learning"
+
+
+# =========================================================================== #
+#  SECTION 7 — _categorize_room room selection (§2, AC-R2.1–R2.4)           #
+# =========================================================================== #
+
+class TestCategorizeRoom:
+    """_categorize_room derives semantic room slugs from payload category."""
+
+    @pytest.mark.parametrize(
+        "category,expected_room", [
+            ("DECISION", "decisions"),
+            ("decision", "decisions"),
+            ("LEARNING", "lessons-learned"),
+            ("MISTAKE", "corrections"),
+            ("RESULT", "outcomes"),
+            ("result", "outcomes"),
+        ]
+    )
+    def test_category_to_room_mapping(self, category, expected_room):
+        """AC-R2.1: Category maps to semantic room slug (case insensitive)."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "test", "category": category}
+        assert src._categorize_room(payload) == expected_room
+
+    def test_no_category_fallback(self):
+        """AC-R2.3: No category → 'general' fallback."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "no category here"}
+        assert src._categorize_room(payload) == "general"
+
+    def test_plain_string_value(self):
+        """AC-R2.3: Non-dict value → 'general' fallback."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        assert src._categorize_room("just a string") == "general"
+
+    def test_significance_string_path(self):
+        """Legacy 'significance' key (string) also works."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "test", "significance": "LEARNING"}
+        assert src._categorize_room(payload) == "lessons-learned"
+
+    def test_nested_significance_category(self):
+        """AutoStorageEngine nested path: metadata.significance.category."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {
+            "text": "test",
+            "metadata": {
+                "significance": {"category": "MISTAKE"}
+            }
+        }
+        assert src._categorize_room(payload) == "corrections"
+
+    def test_custom_room_map(self):
+        """Custom room_map overrides built-in rooms."""
+        src = MemPalaceMemorySource(
+            config={
+                "skip_mcp": True,
+                "cache_dir": tempfile.mkdtemp(),
+                "mempalace_routing": {
+                    "room_map": {
+                        "DECISION": "board-notes",
+                        "LEARNING": "growth",
+                        "DEFAULT": "inbox",
+                    }
+                },
+            }
+        )
+        payload = {"text": "test", "category": "DECISION"}
+        assert src._categorize_room(payload, room_map=src._room_map) == "board-notes"
+
+    def test_deterministic_slugs(self):
+        """AC-R2.2: Same category always produces same slug."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "test", "category": "LEARNING"}
+        for _ in range(5):
+            assert src._categorize_room(payload) == "lessons-learned"
+
+    def test_slug_format(self):
+        """AC-R2.4: Slug is lowercase hyphen-separated."""
+        import re
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        for cat in ["DECISION", "LEARNING", "MISTAKE", "RESULT"]:
+            payload = {"text": "test", "category": cat}
+            slug = src._categorize_room(payload)
+            assert re.match(r'^[a-z][a-z\-]*$', slug), f"Bad slug format: {slug!r}"
+
+
+# =========================================================================== #
+#  SECTION 8 — _resolve_wing_from_payload (§6, AC-R6.1)                     #
+# =========================================================================== #
+
+class TestResolveWingFromPayload:
+    """"_resolve_wing_from_payload extracts wing from cached payload."""
+
+    def test_decision_payload(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "test", "category": "DECISION"}
+        assert src._resolve_wing_from_payload(payload) == "memchorus_decisions"
+
+    def test_learning_payload(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "test", "category": "LEARNING"}
+        assert src._resolve_wing_from_payload(payload) == "memchorus_learning"
+
+    def test_nested_metadata_path(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {
+            "text": "test",
+            "metadata": {"significance": {"category": "MISTAKE"}}
+        }
+        assert src._resolve_wing_from_payload(payload) == "memchorus_learning"
+
+    def test_no_category_fallback(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "no category"}
+        assert src._resolve_wing_from_payload(payload) == "memchorus_general"
+
+    def test_non_dict_value(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        assert src._resolve_wing_from_payload("string value") == "memchorus_general"
+
+    def test_none_value(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        assert src._resolve_wing_from_payload(None) == "memchorus_general"
+
+
+# =========================================================================== #
+#  SECTION 9 — retrieve() wing-aware recall (§6, AC-R6.1/AC-R6.2)          #
+# =========================================================================== #
+
+class TestRetrieveWingAware:
+    """retrieve() finds memories in routed wings via cached category info."""
+
+    def test_category_key_used_for_retrieve(self):
+        """A DECISION saved and retrieved should resolve to decisions wing."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {
+            "text": "My decision",
+            "category": "DECISION",
+        }
+        src.save("retrieve_test_key", payload)
+        # In skip_mcp mode, retrieve falls back to local cache -> should work
+        result = src.retrieve("retrieve_test_key")
+        assert result is not None
+        assert result == payload
+
+    def test_retrieve_no_category_fallback(self):
+        """AC-R6.2: Memory without category still retrievable from cache."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "plain memory"}
+        src.save("no_cat_key", payload)
+        result = src.retrieve("no_cat_key")
+        assert result is not None
+
+    def test_retrieve_legacy_string_value(self):
+        """Legacy string value still retrievable."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        src.save("legacy_key", "just a string")
+        result = src.retrieve("legacy_key")
+        assert result == "just a string"
+
+
+# =========================================================================== #
+#  SECTION 10 — search() wing/room filters (§6, AC-R6.3)                   #
+# =========================================================================== #
+
+class TestSearchWingRoomFilters:
+    """search() accepts optional wing and room parameters."""
+
+    def test_search_signature_has_wing_room(self):
+        """Verify search() accepts wing and room keyword arguments."""
+        import inspect
+        sig = inspect.signature(MemPalaceMemorySource.search)
+        params = list(sig.parameters.keys())
+        assert "wing" in params, "search() should accept 'wing' parameter"
+        assert "room" in params, "search() should accept 'room' parameter"
+
+    def test_search_without_filters_works(self):
+        """search() with no filters returns results from local cache."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        # Should not crash even without MCP
+        result = src.search("test", limit=5)
+        assert isinstance(result, list)
+
+    def test_search_with_wing_filter(self):
+        """search() with wing filter passes it through."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        # Should not crash even without MCP - the parameter itself is what we test
+        result = src.search("test", limit=5, wing="memchorus_decisions")
+        assert isinstance(result, list)
+
+    def test_search_with_room_filter(self):
+        """search() with room filter passes it through."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        result = src.search("test", limit=5, room="decisions")
+        assert isinstance(result, list)
+
+    def test_search_with_wing_and_room(self):
+        """search() with both wing and room filters."""
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        result = src.search("test", limit=5, wing="memchorus_decisions", room="decisions")
+        assert isinstance(result, list)
+
+
+# =========================================================================== #
+#  SECTION 11 — End-to-end routing verification                             #
+# =========================================================================== #
+
+class TestEndToEndRouting:
+    """Full save→cache→retrieve cycle with routed categories."""
+
+    def test_decision_full_cycle(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "Decision content", "category": "DECISION"}
+        assert src.save("e2e_decision", payload)
+        result = src.retrieve("e2e_decision")
+        assert result["category"] == "DECISION"
+
+    def test_learning_full_cycle(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "Learning content", "category": "LEARNING"}
+        assert src.save("e2e_learning", payload)
+        result = src.retrieve("e2e_learning")
+        assert result["category"] == "LEARNING"
+
+    def test_mistake_full_cycle(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "Mistake content", "category": "MISTAKE"}
+        assert src.save("e2e_mistake", payload)
+        result = src.retrieve("e2e_mistake")
+        assert result["category"] == "MISTAKE"
+
+    def test_result_full_cycle(self):
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payload = {"text": "Result content", "category": "RESULT"}
+        assert src.save("e2e_result", payload)
+        result = src.retrieve("e2e_result")
+        assert result["category"] == "RESULT"
+
+    def test_multiple_categories_coexist(self):
+        """Multiple categories saved and retrieved without collision."""
+        import json
+        src = MemPalaceMemorySource(
+            config={"skip_mcp": True, "cache_dir": tempfile.mkdtemp()}
+        )
+        payloads = [
+            ("k1", {"text": "a", "category": "DECISION"}),
+            ("k2", {"text": "b", "category": "LEARNING"}),
+            ("k3", {"text": "c", "category": "MISTAKE"}),
+            ("k4", {"text": "d", "category": "RESULT"}),
+        ]
+        for key, payload in payloads:
+            assert src.save(key, payload)
+
+        for key, expected in payloads:
+            result = src.retrieve(key)
+            assert result == expected

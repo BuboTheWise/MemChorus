@@ -647,7 +647,13 @@ class MemPalaceMemorySource(MemorySource):
         wing = self._resolve_wing(category)
 
         if self._connected and self._client.is_alive:
-            room = self._key_to_room(key)
+            # §2 Room selection by significance category (AC-R2.1-2.4)
+            cat_room = self._categorize_room(value, room_map=self._room_map)
+            # AC-R2.3: raw string keys without category metadata fall back to legacy hashing
+            if cat_room == 'general':
+                room = self._key_to_room(key)
+            else:
+                room = cat_room
             ok = self._client.add_drawer(
                 wing=wing, room=room, content=content
             )
@@ -660,12 +666,41 @@ class MemPalaceMemorySource(MemorySource):
         return bool(self._cache_locally(key, value))
 
     def retrieve(self, key: str) -> Optional[Any]:
-        """Look up the memory.  Tries MCP first; falls back to local cache."""
+        """Look up the memory.  Tries MCP first; falls back to local cache.
+
+        §6 AC-R6.1: Uses resolved wing/room from category info when available.
+        §6 AC-R6.2: Broadens to wing-level search when category unavailable.
+        """
         if self._connected and self._client.is_alive:
-            room = self._key_to_room(key)
-            results = self._client.search(
-                query="", wing="memchorus", room=room, limit=1
-            )
+            # First try: check local cache for category metadata (§6)
+            filepath = self._cache_dir / f"{key}.json"
+            cached_value = None
+            if filepath.exists():
+                try:
+                    with open(filepath) as f:
+                        cached_value = json.load(f)
+                except Exception:
+                    pass
+
+            # Derive wing and room from cached category info
+            wing = self._resolve_wing_from_payload(cached_value)
+            cat_room = self._categorize_room(
+                cached_value, room_map=self._room_map
+            ) if cached_value else None
+
+            # Primary search: targeted wing + room when we have category
+            found_results = None
+            if cat_room:
+                found_results = self._client.search(
+                    query="", wing=wing, room=cat_room, limit=1
+                )
+            # AC-R6.2: Broaden to wing-level when room search fails or no category
+            if not found_results:
+                found_results = self._client.search(
+                    query=key[:32], wing=wing, limit=5
+                )
+
+            results = found_results
             if results:
                 for r in results:
                     # MCP search returns hit dicts with a 'text' field.
@@ -688,13 +723,19 @@ class MemPalaceMemorySource(MemorySource):
 
         return None
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """Search across MCP + local cache, deduplicating by key."""
+    def search(self, query: str, limit: int = 10, *, wing: Optional[str] = None, room: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search across MCP + local cache, deduplicating by key.
+
+        §6 AC-R6.3: Optional wing/room filters for targeted recall.
+        When neither is specified, searches across all wings (full recall).
+        """
         results: List[Dict[str, Any]] = []
         seen_keys: set = set()
 
         if self._connected and self._client.is_alive:
-            mp_results = self._client.search(query=query, limit=limit)
+            mp_results = self._client.search(
+                query=query, limit=limit, wing=wing, room=room
+            )
             if mp_results:
                 for r in mp_results:
                     wing = r.get("wing", "unknown") if isinstance(r, dict) else None
@@ -795,11 +836,87 @@ class MemPalaceMemorySource(MemorySource):
 
     @staticmethod
     def _key_to_room(key: str) -> str:
-        """Convert a memory key into a MemPalace room slug."""
+        """Convert a memory key into a MemPalace room slug (legacy path).
+
+        Used for backward compat when category metadata is unavailable.
+        """
         sanitized = key.lower().strip()
-        sanitized = re.sub(r'[^a-z0-9\-]', '-', sanitized)
+        sanitized = re.sub(r'[^a-z0-9]', '-', sanitized)
         parts = [p for p in sanitized.split("-") if p]
         return "-".join(parts)[:128]
+
+    @staticmethod
+    def _categorize_room(memory: Any, *, room_map: Optional[Dict[str, str]] = None) -> str:
+        """Derive a semantic room slug from the memory payload category (§2).
+
+        Inspects ``category`` / ``significance`` metadata on the value.
+        Falls back to ``general`` when neither field is present or unknown.
+
+        AC-R2.1: Payloads with a category/significance dict key use that.
+        AC-R2.2: Room slugs are deterministic per category.
+        AC-R2.3: No metadata → fallback to 'general'.
+        AC-R2.4: Lowercase hyphen-separated slugs.
+
+        Returns the room slug string.
+        """
+        lookup = room_map or dict(_DEFAULT_ROOM_MAP)
+
+        if not isinstance(memory, dict):
+            return lookup.get('DEFAULT', 'general')
+
+        # Try multiple metadata paths where the category might live
+        raw_cat = memory.get("category") or memory.get("significance")
+
+        # AutoStorageEngine wraps significance in a nested dict
+        if not raw_cat:
+            meta = memory.get("metadata", {}) or {}
+            if isinstance(meta, dict):
+                sig = meta.get("significance", {})
+                if isinstance(sig, dict):
+                    raw_cat = sig.get("category")
+
+        # If significance is a string, use it directly
+        if not raw_cat and isinstance(memory.get("significance"), str):
+            raw_cat = memory["significance"]
+
+        if raw_cat:
+            upper = str(raw_cat).upper()
+            slug = lookup.get(upper)
+            if slug:
+                return slug
+
+        # Unknown category or no category → DEFAULT / general
+        return lookup.get('DEFAULT', 'general')
+
+    @staticmethod
+    def _resolve_wing_from_payload(payload: Any) -> str:
+        """Extract wing from cached payload metadata (section 6 AC-R6.1).
+
+        Used by retrieve() to determine which wing a memory was saved to
+        when category info exists in the local cache copy.
+        Falls back to default wing if no category metadata found.
+        """
+        if not isinstance(payload, dict):
+            return _DEFAULT_WING_MAP.get('DEFAULT', 'memchorus')
+
+        # Same extraction paths as save() for consistency
+        cat = payload.get("category") or payload.get("significance")
+        if not cat:
+            meta = payload.get("metadata", {}) or {}
+            if isinstance(meta, dict):
+                sig = meta.get("significance", {})
+                if isinstance(sig, dict):
+                    cat = sig.get("category")
+        if not cat and isinstance(payload.get("significance"), str):
+            cat = payload["significance"]
+
+        if cat:
+            upper = str(cat).upper()
+            wing = _DEFAULT_WING_MAP.get(upper)
+            if wing:
+                return wing
+
+        return _DEFAULT_WING_MAP.get('DEFAULT', 'memchorus')
 
     def _resolve_wing(self, category: Optional[str] = None) -> str:
         """Resolve the target MemPalace wing for a given significance category.
