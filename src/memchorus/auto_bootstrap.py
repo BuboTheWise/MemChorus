@@ -39,6 +39,25 @@ _DEFAULTS: Dict[str, Any] = {
     "custom_loops_dir": str(Path.home() / ".hermes" / "custom_loops"),
 }
 
+# Wing/room routing defaults (§1 + §3 of spec).  Mirrored here so that
+# ``mempalace_routing`` can be configured before the Orchestrator is built.
+_DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
+    "wing_map": {
+        "DECISION": "memchorus_decisions",
+        "LEARNING": "memchorus_learning",
+        "MISTAKE":  "memchorus_learning",
+        "RESULT":   "memchorus_general",
+        "default":  "memchorus_general",
+    },
+    "room_map": {
+        "DECISION": "decisions",
+        "LEARNING": "lessons-learned",
+        "MISTAKE":  "corrections",
+        "RESULT":   "outcomes",
+        "default":  "general",
+    },
+}
+
 
 # --- helpers ----------------------------------------------------------------
 
@@ -197,8 +216,16 @@ def _bootstrap() -> Optional[Any]:
         "default_source": default_source,
         "half_life_days": half_life_days,
         "cache_ttl_seconds": float(cache_ttl_seconds),
-        "mempalace_config": {"skip_mcp": not mp_available},
+        "mempalace_config": {
+            "skip_mcp": not mp_available,
+            "mempalace_routing": yaml_cfg.get("mempalace_routing", _DEFAULT_MEMPALACE_ROUTING),
+        },
     }
+
+    # Allow mempalace_routing from top-level YAML too.
+    routing_override = yaml_cfg.get("mempalace_routing")
+    if isinstance(routing_override, dict):
+        orchestrator_cfg["mempalace_config"]["mempalace_routing"] = routing_override
 
     # --- Step 5: Orchestrator creation & return ---
     try:
