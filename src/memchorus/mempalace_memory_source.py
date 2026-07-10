@@ -238,9 +238,9 @@ class _McpClient:
                 "MCP transport: using config.yaml override -> %s",
                 self._transport_override.get("resolved_from"),
             )
-        else:
-            # Fall back to the existing python_bin discovery chain.
-            self._python_bin = self._discover_python()
+
+        # Always discover python_bin as a fallback so _python_bin attribute exists.
+        self._python_bin = self._discover_python()
 
     def _get_transport(self) -> tuple[str, list]:
         """Return (command, args) for launching the MCP subprocess.
