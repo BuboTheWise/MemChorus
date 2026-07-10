@@ -24,6 +24,23 @@ from memchorus.memory_source import MemorySource
 
 logger = logging.getLogger(__name__)
 
+# --- Wing / room routing defaults (§1 + §3 of spec) ----------------------------
+_DEFAULT_WING_MAP: Dict[str, str] = {
+    "DECISION": "memchorus_decisions",
+    "LEARNING": "memchorus_learning",
+    "MISTAKE":  "memchorus_learning",      # mistakes group with lessons
+    "RESULT":   "memchorus_general",
+    "DEFAULT":  "memchorus_general",        # catch-all fallback inside the map
+}
+
+_DEFAULT_ROOM_MAP: Dict[str, str] = {
+    "DECISION": "decisions",
+    "LEARNING": "lessons-learned",
+    "MISTAKE":  "corrections",
+    "RESULT":   "outcomes",
+    "DEFAULT":  "general",
+}
+
 
 def _run_async(coro):
     """Execute an async coroutine in a fresh event loop.
@@ -553,7 +570,14 @@ class MemPalaceMemorySource(MemorySource):
     ``python_bin``  Override the auto-detected Python interpreter for the MCP subprocess.
                     Accepts an absolute path or a path relative to ``~``. When set the
                     discovery chain skips directly to verifying the candidate.
+    ``mempalace_routing``  A dict with ``wing_map`` and/or ``room_map` sub-dicts
+                          (§1 + §3 of spec).  Omitted → built-in defaults.
+                           Empty dict → also built-in defaults (AC-R3.1).
     """
+
+    # Built-in routing tables — used when config provides no override or is empty.
+    _WING_MAP_DEFAULT = _DEFAULT_WING_MAP
+    _ROOM_MAP_DEFAULT = _DEFAULT_ROOM_MAP
 
     def __init__(
         self,
@@ -563,6 +587,31 @@ class MemPalaceMemorySource(MemorySource):
         super().__init__(name, config)
         self._name = name
         self.config = config or {}
+
+        # --- Routing configuration (§1 + §3) ---------------------------------
+        routing_cfg = self.config.get("mempalace_routing", None)
+        if isinstance(routing_cfg, dict) and routing_cfg:
+            self._routing_config = routing_cfg
+        else:
+            self._routing_config = {}
+
+        wing_map_raw = self._routing_config.get("wing_map", None)
+        if isinstance(wing_map_raw, dict) and wing_map_raw:
+            # Build a case-insensitive lookup table: uppercase key → value.
+            self._wing_map: Dict[str, str] = {
+                k.upper(): v for k, v in wing_map_raw.items()
+            }
+        else:
+            # AC-R1.2 / AC-R3.1: use built-in defaults when missing or empty.
+            self._wing_map = dict(self._WING_MAP_DEFAULT)
+
+        room_map_raw = self._routing_config.get("room_map", None)
+        if isinstance(room_map_raw, dict) and room_map_raw:
+            self._room_map: Dict[str, str] = {
+                k.upper(): v for k, v in room_map_raw.items()
+            }
+        else:
+            self._room_map = dict(self._ROOM_MAP_DEFAULT)
 
         # Fallback local cache.
         self._cache_dir = Path(
@@ -588,10 +637,19 @@ class MemPalaceMemorySource(MemorySource):
         """Persist the memory.  Tries MCP first; falls back to local cache."""
         content = self._to_str(value)
 
+        # Extract category from payload for wing routing (§1).
+        # AutoStorageEngine attaches ``category`` / ``significance`` keys in the
+        # value dict (lines 256-260 of auto_storage_engine.py).
+        category = None
+        if isinstance(value, dict):
+            category = value.get("category", None) or value.get("significance", None)
+
+        wing = self._resolve_wing(category)
+
         if self._connected and self._client.is_alive:
             room = self._key_to_room(key)
             ok = self._client.add_drawer(
-                wing="memchorus", room=room, content=content
+                wing=wing, room=room, content=content
             )
             if ok:
                 # Mirror locally for resilience.
@@ -742,6 +800,36 @@ class MemPalaceMemorySource(MemorySource):
         sanitized = re.sub(r'[^a-z0-9\-]', '-', sanitized)
         parts = [p for p in sanitized.split("-") if p]
         return "-".join(parts)[:128]
+
+    def _resolve_wing(self, category: Optional[str] = None) -> str:
+        """Resolve the target MemPalace wing for a given significance category.
+
+        Look up *category* (case-insensitive) in ``self._wing_map``.  When the
+        category is not found — or it was ``None``/empty — fall through to the
+        map's ``DEFAULT`` entry, and if that doesn't exist either, return the
+        original hard-coded fallback ``\"memchorus"`` for backward compat (AC-R1.2).
+
+        Parameters
+        ----------
+        category :
+            Significance category string (e.g. ``"DECISION"``, ``"LEARNING"``)
+            or anything falsy to trigger the default path.
+
+        Returns
+        -------
+        str  — a wing name such as ``"memchorus_decisions"`` or
+               ``"memchorus_general"``.
+        """
+        if not category:
+            return self._wing_map.get(
+                "DEFAULT", "memchorus"  # AC-R1.2 final safety fallback
+            )
+
+        hit = self._wing_map.get(category.upper(), None)
+        if not hit:
+            # AC-R3.3: unknown key → default mapping, not crash.
+            return self._wing_map.get("DEFAULT", "memchorus")
+        return hit
 
     def _cache_locally(self, key: str, value: Any) -> bool:
         """Write to the local JSON cache (fallback / resilience)."""
