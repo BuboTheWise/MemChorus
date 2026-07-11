@@ -267,9 +267,15 @@ class AutoStorageEngine:
             # enabled gating, priority tiering, and write restrictions are honoured.
             # Map the detected significance category to a write_type token the
             # orchestrator understands.
-            write_type = {"DECISION": "decision", "MEMORY": "memory",
-                          "RESULT": "general", "RELATIONSHIP": "graph"}.get(
-                              category_str.upper(), "general")
+            # Map every SignificanceCategory to a write_type token the orchestrator
+            # understands. LEARNING / MISTAKE -> "memory" ensures they route to
+            # memory-specialised sources rather than falling through to generic.
+            write_type = {
+                "LEARNING":   "memory",
+                "MISTAKE":    "memory",
+                "DECISION":   "decision",
+                "RESULT":     "general",
+            }.get(category_str.upper(), "general")
 
             candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
 
