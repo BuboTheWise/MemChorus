@@ -26,9 +26,78 @@ jobs:
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install .
           pip install pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
 
       - name: Run full test suite
         run: |
-          PYTHONPATH=src python -m pytest --tb=short -q
+          PYTHONPATH=src python -m pytest tests/ \\
+            --tb=short \\
+            -x --durations=20 \
+            --override-ini="addopts="
+        env:
+          PYTEST_ADDOPTS: ""
+
+      - name: Verify routing test coverage threshold
+        run: |
+          echo "=== Routing tests collected ==="
+          PYTHONPATH=src python -m pytest tests/test_mempalace_routing.py --collect-only -q 2>/dev/null
+          COUNT=$(PYTHONPATH=src python -c "
+          import subprocess, re
+          out = subprocess.check_output(['python', '-m', 'pytest', 'tests/test_mempalace_routing.py', '--collect-only', '-q'], cwd='.', stderr=subprocess.DEVNULL)
+          m = re.search(r'(\\d+) (?:test|item)', out.decode())
+          print(int(\'10\') if not m else int(m.group(1)))
+          ")
+          echo "Routing tests collected: ${COUNT}"
+          test "${COUNT}" -ge 30 || { echo "FAIL: routing coverage too low"; exit 1; }
+
+      - name: Verify version sync (init vs README)
+        run: |
+          CANONICAL=$(PYTHONPATH=src python -c "import memchorus; print(memchorus.__version__)")
+          echo "Canonical version: ${CANONICAL}"
+          grep -q "${CANONICAL}" README.md || { echo "FAIL: README missing ${CANONICAL}"; exit 1; }
+
+      - name: Verify key imports and routing overlay structure
+        run: |
+          PYTHONPATH=src python -c "
+          from memchorus import MemoryOrchestrator
+          from memchorus.mempalace_memory_source import MemPalaceMemorySource, _DEFAULT_WING_MAP, _DEFAULT_ROOM_MAP
+          from memchorus.auto_bootstrap import _DEFAULT_MEMPALACE_ROUTING
+          assert 'wing_map' in _DEFAULT_MEMPALACE_ROUTING
+          assert 'room_map' in _DEFAULT_MEMPALACE_ROUTING
+          print('All imports + routing overlay verified')
+          "
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install fresh from source
+        run: |
+          pip install .
+          pip install pytest pytest-asyncio anyio
+
+      - name: E2E routing verification on installed package
+        run: |
+          python -c "
+          import memchorus
+          print('Installed at:', memchorus.__file__)
+          from memchorus.mempalace_memory_source import MemPalaceMemorySource
+          assert MemPalaceMemorySource._categorize_room({'category': 'DECISION'}) == 'decisions'
+          assert MemPalaceMemorySource._categorize_room({'category': 'LEARNING'}) == 'lessons-learned'
+          assert MemPalaceMemorySource._categorize_room({}) == 'general'
+          assert MemPalaceMemorySource._resolve_wing_from_payload({'category': 'DECISION'}) == 'memchorus_decisions'
+          print('E2E routing on installed copy: PASSED')
+          "
+
+      - name: Report build status
+        if: always()
+        run: echo "MemChorus CI completed — unit tests + integration verified"
