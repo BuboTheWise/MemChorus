@@ -55,6 +55,8 @@ class MemChorusHooks:
         """Fire before an LLM call to auto-recall relevant memories + evaluate feedback loops.
 
         Returns a dict with injected context (if available) or None if disabled/empty.
+        Both memory recall and feedback corrections travel through the same injection path
+        as labelled blocks — soft nudges, never hard overrides.
         """
         orchestrator = _get_orchestrator()
         if orchestrator is None:
@@ -70,12 +72,47 @@ class MemChorusHooks:
             # only does exact-key lookup and doesn't accept a limit param.
             context_items = orchestrator.search(input_text, limit=3)
 
-            if not context_items:
+            injected_blocks: List[str] = []
+
+            if context_items:
+                injected_blocks.append(
+                    "[MemChorus Memory Recall]\n"
+                    f"{_format_context_block(context_items)}\n"
+                    "[/MemChorus Memory Recall]"
+                )
+
+            # 2. Evaluate feedback loop corrections (same injection path, separate label)
+            try:
+                from memchorus.feedback_loop.integration import (
+                    TurnContext as FeedbackTurnContext,
+                    TriggerEvent,
+                    inject_feedback_corrections,
+                )
+
+                turn_ctx = FeedbackTurnContext(
+                    user_message=str(input_text)[:1024],
+                    conversation_length=kwargs.get("conversation_length", 0),
+                    tool_calls_this_turn=kwargs.get("tool_calls_this_turn", 0),
+                    empty_tool_responses=kwargs.get("empty_tool_responses", 0),
+                    recent_messages=list(kwargs.get("recent_messages", [])),
+                )
+
+                feedback_text = inject_feedback_corrections(
+                    turn_context=turn_ctx,
+                    trigger_event=TriggerEvent.PRE_LLM_CALL,
+                )
+
+                if feedback_text:
+                    injected_blocks.append(feedback_text)
+            except Exception as fexc:  # graceful degradation for feedback loops
+                logger.warning("Feedback loop evaluation skipped: %s", fexc)
+
+            if not injected_blocks:
                 return None
 
             result: Dict[str, Any] = {
-                "source": "memchorus_auto_recall",
-                "injected_context": _format_context_block(context_items),
+                "source": "memchorus_pre_llm_call",
+                "injected_context": "\n\n".join(injected_blocks),
             }
             return result
 
