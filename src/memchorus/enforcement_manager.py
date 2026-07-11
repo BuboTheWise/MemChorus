@@ -140,6 +140,13 @@ class BehavioralEnforcementManager:
             try:
                 storage_outcome = self._storage_engine.capture_outcome(text)
                 result.storage_outcome = storage_outcome
+                # Surface inner save failures that were caught inside AutoStorageEngine
+                # rather than propagating as exceptions — otherwise the caller of
+                # enforce() never learns the nested orchestrator.save actually failed.
+                if storage_outcome and not storage_outcome.get("saved"):
+                    result.errors.append(
+                        f"storage_capture_failed:{storage_outcome.get('reason', 'unknown')}"
+                    )
             except Exception as exc:
                 logger.warning("Enforce: storage capture failed: %s", exc)
                 result.errors.append(f"storage_failed: {exc}")
