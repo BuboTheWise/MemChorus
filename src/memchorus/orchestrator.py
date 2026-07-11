@@ -371,7 +371,12 @@ class MemoryOrchestrator:
         """
         duplicates = self.find_duplicates(key)
         if len(duplicates) <= 1:
-            return {"key": key, "surviving": duplicates[:1], "removed_sources": []}
+            return {
+                "key": key,
+                "surviving": duplicates[:1],
+                "removed_sources": [],
+                "deleted_count": 0,
+            }
 
         # Infer content shape to decide which copy to keep
         # Retrieve from the first source to get the value type
@@ -398,15 +403,40 @@ class MemoryOrchestrator:
                 surviving.append(pref)
                 break
 
-        # Remove from all other copies that were not selected
+        # Identify which copies should be removed ---------------------
         for sname in duplicates:
             if sname not in surviving:
                 removed_sources.append(sname)
+
+        # Actually remove the key from each redundant source ----------
+        deleted_count = 0
+        for sname in removed_sources:
+            src = self.memory_sources.get(sname)
+            if src is not None:
+                try:
+                    ok = src.delete(key)
+                    if ok:
+                        deleted_count += 1
+                        logger.info(
+                            "consolidate_key('%s'): deleted from '%s'", key, sname
+                        )
+                    else:
+                        logger.warning(
+                            "consolidate_key('%s'): delete returned False for "
+                            "source '%s' (may already be gone)",
+                            key, sname,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "consolidate_key('%s'): exception deleting from '%s': %s",
+                        key, sname, exc,
+                    )
 
         return {
             "key": key,
             "surviving": surviving,
             "removed_sources": removed_sources,
+            "deleted_count": deleted_count,
         }
 
     def save(self,
