@@ -135,3 +135,18 @@ class MemorySource(ABC):
             bool: True if successful, False otherwise
         """
         pass
+
+    @abstractmethod
+    def delete(self, key: str) -> bool:
+        """Remove a single memory identified by *key* from this source.
+
+        Used by ``consolidate_key()`` and the EvictionEngine lifecycle sweep.
+        Returns ``True`` if the entry was found and removed, ``False`` otherwise.
+
+        Args:
+            key (str): Unique identifier for the memory to delete
+
+        Returns:
+            bool: True if deleted, False if not found or error occurred
+        """
+        pass
