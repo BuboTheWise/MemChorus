@@ -76,6 +76,11 @@ _PRIORITY_KEYWORDS = [
     ("exception",      DecisionPoint.ERROR_STATE),
     ("traceback",      DecisionPoint.ERROR_STATE),
     ("went wrong",     DecisionPoint.ERROR_STATE),
+    # B-3 fix: imperative error/action patterns that agents actually use
+    ("fix ",           DecisionPoint.ERROR_STATE),            # trailing space avoids 'fixed' false positive
+    ("failed to",      DecisionPoint.ERROR_STATE),
+    ("bug",            DecisionPoint.ERROR_STATE),
+    ("regression",     DecisionPoint.ERROR_STATE),
 
     # --- PLANNING_START (priority 1) -------------------------------------
     ("i need to implement",   DecisionPoint.PLANNING_START),
@@ -88,6 +93,10 @@ _PRIORITY_KEYWORDS = [
     ("my plan",               DecisionPoint.PLANNING_START),
     ("let me plan",           DecisionPoint.PLANNING_START),
     ("planning to",           DecisionPoint.PLANNING_START),
+    # B-3 fix: imperative planning patterns
+    ("implement ",            DecisionPoint.PLANNING_START),   # trailing space avoids 'implementation' false fire
+    ("next step",             DecisionPoint.PLANNING_START),
+    ("build ",                DecisionPoint.PLANNING_START),
 
     # --- TOOL_CALL_INTENT (priority 2) -----------------------------------
     ("next i will call",      DecisionPoint.TOOL_CALL_INTENT),
@@ -99,6 +108,11 @@ _PRIORITY_KEYWORDS = [
     ("tool call",             DecisionPoint.TOOL_CALL_INTENT),
     ("i will use",            DecisionPoint.TOOL_CALL_INTENT),
     ("call the",              DecisionPoint.TOOL_CALL_INTENT),
+    # B-3 fix: imperative action patterns common in agent messages
+    ("review ",               DecisionPoint.TOOL_CALL_INTENT),
+    ("test ",                 DecisionPoint.TOOL_CALL_INTENT),
+    ("verify",                DecisionPoint.TOOL_CALL_INTENT),
+    ("troubleshoot",          DecisionPoint.TOOL_CALL_INTENT),
 
     # --- POST_ACTION_COMPLETE (priority 3) ----------------------------------
     ("completed",       DecisionPoint.POST_ACTION_COMPLETE),

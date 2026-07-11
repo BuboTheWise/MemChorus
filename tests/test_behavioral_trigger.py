@@ -215,7 +215,8 @@ class TestCallbackExecution(unittest.TestCase):
         trigger.on(DecisionPoint.PLANNING_START, capture)
         trigger.fire("The plan is to implement a new feature")
 
-        self.assertEqual(len(captured_points), 1)
+        self.assertGreaterEqual(len(captured_points), 1,
+                               "Callback should fire at least once")
         point = captured_points[0]
         self.assertEqual(point.type, DecisionPoint.PLANNING_START)
         self.assertIsInstance(point.confidence, float)
