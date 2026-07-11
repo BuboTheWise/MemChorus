@@ -60,7 +60,7 @@ class _CacheRegistry:
         entry = self._cache.get(key)
         if entry is None:
             return None
-        effective_ttl = float(ttl_override) if ttl_override else DEFAULT_CACHE_TTL_SECONDS
+        effective_ttl = float(ttl_override) if ttl_override else float(entry.ttl)
         if time.monotonic() - entry.timestamp > effective_ttl:
             # Expired – remove it
             del self._cache[key]
