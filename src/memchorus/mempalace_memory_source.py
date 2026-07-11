@@ -1040,3 +1040,44 @@ class MemPalaceMemorySource(MemorySource):
             })
 
         return ok
+
+    def delete(self, key: str) -> bool:
+        """Remove a memory identified by *key*.
+
+        Tries MCP ``mempalace_delete_drawer`` first (requires knowing the drawer_id).
+        As a fallback strategy we remove the local cache copy.  Returns ``True`` when
+        at least one persistence path reported success, ``False`` otherwise.
+        """
+        deleted = False
+
+        # Attempt MCP deletion — search for the drawer that matches this key
+        if self._connected and self._client.is_alive:
+            hits = self._client.search(query=key, limit=5)
+            if isinstance(hits, list):
+                for hit in hits:
+                    if not isinstance(hit, dict):
+                        continue
+                    # Check if this hit matches our key
+                    hit_key = (hit.get("key", "") or "").lower()
+                    if key.lower() == hit_key:
+                        drawer_id = hit.get("drawer_id") or hit.get("id")
+                        if drawer_id:
+                            result = self._client.call_tool(
+                                "mempalace_delete_drawer",
+                                {"drawer_id": str(drawer_id)},
+                            )
+                            if result is not None:
+                                deleted = True
+                                break
+
+        # Always remove the local cache copy regardless of MCP outcome
+        local_ok = False
+        try:
+            filepath = self._cache_dir / f"{key}.json"
+            if filepath.exists():
+                filepath.unlink()
+                local_ok = True
+        except Exception:
+            pass
+
+        return deleted or local_ok

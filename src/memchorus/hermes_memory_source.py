@@ -328,6 +328,30 @@ class HermesDefaultMemorySource(MemorySource):
                 
         return success
 
+    def delete(self, key: str) -> bool:
+        """Remove a memory identified by *key*.
+
+        Tries the safe-key normalized path first (what ``save()`` writes to),
+        then falls back to the raw key name for pre-normalized files.
+        Returns ``True`` if at least one file was removed, ``False`` otherwise.
+        """
+        deleted = False
+        try:
+            # Primary: safe-key normalized path (what save() uses)
+            safe_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
+            if os.path.exists(safe_path):
+                os.remove(safe_path)
+                deleted = True
+
+            # Fallback: raw key name (pre-placed files may not be normalized)
+            raw_path = os.path.join(self.memory_dir, f"{key}.json")
+            if os.path.exists(raw_path) and not deleted:
+                os.remove(raw_path)
+                deleted = True
+        except Exception:
+            pass
+        return deleted
+
     # Add property to access name (needed for interface compliance)
     @property
     def name(self) -> str:
