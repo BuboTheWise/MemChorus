@@ -60,6 +60,9 @@ def test_memory_source_subclass_with_all_methods_is_instantiable():
         def search(self, query, limit=10):
             return []
 
+        def delete(self, key):
+            return True
+
         def get_source_info(self):
             return {"name": self.name}
 
@@ -93,6 +96,9 @@ def test_memory_source_instance_has_name_attribute():
         def search(self, query, limit=10):
             return []
 
+        def delete(self, key):
+            return True
+
         def get_source_info(self):
             return {"name": self.name}
 
@@ -124,6 +130,9 @@ def test_memory_source_name_is_string():
 
         def search(self, query, limit=10):
             return []
+
+        def delete(self, key):
+            return True
 
         def get_source_info(self):
             return {"name": self.name}
