@@ -406,6 +406,14 @@ class MemoryOrchestrator:
                 surviving.append(pref)
                 break
 
+        # Safety guard: if no preferred source survived, keep ALL copies
+        # rather than deleting everything — data safety over cleanup
+        if not surviving:
+            logger.warning(
+                "consolidate_key('%s'): no preferred target found; keeping all "
+                "%d copies to prevent data loss", key, len(duplicates)
+            )
+
         # Identify which copies should be removed ---------------------
         for sname in duplicates:
             if sname not in surviving:
