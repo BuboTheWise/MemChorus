@@ -24,29 +24,22 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package + test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install .
-          pip install pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
+        run: pip install . pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
 
       - name: Run full test suite
-        run: |
-          PYTHONPATH=src python -m pytest tests/ \\
-            --tb=short \\
-            -x --durations=20 \
-            --override-ini="addopts="
         env:
           PYTEST_ADDOPTS: ""
+        run: PYTHONPATH=src python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts="
 
       - name: Verify routing test coverage threshold
         run: |
           echo "=== Routing tests collected ==="
-          PYTHONPATH=src python -m pytest tests/test_mempalace_routing.py --collect-only -q 2>/dev/null
+          PYTHONPATH=src python -m pytest tests/test_mempalace_routing.py --collect-only -q 2>&1 || true
           COUNT=$(PYTHONPATH=src python -c "
           import subprocess, re
           out = subprocess.check_output(['python', '-m', 'pytest', 'tests/test_mempalace_routing.py', '--collect-only', '-q'], cwd='.', stderr=subprocess.DEVNULL)
-          m = re.search(r'(\\d+) (?:test|item)', out.decode())
-          print(int(\'10\') if not m else int(m.group(1)))
+          m = re.search(r'(\d+) (?:test|item)', out.decode())
+          print(int('10') if not m else int(m.group(1)))
           ")
           echo "Routing tests collected: ${COUNT}"
           test "${COUNT}" -ge 30 || { echo "FAIL: routing coverage too low"; exit 1; }
@@ -81,9 +74,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install fresh from source
-        run: |
-          pip install .
-          pip install pytest pytest-asyncio anyio
+        run: pip install . pytest pytest-asyncio anyio
 
       - name: E2E routing verification on installed package
         run: |
@@ -100,4 +91,4 @@ jobs:
 
       - name: Report build status
         if: always()
-        run: echo "MemChorus CI completed — unit tests + integration verified"
+        run: echo "MemChorus CI completed unit tests and integration verified"
