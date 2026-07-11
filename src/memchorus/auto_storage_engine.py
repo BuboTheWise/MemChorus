@@ -265,14 +265,15 @@ class AutoStorageEngine:
         try:
             # B-2 fix (t_b9205369): route through recommended_sources() so that
             # enabled gating, priority tiering, and write restrictions are honoured.
-            # Map the detected significance category to a write_type token the
-            # orchestrator understands.
+            # Map every SignificanceCategory to a write_type token the orchestrator
+            # understands. LEARNING / MISTAKE -> "memory" ensures they route to
+            # memory-specialised sources rather than falling through to generic.
             write_type = {
-                "LEARNING":   "memory",
-                "MISTAKE":    "memory",
-                "MEMORY":     "memory",
-                "DECISION":   "decision",
-                "RESULT":     "general",
+                "LEARNING":     "memory",
+                "MISTAKE":      "memory",
+                "MEMORY":       "memory",
+                "DECISION":     "decision",
+                "RESULT":       "general",
                 "RELATIONSHIP": "graph",
             }.get(category_str.upper(), "general")
 
