@@ -287,7 +287,7 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) that addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `operational`, `long_lived`, `knowledge_permanent`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days`, `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `operational`, `long_lived`, `knowledge_permanent`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days`, `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 ## Installation
 
@@ -463,7 +463,46 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-v1.5.0 is released on master. Includes everything from v1.3 plus: **MCP transport autodetect** (reads `mcp_servers.mempalace.command` from config.yaml so users can override hardcoded module paths), **feedback loop auto-load** at bootstrap with `LoadSummary` diagnostics for load-time visibility, and a fix for the **RelevanceScorer zero-score bug** where dict/list content lost semantic query overlap. This release adds multi-wing routing: category-aware wing/room selection via mempalace_routing YAML config, semantic room slugs (DECISION->decisions, LEARNING->lessons-learned, etc), dynamic recall path resolution, and optional search filters. 649 tests collected across all modules plus  LifecycleManager with SweepScheduler, per-profile retention periods (ephemeral/operational/log_long_lived/knowledge_permanent), content-assessment-driven eviction engine with two-phase soft-delete archive before hard-deletion, AuditLogger for compliance tracing, merge-at-write deduplication hooks, and periodic automated sweeps. All lifecycle features are opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour preserved. 593 tests collected across all modules.
+### v1.5.0 (current — on `master`)
+
+**Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
+
+\`\`\`
+  +------------------+----------------------------+-------------------+---------------------------+
+  | Category         | Wing                       | Room              | Example Content           |
+  +------------------+----------------------------+-------------------+---------------------------+
+  | DECISION         | memchorus_decisions        | decisions         | Architecture, transport   |
+  | LEARNING         | memchorus_learning         | lessons-learned   | Shell escape, stderr      |
+  \|                  |                            | corrections       | proactive_save fix        |
+  +------------------+----------------------------+-------------------+---------------------------+
+  | OUTCOMES         | memchorus_general          | outcomes          | Test suite results        |
+  +------------------+----------------------------+-------------------+---------------------------+
+  | (uncategorized)  | memchorus_general (default)| general           | Untagged content          |
+  +------------------+----------------------------+-------------------+---------------------------+
+\`\`\`
+
+Usage requires \`category\` metadata injection at write time:
+
+\`\`\`python
+orchestrate.save(
+    key="architecture_decision_x",
+    value="We chose MemPalace routing over flat storage...",
+    metadata={"category": "DECISION"}     # drives wing + room selection
+)
+\`\`\`
+
+Other v1.5.0 features:
+
+- **MCP transport autodetect** — reads \`mcp_servers.mempalace.command\` from config.yaml so users can override hardcoded module paths
+
+- **Feedback loop auto-load** at bootstrap with \`LoadSummary\` diagnostics for load-time visibility
+
+- **RelevanceScorer zero-score bug fix** — dict/list content no longer loses semantic query overlap
+
+- **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
+
+- **649 tests** collected across all modules
+
 
 ## Tipping the Owl
 
@@ -474,4 +513,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.4.0 — v1.5.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.5.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
