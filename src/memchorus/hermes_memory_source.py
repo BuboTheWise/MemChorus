@@ -5,9 +5,10 @@ This implementation provides integration with the default Hermes memory system (
 It serves as the resilient core that must remain functional even if other voices are unavailable.
 """
 
+import difflib as _difflib
+import json
 import os
 import re as _re
-import json
 import datetime
 from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
@@ -16,28 +17,80 @@ from memchorus.memory_source import MemorySource
 class HermesDefaultMemorySource(MemorySource):
     """
     Memory source implementation for Hermes default memory system.
-    
+
     This provides integration with the local curated memory files such as MEMORY.md,
     USER.md, and session context that form the resilient core of MemChorus.
     """
 
+    # Minimum score threshold — results below this floor are filtered out before
+    # being returned to the orchestrator so that low-confidence noise is suppressed.
+    MIN_RECALL_SCORE = 1.5
+
     def __init__(self, name: str = "hermes_default", config: Optional[Dict[str, Any]] = None):
         """
         Initialize the Hermes default memory source.
-        
+
         Args:
             name (str): Unique identifier for this memory source
-            config (Dict[str, Any], optional): Configuration parameters for this source
+            config (Dict[str, Any], optional): Configuration parameters for this source.
+              Overrides:\n                min_recall_score – override MIN_RECALL_SCORE at runtime
         """
         super().__init__(name, config)
         self._name = name  # Store as private attribute to avoid access issues
         self.config = config or {}
         self._initialize_memory_directory()
-        
+
     def _initialize_memory_directory(self):
         """Initialize the memory storage directory."""
         self.memory_dir = self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories'))
         os.makedirs(self.memory_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Content matching / scoring helpers
+    # ------------------------------------------------------------------
+
+    def _content_matches(self, query: str, content_text: str) -> float:
+        """Score how well *query* matches *content_text*.
+
+        Algorithm:
+          1. Split the query into individual terms (lowercased).
+          2. For each term, use a word-boundary regex so that 'fix' does NOT
+             match 'suffix'. Count a point for each distinct term found.
+          3. Bonus: add +0.5 for every extra occurrence beyond the first per term
+             (term frequency bonus, capped at +2 bonus to avoid runaway scoring).
+          4. Self-match penalty: if the content is essentially identical to
+             the query (SequenceMatcher ratio > 0.9), halve the final score
+             so that query-echo artifacts don't dominate results.
+
+        Args:
+            query: The search query string.
+            content_text: Plain-text representation of the memory content.
+
+        Returns:
+            float: Relevance score >= 0.  Zero means no match terms found.
+        """
+        q_lower = query.lower()
+        c_lower = content_text.lower()
+        terms = [t for t in q_lower.split() if len(t) > 1]
+        if not terms:
+            return 0.0
+
+        score = 0.0
+        for term in terms:
+            count = c_lower.count(term)
+            if count > 0:
+                score += 2.0 + min(count - 1, 4) * 0.5
+
+        # Self-match / query-echo penalty
+        ratio = _difflib.SequenceMatcher(None, q_lower, c_lower).ratio()
+        if ratio > 0.9:
+            score *= 0.5
+
+        return score
+
+    def _effective_min_score(self) -> float:
+        """Return the effective minimum recall score from config override."""
+        return self.config.get('min_recall_score', self.MIN_RECALL_SCORE)
 
     @staticmethod
     def _safe_key(key: str) -> str:
@@ -186,91 +239,89 @@ class HermesDefaultMemorySource(MemorySource):
             return str(content)
 
     def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Search for memories matching a query.
-
-        Searches BOTH the filename (key) AND the JSON file content so that
-        queries find results even when the key name doesn't contain the
-        search terms but the stored value does.
+        """Scored search for memories matching a query.
 
         For each .json file in memory_dir the method:
-          1. Checks if any query term appears in the filename (case-insensitive).
-          2. If not, opens and reads the JSON content and checks all text
-             extracted from that content against every query term.
-          A match on either dimension counts as a hit.
+          1. Scores the filename (key) against the query via _content_matches.
+          2. Reads and scores the extracted content text against the query.
+          3. Uses the maximum of the two as the file's score.
+
+        Results scoring < MIN_RECALL_SCORE are dropped to suppress low-confidence
+        noise. The remaining results are sorted by score descending and trimmed
+        to *limit*.
 
         Args:
             query (str): Search query string
             limit (int): Maximum number of results to return
 
         Returns:
-            List[Dict[str, Any]]: List of matching memories with metadata
+            List[Dict[str, Any]]: Ranked matching memories with metadata
         """
-        results = []
+        candidates: List[Dict[str, Any]] = []
+        min_score = self._effective_min_score()
+
         try:
-            # Terms to match — split multi-word queries so each term can
-            # independently trigger a hit (e.g. 'routing bug' checks both
-            # 'routing' and 'bug').
-            terms = query.lower().split()
-
-            # Normalized variants ensure underscores in the lookup term still
-            # match hyphen-normalized filenames / keys on disk.
-            safe_q = self._safe_key(query).lower()
-            safe_terms = [t for t in safe_q.split('-') if t]
-
-            all_variants = terms + ([safe_q] if safe_q not in terms else []) + safe_terms
-            all_variants = list(set(all_variants))
-
             filenames = sorted(os.listdir(self.memory_dir))
             for filename in filenames:
                 if not filename.endswith('.json'):
                     continue
 
                 key_name = filename[:-5]  # Remove .json extension
-                file_lower = filename.lower()
+                file_path = os.path.join(self.memory_dir, filename)
 
-                # Pass 1: fast — check if any variant appears in the filename
-                hit = any(v in file_lower for v in all_variants)
+                # --- Score the key (filename) ---
+                key_score = self._content_matches(query, key_name)
 
-                # Pass 2: content-aware search (only when filename didn't match)
-                if not hit:
-                    try:
-                        file_path = os.path.join(self.memory_dir, filename)
-                        with open(file_path, 'r') as f:
-                            raw = json.load(f)
-                        text = self._content_to_search_text(raw).lower()
-                        hit = any(v in text for v in all_variants)
-                    except Exception:
-                        # Corrupt or unreadable file — skip gracefully
-                        hit = False
+                # --- Read & score content ---
+                raw = None
+                content_text = ''
+                try:
+                    with open(file_path, 'r') as f:
+                        raw = json.load(f)
+                    content_text = self._content_to_search_text(raw).lower()
+                except Exception:
+                    # Corrupt or unreadable file — skip content scoring
+                    pass
 
-                if hit:
-                    content = self.retrieve(key_name)
-                    if content is not None:
-                        try:
-                            mtime = os.path.getmtime(
-                                os.path.join(self.memory_dir, filename)
-                            )
-                            ts = datetime.datetime.fromtimestamp(
-                                mtime, tz=datetime.timezone.utc
-                            ).isoformat()
-                        except Exception:
-                            ts = datetime.datetime.now(
-                                tz=datetime.timezone.utc
-                            ).isoformat()
+                content_score = self._content_matches(query, content_text)
+                score = max(key_score, content_score)
 
-                        results.append({
-                            'key': key_name,
-                            'content': content,
-                            'source': self._name,
-                            'timestamp': ts
-                        })
+                if score < min_score:
+                    continue
 
-                if len(results) >= limit:
-                    break
+                # Resolve timestamp & actual content for the result dict
+                content_val = raw if raw is not None else self.retrieve(key_name)
+                if content_val is None:
+                    continue
+
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    ts = datetime.datetime.fromtimestamp(
+                        mtime, tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+
+                candidates.append({
+                    'key': key_name,
+                    'content': content_val,
+                    'source': self._name,
+                    'timestamp': ts,
+                    '_score': score,       # internal — stripped before return
+                })
+
+            # Rank by score descending
+            candidates.sort(key=lambda r: r['_score'], reverse=True)
 
         except Exception:
             pass
+
+        # Trim to limit and strip the internal _score field
+        results = []
+        for c in candidates[:limit]:
+            c.pop('_score', None)
+            results.append(c)
+
         return results
 
     def is_available(self) -> bool:
