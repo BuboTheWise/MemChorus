@@ -293,7 +293,9 @@ class RelevanceScorer:
                     content=r.get("content"),
                     source=r.get("source", "unknown"),
                     score=round(s, 4),
-                    meta={k: v for k, v in r.items() if k not in ("key", "content", "source")},
+                    # Exclude 'score' so the RelevanceScorer's normalized value is not
+                    # overwritten by the raw source-level word-count score (G3 fix).
+                    meta={k: v for k, v in r.items() if k not in ("key", "content", "source", "score")},
                 )
 
         ranked = sorted(scored.values(), key=lambda x: x.score, reverse=True)
