@@ -161,55 +161,114 @@ class HermesDefaultMemorySource(MemorySource):
         except Exception:
             return None
 
+    def _content_to_search_text(self, content: Any) -> str:
+        """Convert a memory value to searchable text.
+
+        Handles all JSON types (dict, list, str, int, float, bool, None).
+        Recursively walks dicts and lists so that nested values are also
+        included in the searchable text body.
+
+        Args:
+            content: The JSON-deserialized value loaded from a .json file.
+
+        Returns:
+            str: Plain-text representation suitable for substring matching.
+        """
+        if isinstance(content, dict):
+            parts = []
+            for k, v in content.items():
+                parts.append(str(k))
+                parts.append(self._content_to_search_text(v))
+            return ' '.join(parts)
+        elif isinstance(content, list):
+            return ' '.join(self._content_to_search_text(item) for item in content)
+        else:
+            return str(content)
+
     def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query.
-        
-        For the Hermes default memory system, this is a simplified search that 
-        looks for files matching the query pattern in the memory directory.
-        
+
+        Searches BOTH the filename (key) AND the JSON file content so that
+        queries find results even when the key name doesn't contain the
+        search terms but the stored value does.
+
+        For each .json file in memory_dir the method:
+          1. Checks if any query term appears in the filename (case-insensitive).
+          2. If not, opens and reads the JSON content and checks all text
+             extracted from that content against every query term.
+          A match on either dimension counts as a hit.
+
         Args:
             query (str): Search query string
             limit (int): Maximum number of results to return
-            
+
         Returns:
             List[Dict[str, Any]]: List of matching memories with metadata
         """
         results = []
         try:
-            # Check file-based search — also try safe-key normalized variant of the query
-            # so that underscores in the lookup term still match hyphen-normalized filenames.
-            variants = [query.lower()]
-            safe_q = self._safe_key(query).lower()
-            if safe_q not in variants:
-                variants.append(safe_q)
-            for filename in os.listdir(self.memory_dir):
-                if filename.endswith('.json'):
-                    # Does any variant of the query appear in this filename?
-                    hit = any(variant in filename.lower() for variant in variants)
-                    if hit:
-                        key_name = filename[:-5]  # Remove .json extension
-                        content = self.retrieve(key_name)
-                        if content:
-                            # Get file modification time if available
-                            import time
-                            try:
-                                mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
-                                ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
-                            except Exception:
-                                ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+            # Terms to match — split multi-word queries so each term can
+            # independently trigger a hit (e.g. 'routing bug' checks both
+            # 'routing' and 'bug').
+            terms = query.lower().split()
 
-                            results.append({
-                                'key': key_name,
-                                'content': content,
-                                'source': self._name,
-                                'timestamp': ts
-                            })
+            # Normalized variants ensure underscores in the lookup term still
+            # match hyphen-normalized filenames / keys on disk.
+            safe_q = self._safe_key(query).lower()
+            safe_terms = [t for t in safe_q.split('-') if t]
+
+            all_variants = terms + ([safe_q] if safe_q not in terms else []) + safe_terms
+            all_variants = list(set(all_variants))
+
+            filenames = sorted(os.listdir(self.memory_dir))
+            for filename in filenames:
+                if not filename.endswith('.json'):
+                    continue
+
+                key_name = filename[:-5]  # Remove .json extension
+                file_lower = filename.lower()
+
+                # Pass 1: fast — check if any variant appears in the filename
+                hit = any(v in file_lower for v in all_variants)
+
+                # Pass 2: content-aware search (only when filename didn't match)
+                if not hit:
+                    try:
+                        file_path = os.path.join(self.memory_dir, filename)
+                        with open(file_path, 'r') as f:
+                            raw = json.load(f)
+                        text = self._content_to_search_text(raw).lower()
+                        hit = any(v in text for v in all_variants)
+                    except Exception:
+                        # Corrupt or unreadable file — skip gracefully
+                        hit = False
+
+                if hit:
+                    content = self.retrieve(key_name)
+                    if content is not None:
+                        try:
+                            mtime = os.path.getmtime(
+                                os.path.join(self.memory_dir, filename)
+                            )
+                            ts = datetime.datetime.fromtimestamp(
+                                mtime, tz=datetime.timezone.utc
+                            ).isoformat()
+                        except Exception:
+                            ts = datetime.datetime.now(
+                                tz=datetime.timezone.utc
+                            ).isoformat()
+
+                        results.append({
+                            'key': key_name,
+                            'content': content,
+                            'source': self._name,
+                            'timestamp': ts
+                        })
+
                 if len(results) >= limit:
                     break
-                    
-            # Also search metadata files if available, but that's more complex for now
-            
+
         except Exception:
             pass
         return results
