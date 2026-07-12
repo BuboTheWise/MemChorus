@@ -328,5 +328,67 @@ class TestCaptureResultStructure(unittest.TestCase):
         self.assertIn("learning", r_learn["key"].lower())
 
 
+# ---------------------------------------------------------------------------
+# Dual-write (t_87b41d3a): LEARNING/MISTAKE/DECISION save to hermes_default AND mempalace
+# ---------------------------------------------------------------------------
+
+
+class _MockOrchestratorDualWrite:
+    """Mock that tracks which source names received saves."""
+
+    def __init__(self) -> None:
+        self.save_by_source: list[list] = []  # [(source_name, key, payload), ...]
+
+    def recommended_sources(
+        self, write_type: str = "general", max_results: int = 3
+    ) -> list[str]:
+        return ["mempalace"]
+
+    def save(self, key: str, value: dict, source_name: str = "") -> bool:
+        self.save_by_source.append((source_name, key, value))
+        return True
+
+
+class TestDualWrite(unittest.TestCase):
+    """AC-t_87b41d3a: dual-write to hermes_default + mempalace for key categories."""
+
+    def _sources_saved(self, orch: _MockOrchestratorDualWrite) -> set[str]:
+        return {entry[0] for entry in orch.save_by_source}
+
+    def test_learning_saves_to_hermes_default_and_mempalace(self) -> None:
+        orch = _MockOrchestratorDualWrite()
+        engine = AutoStorageEngine(orch)
+        result = engine.capture_outcome("I learned that the routing map was wrong")
+        self.assertTrue(result["saved"])
+        sources = self._sources_saved(orch)
+        self.assertIn("mempalace", sources, "should save to mempalace via recommended_sources")
+        self.assertIn("hermes_default", sources, "dual-write fallback should hit hermes_default too")
+
+    def test_mistake_saves_to_both_sources(self) -> None:
+        orch = _MockOrchestratorDualWrite()
+        engine = AutoStorageEngine(orch)
+        result = engine.capture_outcome("Something went wrong with the pipeline configuration")
+        self.assertTrue(result["saved"])
+        sources = self._sources_saved(orch)
+        self.assertIn("hermes_default", sources)
+
+    def test_decision_saves_to_both_sources(self) -> None:
+        orch = _MockOrchestratorDualWrite()
+        engine = AutoStorageEngine(orch)
+        result = engine.capture_outcome("We decided to refactor the entire memory subsystem")
+        self.assertTrue(result["saved"])
+        sources = self._sources_saved(orch)
+        self.assertIn("hermes_default", sources)
+
+    def test_result_only_saves_to_one_source(self) -> None:
+        orch = _MockOrchestratorDualWrite()
+        engine = AutoStorageEngine(orch)
+        result = engine.capture_outcome("The benchmark achieved 99.2% accuracy and was a success")
+        self.assertTrue(result["saved"])
+        sources = self._sources_saved(orch)
+        # RESULT is NOT a dual-write category — should only hit recommended_sources (mempalace)
+        self.assertEqual(sources, {"mempalace"})
+
+
 if __name__ == "__main__":
     unittest.main()
