@@ -161,58 +161,112 @@ class HermesDefaultMemorySource(MemorySource):
         except Exception:
             return None
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
-        """
-        Search for memories matching a query.
-        
-        For the Hermes default memory system, this is a simplified search that 
-        looks for files matching the query pattern in the memory directory.
-        
-        Args:
-            query (str): Search query string
-            limit (int): Maximum number of results to return
-            
-        Returns:
-            List[Dict[str, Any]]: List of matching memories with metadata
-        """
-        results = []
-        try:
-            # Check file-based search — also try safe-key normalized variant of the query
-            # so that underscores in the lookup term still match hyphen-normalized filenames.
-            variants = [query.lower()]
-            safe_q = self._safe_key(query).lower()
-            if safe_q not in variants:
-                variants.append(safe_q)
-            for filename in os.listdir(self.memory_dir):
-                if filename.endswith('.json'):
-                    # Does any variant of the query appear in this filename?
-                    hit = any(variant in filename.lower() for variant in variants)
-                    if hit:
-                        key_name = filename[:-5]  # Remove .json extension
-                        content = self.retrieve(key_name)
-                        if content:
-                            # Get file modification time if available
-                            import time
-                            try:
-                                mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
-                                ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
-                            except Exception:
-                                ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+    def _content_matches(self, content: Any, query_parts: List[str]) -> float:
+        """Score how well *content* matches a set of query parts.
 
-                            results.append({
-                                'key': key_name,
-                                'content': content,
-                                'source': self._name,
-                                'timestamp': ts
-                            })
-                if len(results) >= limit:
-                    break
-                    
-            # Also search metadata files if available, but that's more complex for now
-            
+        Searches string values, dict keys/values, and list elements.
+        Returns a relevance score (0.0 = no match).  Higher is better.
+
+        Scoring weights:
+            filename-only key match          3.0  (strongest signal)
+            content value exact phrase       1.5
+            each matched query part in text  1.0
+            case-sensitive bonus            +0.5 per word
+        """
+        # Normalize the memory value to a single searchable string.
+        if isinstance(content, str):
+            pool = content
+        elif isinstance(content, (dict, list)):
+            import json as _json
+            try:
+                pool = _json.dumps(content)
+            except Exception:
+                pool = str(content)
+        else:
+            pool = str(content)
+
+        pool_lower = pool.lower()
+        matches = 0
+        for part in query_parts:
+            if part in pool_lower:
+                matches += 1
+            elif _re.search(rf'\b{_re.escape(part)}\b', pool_lower):
+                matches += 0.5  # partial (whitespace-bounded) match counts less
+
+        case_bonus = sum(1 for part in query_parts if part and len(part) > 2 and part in pool)
+        return matches + 0.5 * case_bonus
+
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search memories by **actual file content** (not just filenames).
+
+        Reads every ``.json`` file in ``memory_dir``, deserializes it, and checks
+        whether any token from *query* appears inside the stored value -- strings,
+        dict keys/values, or list elements.  Filename key matches still get a bonus
+        so that exact-key queries remain fast.
+
+        Returns up to *limit* results sorted by descending relevance score.
+        """
+        query_parts = [p for p in query.lower().split() if len(p) > 1]
+        if not query_parts:
+            return []
+
+        results: List[Dict[str, Any]] = []
+        try:
+            filenames = os.listdir(self.memory_dir)
         except Exception:
-            pass
-        return results
+            return []
+
+        for filename in filenames:
+            if not filename.endswith('.json'):
+                continue
+
+            key_name = filename[:-5]  # strip .json extension
+            fpath = os.path.join(self.memory_dir, filename)
+
+            # --- Fast path: does the KEY already look relevant? ---
+            key_score = 0.0
+            safe_key_norm = self._safe_key(key_name).lower()
+            for part in query_parts:
+                if part in safe_key_norm:
+                    key_score += 3.0  # strong signal
+
+            try:
+                with open(fpath, 'r', errors='replace') as f:
+                    raw = f.read()
+
+                try:
+                    content = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    # Treat non-JSON content as a plain string
+                    content = raw[:4096]  # cap to avoid huge blobs
+
+                score = self._content_matches(content, query_parts) + key_score
+                if score <= 0:
+                    continue  # no signal at all — skip
+
+                # Modification time for relevance scoring
+                try:
+                    mtime = os.path.getmtime(fpath)
+                    ts = datetime.datetime.fromtimestamp(
+                        mtime, tz=datetime.timezone.utc).isoformat()
+                except Exception:
+                    ts = datetime.datetime.now(
+                        tz=datetime.timezone.utc).isoformat()
+
+                results.append({
+                    'key': key_name,
+                    'content': content,
+                    'source': self._name,
+                    'timestamp': ts,
+                    'score': max(score, 0.1),
+                })
+
+            except Exception:
+                continue  # skip unreadable files gracefully
+
+        # Sort by score descending, then take top N
+        results.sort(key=lambda r: r.get('score', 0.0), reverse=True)
+        return results[:limit]
 
     def is_available(self) -> bool:
         """
