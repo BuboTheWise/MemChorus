@@ -455,6 +455,152 @@ def test_search_missing_memory_dir_fails_gracefully():
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def test_search_finds_content_not_in_filename():
+    """search finds JSON files whose *content* contains the query term even when
+    the filename/key does NOT contain the search word.
+
+    This is the core regression test for the content-aware search fix.
+    Previously only the filename was checked, so any memory with a key that
+    didn't include the search terms would be invisible.
+    """
+    tmpdir = tempfile.mkdtemp(prefix='hermes_content_search_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        # Memory key does NOT contain 'routing' but content DOES
+        assert src.save('session-log-2024-07-11', {
+            'topic': 'debugging routing behavior in the orchestrator',
+            'finding': 'routing map returns wrong category for LEARNING keys'
+        }) is True
+
+        # Another entry whose key has nothing to do with 'behavioral' either
+        assert src.save('task-summary-t12345', {
+            'status': 'done',
+            'notes': 'behavioral enforcement hook fires too early'
+        }) is True
+
+        # A decoy file that doesn't match the search terms at all
+        assert src.save('unrelated-config', {'alpha': 1, 'beta': 2}) is True
+
+        results = src.search('routing')
+        keys_found = [r['key'] for r in results]
+        assert 'session-log-2024-07-11' in keys_found, \
+            "search('routing') should find file by content: %s" % keys_found
+
+        results_b = src.search('behavioral')
+        keys_found_b = [r['key'] for r in results_b]
+        assert 'task-summary-t12345' in keys_found_b, \
+            "search('behavioral') should find file by content: %s" % keys_found_b
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_search_multi_word_query_matches_any_term_in_content():
+    """When searching for 'routing bug', each term is checked independently —
+    a file containing either 'routing' or 'bug' in its content counts as a hit.
+    """
+    tmpdir = tempfile.mkdtemp(prefix='hermes_multiword_search_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        # Contains 'routing' but not 'bug'
+        assert src.save('entry-alpha', {'detail': 'routing table is empty'}) is True
+
+        # Contains 'bug' but not 'routing'
+        assert src.save('entry-beta', {'detail': 'fixed a critical bug in parser'}) is True
+
+        # Contains neither
+        assert src.save('entry-gamma', {'detail': 'weather forecast sunny'}) is True
+
+        results = src.search('routing bug')
+        keys_found = [r['key'] for r in results]
+        assert 'entry-alpha' in keys_found, "Should match by 'routing' content"
+        assert 'entry-beta' in keys_found, "Should match by 'bug' content"
+        assert 'entry-gamma' not in keys_found, "Should NOT match unrelated entry"
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_search_content_nested_dict_and_list():
+    """Content-aware search recursively walks nested dicts and lists.
+    A term buried two levels deep should still be found.
+    """
+    tmpdir = tempfile.mkdtemp(prefix='hermes_nested_search_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        assert src.save('deep-structure-key', {
+            'metadata': {'tags': ['important']},
+            'details': {
+                'subsystem': 'orchestrator',
+                'issue': {
+                    'type': 'regression',
+                    'description': 'routing map silently drops LEARNING entries'
+                }
+            }
+        }) is True
+
+        assert src.save('other-file', {'x': 1}) is True
+
+        results = src.search('regression')
+        keys_found = [r['key'] for r in results]
+        assert 'deep-structure-key' in keys_found, \
+            "Nested term 'regression' should be found: %s" % keys_found
+
+        # Also check the innermost text
+        results2 = src.search('learning')
+        keys_found2 = [r['key'] for r in results2]
+        assert 'deep-structure-key' in keys_found2, \
+            "Nested term 'LEARNING' (case-insensitive) should be found: %s" % keys_found2
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_search_content_respects_limit_with_content_scan():
+    """limit still works correctly when results come from content scanning."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_limit_content_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        # Create 5 entries whose key doesn't contain the term but content does
+        for i in range(5):
+            assert src.save('entry-num-%d' % i, {'data': 'searchable-content-%d' % i}) is True
+
+        # All 5 should match on 'searchable', but limit=2 caps results
+        results = src.search('searchable', limit=2)
+        assert len(results) <= 2, "limit=2 should cap at 2, got %d" % len(results)
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_search_content_ignores_corrupt_files():
+    """When a file contains invalid JSON during content scan, search skips it gracefully."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_corrupt_content_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        # Good file that matches the query by content
+        assert src.save('good-entry', {'note': 'matches this query term'}) is True
+
+        # Corrupt JSON file on disk
+        with open(os.path.join(tmpdir, 'broken-file.json'), 'w') as f:
+            f.write("{this is [invalid json>>>")
+
+        results = src.search('matches')
+        assert len(results) >= 1
+        keys_found = [r['key'] for r in results]
+        assert 'good-entry' in keys_found
+        # Corrupt file should NOT appear in results (content=None → skipped)
+        assert 'broken-file' not in keys_found
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def test_get_source_info_structure():
     """get_source_info returns a dict with required keys including availability."""
     tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
