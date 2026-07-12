@@ -81,6 +81,7 @@ _PRIORITY_KEYWORDS = [
     ("failed to",      DecisionPoint.ERROR_STATE),
     ("bug",            DecisionPoint.ERROR_STATE),
     ("regression",     DecisionPoint.ERROR_STATE),
+    ("resolve",        DecisionPoint.ERROR_STATE),
 
     # --- PLANNING_START (priority 1) -------------------------------------
     ("i need to implement",   DecisionPoint.PLANNING_START),
