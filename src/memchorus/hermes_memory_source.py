@@ -234,10 +234,6 @@ class HermesDefaultMemorySource(MemorySource):
                 with open(fpath, 'r', errors='replace') as f:
                     raw = f.read()
 
-                content = None
-                for start_char in (raw[0] if raw else ''):
-                    pass
-
                 try:
                     content = json.loads(raw)
                 except (json.JSONDecodeError, ValueError):
