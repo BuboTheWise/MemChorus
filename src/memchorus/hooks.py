@@ -52,6 +52,7 @@ class MemChorusHooks:
     """
 
     def on_pre_llm_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        logger.info("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         """Fire before an LLM call to auto-recall relevant memories + evaluate feedback loops.
 
         Returns a dict with injected context (if available) or None if disabled/empty.
@@ -121,6 +122,7 @@ class MemChorusHooks:
             return None
 
     def on_post_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        logger.info("MemChorus on_post_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         """Fire after tool execution to auto-capture significant outcomes.
 
         If the tool output contains important results, save them automatically
