@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
-from memchorus.relevance_engine import RelevanceScorer, ContextWeight
+from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 
 logger = logging.getLogger(__name__)
@@ -693,7 +693,28 @@ class MemoryOrchestrator:
         
         # Score and rank via the relevance engine
         ranked = self._scorer.score_and_rank(all_results, query, context)
-        
+
+        # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
+        # Multiple keys can carry identical content (query-echo artifacts). Keep only the
+        # highest-scored instance per unique content text, preserving ranking order.
+        def _content_text_hash(content_obj):
+            """Normalize content to plain text and hash for duplicate detection."""
+            text = RelevanceScorer._extract_content_text(content_obj)
+            normalized = " ".join(text.lower().split()) if text else ""
+            return hashlib.md5(normalized.encode()).hexdigest()
+
+        seen_content: Dict[str, int] = {}          # content_hash -> ranked index
+        pruned_ranked: List[RankedResult] = []
+        dupes_removed = 0
+        for r in ranked:
+            content_hash = _content_text_hash(getattr(r, 'content', ''))
+            if content_hash not in seen_content:
+                seen_content[content_hash] = len(seen_content)
+                pruned_ranked.append(r)
+            else:
+                dupes_removed += 1
+        ranked = pruned_ranked
+
         # Convert RankedResult -> plain dict with score field — use original limit
         results = [
             {
@@ -705,6 +726,12 @@ class MemoryOrchestrator:
             }
             for r in ranked[:limit]
         ]
+
+        if dupes_removed:
+            logger.debug(
+                "Content dedup removed %d duplicate items from %d total (before hash collapse)",
+                dupes_removed, dupes_removed + len(ranked),
+            )
 
         # Inject pre-decision recalled context into the result set (deduped by key)
         if _recall_context:
