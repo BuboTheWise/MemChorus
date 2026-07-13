@@ -265,26 +265,43 @@ class AutoStorageEngine:
         try:
             # B-2 fix (t_b9205369): route through recommended_sources() so that
             # enabled gating, priority tiering, and write restrictions are honoured.
-            # Map the detected significance category to a write_type token the
-            # orchestrator understands.
             # Map every SignificanceCategory to a write_type token the orchestrator
             # understands. LEARNING / MISTAKE -> "memory" ensures they route to
             # memory-specialised sources rather than falling through to generic.
+            #
+            # Dual-write (t_87b41d3a): LEARNING/MISTAKE/DECISION must land in
+            # hermes_default (searchable JSON) AND mempalace so recall() can find them.
             write_type = {
-                "LEARNING":   "memory",
-                "MISTAKE":    "memory",
-                "DECISION":   "decision",
-                "RESULT":     "general",
+                "LEARNING":     "memory",
+                "MISTAKE":      "memory",
+                "MEMORY":       "memory",
+                "DECISION":     "decision",
+                "RESULT":       "general",
+                "RELATIONSHIP": "graph",
             }.get(category_str.upper(), "general")
 
             candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
 
+            # Dual-write flag: LEARNING/MISTAKE/DECISION go to hermes_default AND mempalace
+            write_both = category_str.upper() in ("LEARNING", "MISTAKE", "DECISION")
+
             success = False
+            saved_to: set[str] = set()
+
             for src_name in candidate_sources:
                 result = self.orchestrator.save(key, payload, source_name=src_name)  # type: ignore[union-attr]
                 if result:
+                    saved_to.add(src_name)
                     success = True
-                    break
+                    # Single-write: stop after first success
+                    if not write_both:
+                        break
+
+            # Dual-write: ensure hermes_default also got the record
+            if write_both and "hermes_default" not in saved_to:
+                result = self.orchestrator.save(key, payload, source_name="hermes_default")  # type: ignore[union-attr]
+                if result:
+                    success = True
 
         except Exception as exc:
             logger.warning("AutoStorageEngine: orchestrator save failed: %s", exc)
