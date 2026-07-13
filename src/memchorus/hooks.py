@@ -139,12 +139,21 @@ class MemChorusHooks:
             if not tool_output:
                 return None
 
+            output_str = str(tool_output)
+
+            # Guard: skip query echo artifacts — recall query templates that
+            # leaked through the tool pipeline and would pollute memory storage.
+            from memchorus.auto_storage_engine import _is_query_echo
+            if _is_query_echo(output_str):
+                logger.debug("hooks: skipping query echo artifact in tool output")
+                return None
+
             # Orchestrator.save(key, value) is the actual API — no save_auto() exists.
             # Derive a deterministic key from the tool output hash for smart placement.
             import hashlib
-            content_hash = hashlib.md5(str(tool_output).encode()).hexdigest()[:16]
+            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
             auto_key = f"auto_tool_{content_hash}"
-            saved = orchestrator.save(auto_key, str(tool_output))
+            saved = orchestrator.save(auto_key, output_str)
             if not saved:
                 return None
 
