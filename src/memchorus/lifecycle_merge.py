@@ -37,7 +37,7 @@ def _jaccard_similarity(a: Any, b: Any) -> float:
     return len(tokens_a & tokens_b) / len(union) if union else 1.0
 
 
-# --------------------------------------------------------------------------- 
+# ---------------------------------------------------------------------------
 # Audit actions for merge engine logging
 # ---------------------------------------------------------------------------
 
@@ -48,6 +48,21 @@ class AuditAction(str, Enum):
     MERGE_UNION = "merge_union"
     PASSTHROUGH_NEW_KEY = "pass_through_new_key"
     DEGRADE_SAFETY_NET = "degrade_safety_net"
+
+
+# ---------------------------------------------------------------------------
+# Profile-aware merge strategy mapping (spec §5.2)
+# ---------------------------------------------------------------------------
+
+PROFILE_STRATEGY_MAP: Dict[str, str] = {
+    # MemoryProfile value  ->  strategy name
+    "user_preference":     "overwrite",     # latest replaces; old archived as DUPE_MERGE
+    "long_lived_knowledge":"append",        # accumulate; flag for review on sweep
+    "ephemeral":           "overwrite",     # rarely needs preservation
+    "relationship_graph":  "union",         # union merge for KG triples
+    "large_data_block":    "overwrite",     # replace in-place, don't accumulate
+    "context_sensitive_pref": "overwrite",  # latest context wins
+}
 
 
 # --------------------------------------------------------------------------- 
@@ -116,8 +131,8 @@ class MergeEngine:
     def __init__(self, orchestrator: Any, config: Dict[str, Any]):
         self._orchestrator = orchestrator
         raw_eviction = config.get("eviction", {}) or {}
-        self._similarity_min = float(raw_eviction.get("similarity_min", 0.3))
-        self._cluster_max = int(raw_eviction.get("duplicate_cluster_max", 5) or 5)
+        self._similarity_min = float(raw_eviction.get("similarity_min", 0.75))
+        self._cluster_max = int(raw_eviction.get("duplicate_cluster_max", 3) or 3)
 
         raw_merge = config.get("merge_at_write", {}) or {}
         self._enabled = bool(raw_merge.get("enabled", True))
@@ -147,14 +162,27 @@ class MergeEngine:
     # ------------------------------------------------------------------
 
     def pre_save_check(
-        self, key: str, value: Any, source_name: Optional[str] = None
+        self, key: str, value: Any, source_name: Optional[str] = None,
+        profile: Optional[Any] = None,
     ) -> MergeResult:
-        """Intercept a save call and merge if similar content exists."""
+        """Intercept a save call and merge if similar content exists.
+
+        `profile` may be a MemoryProfile enum member or its `.value` string.
+        When supplied the per-profile strategy from spec §5.2 takes priority.
+        """
         result = MergeResult(final_value=value)
 
         # Fast-pass when disabled
         if not self._enabled or self._orchestrator is None:
             return result
+
+        # --- resolve effective strategy for this call ----------------------------
+        effective_strategy = self._strategy  # global default
+        if profile is not None:
+            pv = profile.value if hasattr(profile, 'value') else str(profile)
+            mapped = PROFILE_STRATEGY_MAP.get(pv)
+            if mapped:
+                effective_strategy = mapped
 
         similar = self._find_similar(key, value, source_name)
         high_similar = [e for e in similar if e["similarity"] >= self._similarity_min]
@@ -168,13 +196,15 @@ class MergeEngine:
             self._audit(key, value, "check", None, result=similar, similar=len(similar))
             return result
 
-        # Merge triggered — find the best matching existing entry 
+        # Merge triggered — find the best matching existing entry
         best_match = max(high_similar, key=lambda e: e["similarity"])
         existing_key = best_match.get("key", "")
 
         try:
             existing_value = self._retrieve_existing(existing_key, source_name)
-            merged_value, action = self._apply_strategy(existing_value, value)
+            merged_value, action = self._apply_strategy(
+                existing_value, value, effective_strategy
+            )
             result.should_proceed = False
             result.final_value = merged_value
             result.merge_action = action
@@ -260,10 +290,12 @@ class MergeEngine:
     # ------------------------------------------------------------------
 
     def _apply_strategy(
-        self, existing_value: Any, new_value: Any
+        self, existing_value: Any, new_value: Any,
+        strategy: Optional[str] = None,
     ) -> Tuple[Any, AuditAction]:
         """Dispatch to the configured merge strategy."""
-        fn = self.STRATEGIES.get(self._strategy) or self.STRATEGIES["overwrite"]
+        chosen = strategy or self._strategy
+        fn = self.STRATEGIES.get(chosen) or self.STRATEGIES["overwrite"]
         return fn(existing_value, new_value)
 
     # ------------------------------------------------------------------
