@@ -458,10 +458,66 @@ class HermesDefaultMemorySource(MemorySource):
                 safe_action_file = os.path.join(self.memory_dir, f"{self._safe_key(action_key)}.json")
                 with open(safe_action_file, 'w') as f:
                     json.dump(action_log, f)
+
+                # Phase 3 fix — bounded rotation to prevent unbounded disk growth.
+                # Keep at most self._proactive_action_max files per source (default 50).
+                # Evict the oldest first by modification time.
+                self._cleanup_action_logs()
             except Exception:
                 pass  # Quiet failure on additional logging - core save is what matters
 
         return success
+
+    @property
+    def _proactive_action_max(self) -> int:
+        """Configurable cap on proactive action log files per source (default 50)."""
+        return self.config.get('proactive_action_max', 50)
+
+    # ------------------------------------------------------------------
+    # Bounded rotation for proactive action logs (§3 Phase fix)
+    # ------------------------------------------------------------------
+
+    def _cleanup_action_logs(self, force: bool = False) -> None:
+        """Evict oldest action_*.json files when count exceeds the cap.
+
+        Only scans files inside ``self.memory_dir`` that match the pattern
+        ``action_*.json``.  The oldest N files (by filesystem modification
+        time) are removed until the count drops to ``_proactive_action_max``.
+
+        Args:
+            force: If True, run cleanup even when currently under the cap
+                   (useful for sweep/lifecycle callbacks). Normally called
+                   after each new action log is written so the excess is
+                   always just one over the cap.
+        """
+        try:
+            import glob as _glob_mod
+            # _safe_key() converts underscores to hyphens, so action logs
+            # are written as "action-...timestamp.json".  Use a dash here
+            # so the glob actually matches the real files.
+            pattern = os.path.join(self.memory_dir, "action-*.json")
+            files = _glob_mod.glob(pattern)
+
+            if not files:
+                return
+
+            # Already under control? Skip (unless forced by lifecycle sweep).
+            limit = self._proactive_action_max
+            if len(files) <= limit and not force:
+                return
+
+            # Sort oldest-first by mtime so we evict the eldest entries
+            files.sort(key=lambda p: os.path.getmtime(p))
+            excess = len(files) - limit
+            for fp in files[:excess]:
+                try:
+                    os.remove(fp)
+                except OSError:
+                    pass
+
+        except Exception:
+            # Cleanup failure should never block the primary save path
+            pass
 
     # Add property to access name (needed for interface compliance)
     @property

@@ -618,3 +618,92 @@ def test_get_source_info_structure():
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+
+def test_proactive_save_rotation_caps_at_50():
+    """Write 60 proactive saves; verify only 50 action log files remain (oldest evicted)."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        for i in range(60):
+            assert src.proactive_save(
+                f'rot_key_{i}', {'value': i}, {'index': i}
+            ) is True
+
+        action_logs = [f for f in os.listdir(tmpdir) if f.startswith('action-') and f.endswith('.json')]
+        assert len(action_logs) == 50, (
+            f"Expected exactly 50 action logs after 60 saves, got {len(action_logs)}"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_proactive_save_rotation_keeps_most_recent_50():
+    """After 60 saves the surviving 50 action logs must be indices 10..59."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        for i in range(60):
+            assert src.proactive_save(
+                f'recent_key_{i}', {'value': i}, {'index': i}
+            ) is True
+
+        action_logs = sorted([
+            f for f in os.listdir(tmpdir) if f.startswith('action-') and f.endswith('.json')
+        ])
+        assert len(action_logs) == 50
+
+        # Read back each surviving log and confirm the indices are 10..59 (most recent 50).
+        surviving_indices = []
+        for fname in action_logs:
+            with open(os.path.join(tmpdir, fname), 'r') as f:
+                log = json.load(f)
+            surviving_indices.append(log['context']['index'])
+
+        assert sorted(surviving_indices) == list(range(10, 60)), (
+            f"Expected indices 10-59 retained, got {sorted(surviving_indices)}"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_proactive_save_custom_action_max():
+    """A custom proactive_action_max cap of 20 should leave only 20 files after 30 saves."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+    try:
+        src = HermesDefaultMemorySource(
+            name='test_source', config={'memory_dir': tmpdir, 'proactive_action_max': 20}
+        )
+
+        for i in range(30):
+            assert src.proactive_save(
+                f'custom_key_{i}', {'value': i}, {'index': i}
+            ) is True
+
+        action_logs = [f for f in os.listdir(tmpdir) if f.startswith('action-') and f.endswith('.json')]
+        assert len(action_logs) == 20, (
+            f"Expected exactly 20 action logs after 30 saves with cap=20, got {len(action_logs)}"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_proactive_save_under_cap_keeps_all():
+    """When saves are under the cap, all action logs should be retained."""
+    tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+    try:
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+
+        for i in range(30):
+            assert src.proactive_save(
+                f'undercap_key_{i}', {'value': i}, {'index': i}
+            ) is True
+
+        action_logs = [f for f in os.listdir(tmpdir) if f.startswith('action-') and f.endswith('.json')]
+        assert len(action_logs) == 30, (
+            f"Expected all 30 action logs retained under cap of 50, got {len(action_logs)}"
+        )
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
