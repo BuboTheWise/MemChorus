@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memchorus"
+version = "1.5.0"
+description = "Memory Orchestration for Hermes Agent — behavioral recall, feedback loops, auto-storage."
+requires-python = ">=3.10"
+dependencies = []  # stdlib + lazy imports only
+
+[project.scripts]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["memchorus*"]
