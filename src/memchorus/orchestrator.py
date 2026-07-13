@@ -229,6 +229,9 @@ class MemoryOrchestrator:
         """
         try:
             self.memory_sources[source.name] = source
+            # GAP010: newly registered sources are enabled by default — without this
+            # they crash on every save/retrieve/search with KeyError in _source_enabled.
+            self._source_enabled.setdefault(source.name, True)
             return True
         except Exception:
             return False
@@ -381,26 +384,36 @@ class MemoryOrchestrator:
                 "deleted_count": 0,
             }
 
-        # Infer content shape to decide which copy to keep
-        # Retrieve from the first source to get the value type
-        _keep_source = duplicates[0]
+        # Infer content shape to decide which copy to keep -------------
         _keep_value = None
         for sname in duplicates:
             try:
                 val = self.memory_sources[sname].retrieve(key)
                 if val is not None:
-                    _keep_source = sname
                     _keep_value = val
                     break
             except Exception:
                 pass
 
-        # Decide best target based on inferred profile
+        # Safety guard: if we couldn't retrieve any value, we can't
+        # infer a profile — bail out without deleting anything.
+        if _keep_value is None:
+            logger.warning(
+                "consolidate_key('%s'): could not retrieve value from any of "
+                "%d duplicate sources; keeping all copies", key, len(duplicates),
+            )
+            return {
+                "key": key,
+                "surviving": list(duplicates),
+                "removed_sources": [],
+                "deleted_count": 0,
+            }
+
+        # Decide best target based on inferred profile -----------------
         inferred = self._infer_profile(_keep_value)
         preference_list = _PROFILE_SOURCE_HINT.get(inferred, duplicates)
 
-        surviving = []
-        removed_sources = []
+        surviving: List[str] = []
         for pref in preference_list:
             if pref in duplicates and pref not in surviving:
                 surviving.append(pref)
@@ -413,8 +426,15 @@ class MemoryOrchestrator:
                 "consolidate_key('%s'): no preferred target found; keeping all "
                 "%d copies to prevent data loss", key, len(duplicates)
             )
+            return {
+                "key": key,
+                "surviving": list(duplicates),
+                "removed_sources": [],
+                "deleted_count": 0,
+            }
 
         # Identify which copies should be removed ---------------------
+        removed_sources: List[str] = []
         for sname in duplicates:
             if sname not in surviving:
                 removed_sources.append(sname)
@@ -592,15 +612,12 @@ class MemoryOrchestrator:
                 list(self.memory_sources.keys()),
             )
 
-        # If recall fired and found context for this key, return it inline
+        # If recall fired and found exact-key hit, cache + return it early  ----------
         if _recall_context:
             for rec in _recall_context:
                 if rec.get("key") == key:
                     self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
-                    if len(self._retrieve_cache) > self._cache_max_size:
-                        # Evict oldest entry (simple LRU approximation)
-                        oldest_key = min(self._retrieve_cache, key=self._retrieve_cache.get)
-                        del self._retrieve_cache[oldest_key]
+                    self._evict_oldest_if_needed()
                     return rec.get("content", rec)
 
         for src_name in candidate_sources:
@@ -609,9 +626,7 @@ class MemoryOrchestrator:
                 result = source.retrieve(key)
                 if result is not None:
                     self._retrieve_cache[key] = (result, time.monotonic())
-                    if len(self._retrieve_cache) > self._cache_max_size:
-                        oldest_key = min(self._retrieve_cache, key=self._retrieve_cache.get)
-                        del self._retrieve_cache[oldest_key]
+                    self._evict_oldest_if_needed()
                     return result
 
         return None
@@ -619,7 +634,21 @@ class MemoryOrchestrator:
     def clear_cache(self) -> None:
         """Clear the retrieval LRU cache (GAP008)."""
         self._retrieve_cache.clear()
-    
+
+    def _evict_oldest_if_needed(self) -> None:
+        """Evict the oldest cached entry when the cache exceeds its size limit.
+
+        Uses the monotonic timestamp stored as the second tuple element, so we
+        actually evict the oldest entry instead of comparing full tuples
+        element-by-element (which would break on mixed value types).
+        """
+        if len(self._retrieve_cache) > self._cache_max_size:
+            oldest_key = min(
+                self._retrieve_cache,
+                key=lambda k: self._retrieve_cache[k][1],
+            )
+            del self._retrieve_cache[oldest_key]
+
     def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query across all sources.
@@ -891,7 +920,7 @@ class MemoryOrchestrator:
                     restriction_list = [str(r).lower() for r in raw]
             except Exception:
                 pass
-            if restriction_list and write_type.lower() not in restriction_list:
+            if restriction_list and write_type.lower() in restriction_list:
                 continue
 
             # AC2 — priority tiering (default 0 when absent)
