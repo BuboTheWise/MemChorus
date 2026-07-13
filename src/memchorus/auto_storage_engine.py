@@ -87,6 +87,38 @@ _TRIVIAL_PATTERNS: List[re.Pattern] = [
 # Single-word confirmations that are trivial when there's little else to say.
 _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 
+# ---------------------------------------------------------------------------
+# Known query templates from AutoRecallEngine._QUERY_MAP — if text matches one of
+# these verbatim, it is a query echo artifact and must be skipped.
+# Hardcoded copy to keep storage engine independent of recall engine import.
+# ---------------------------------------------------------------------------
+
+_KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
+    "past planning patterns architecture decisions strategy notes",
+    "tool usage history command conventions domain-specific guidance",
+    "post-action learnings outcomes results",
+    "errors recovery patterns failure modes known issues",
+})
+
+
+def _is_query_echo(text: str) -> bool:
+    """Return True when *text* is a deterministic recall query template rather
+    than actual meaningful content.
+
+    Prevents query echo artifacts — where the search query string itself gets
+    stored as memory content via the post-recall storage cycle.
+    """
+    stripped = text.strip()
+    if stripped in _KNOWN_QUERY_TEMPLATES:
+        return True
+    # Also catch near-exact matches (substring containment in either direction)
+    stripped_lower = stripped.lower()
+    for template in _KNOWN_QUERY_TEMPLATES:
+        if template.lower() in stripped_lower or stripped_lower in template.lower():
+            if min(len(stripped), len(template)) / max(len(stripped), len(template)) >= 0.85:
+                return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -214,7 +246,19 @@ class AutoStorageEngine:
         Returns a dict with keys: saved, key, significance, outcome_type,
         reason (optional), importance_score.
         """
-        # --- Step 1: filter trivial content ---
+        # --- Step 1: filter query echo artifacts ---
+        if _is_query_echo(text):
+            logger.debug("AutoStorageEngine: skipping query echo artifact")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "query_echo_artifact",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 2: filter trivial content ---
         if self._is_trivial(text):
             return {
                 "saved": False,
