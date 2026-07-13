@@ -697,19 +697,60 @@ class MemoryOrchestrator:
         # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
         # Multiple keys can carry identical content (query-echo artifacts). Keep only the
         # highest-scored instance per unique content text, preserving ranking order.
-        def _content_text_hash(content_obj):
-            """Normalize content to plain text and hash for duplicate detection."""
-            text = RelevanceScorer._extract_content_text(content_obj)
-            normalized = " ".join(text.lower().split()) if text else ""
-            return hashlib.md5(normalized.encode()).hexdigest()
+        def _dedup_key(content_obj):
+            """Extract just the readable content text for duplicate detection.
 
-        seen_content: Dict[str, int] = {}          # content_hash -> ranked index
+            The previous implementation used RelevanceScorer._extract_content_text which
+            serialises every string value in a dict — timestamp, extra metadata fields,
+            importance_score, etc.  That means two results with identical 'text' but
+            different metadata produce different hashes and never collapse (t_cc003615).
+
+            Strategy: extract only the user-visible content text from well-known keys,
+            falling back to full extraction only when no structured content field exists.
+            """
+            if not content_obj:
+                return ""
+            if isinstance(content_obj, str):
+                return " ".join(content_obj.lower().split())
+
+            if isinstance(content_obj, dict):
+                # Primary path: extract the 'text' field which holds the actual readable
+                # content — this is used by hermes_default structured results
+                raw_text = content_obj.get("text", "")
+                if isinstance(raw_text, str) and raw_text.strip():
+                    return " ".join(raw_text.lower().split())
+
+                # Secondary path: dict without 'text' key — extract string values while
+                # skipping per-key metadata that makes identical results look different.
+                skip_keys = {"timestamp", "_timestamp", "importance_score",
+                             "categories", "category", "outcome_type",
+                             "score", "_domain"}
+                parts = []
+                for dk, val in content_obj.items():
+                    if dk in skip_keys:
+                        continue
+                    if isinstance(val, str):
+                        parts.append(val)
+                    else:
+                        try:
+                            parts.append(str(val))
+                        except Exception:
+                            pass
+                return " ".join(parts).lower()
+
+            # Fallback — everything else treated as a flat string
+            try:
+                return " ".join(str(content_obj).lower().split())
+            except Exception:
+                return ""
+
+        seen_content: Dict[str, int] = {}          # dedup_key -> ranked index
         pruned_ranked: List[RankedResult] = []
         dupes_removed = 0
         for r in ranked:
-            content_hash = _content_text_hash(getattr(r, 'content', ''))
-            if content_hash not in seen_content:
-                seen_content[content_hash] = len(seen_content)
+            ck = _dedup_key(getattr(r, 'content', ''))
+            if ck not in seen_content:
+                seen_content[ck] = len(seen_content)
                 pruned_ranked.append(r)
             else:
                 dupes_removed += 1
