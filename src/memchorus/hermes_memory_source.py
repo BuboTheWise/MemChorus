@@ -54,8 +54,9 @@ class HermesDefaultMemorySource(MemorySource):
 
         Algorithm:
           1. Split the query into individual terms (lowercased).
-          2. For each term, use a word-boundary regex so that 'fix' does NOT
-             match 'suffix'. Count a point for each distinct term found.
+          2. For each term, count substring occurrences in the content text.
+             Each distinct term found contributes to the score (substring
+             matching is deliberately permissive — 'fix' does match 'suffix').
           3. Bonus: add +0.5 for every extra occurrence beyond the first per term
              (term frequency bonus, capped at +2 bonus to avoid runaway scoring).
           4. Self-match penalty: if the content is essentially identical to
