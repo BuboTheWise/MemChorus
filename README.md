@@ -493,6 +493,17 @@ orchestrate.save(
 
 Other v1.5.0 features:
 
+**Audited 2026-07-11 — zero spec-to-code gaps. Two bugs found and fixed:**
+
+- **Hooks feedback integration (commit 148e713):** `on_pre_llm_call` wired to both memory recall AND feedback loop evaluation. Before fix, feedback corrections were silently bypassed despite full implementation in `feedback_loop/integration.py`. Verified live during runtime effectiveness check — all 8 architectural claims confirmed true against behavior.
+- **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
+
+**REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
+`consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
+
+**REQ-8.2: Feedback Loop E2E Test Coverage** (recommended, v1.6.x)
+An integration test verifying that loaded custom feedback flows from `hooks.on_pre_llm_call()` → feedback detector → correction injection should exist to prevent regression on the B-1 bug class.
+
 - **MCP transport autodetect** — reads \`mcp_servers.mempalace.command\` from config.yaml so users can override hardcoded module paths
 
 - **Feedback loop auto-load** at bootstrap with \`LoadSummary\` diagnostics for load-time visibility
@@ -501,7 +512,7 @@ Other v1.5.0 features:
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **649 tests** collected across all modules
+- **685 tests** collected across all modules (v1.5.0 audit verified)
 
 
 ## Tipping the Owl

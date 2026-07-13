@@ -103,17 +103,17 @@ class HermesDefaultMemorySource(MemorySource):
         _key_to_room().
         """
         sanitized = key.lower().strip()
-        sanitized = _re.sub(r'[^a-z0-9\-]', '-', sanitized)
+        sanitized = _re.sub(r'[^a-z0-9\ -\-]', '-', sanitized)
         parts = [p for p in sanitized.split('-') if p]
         return '-'.join(parts)[:128]
 
     def _read_memory_file(self, file_path: str) -> List[Dict[str, Any]]:
         """
         Read memory entries from a file.
-        
+
         Args:
             file_path (str): Path to the memory file
-            
+
         Returns:
             List[Dict[str, Any]]: List of memory entries
         """
@@ -121,7 +121,7 @@ class HermesDefaultMemorySource(MemorySource):
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     content = f.read()
-                    
+
                 # Parse the memory content (simple format support)
                 entries = []
                 for line in content.split('\n'):
@@ -141,15 +141,15 @@ class HermesDefaultMemorySource(MemorySource):
             return []
         except Exception:
             return []
-            
+
     def _write_memory_file(self, file_path: str, entries: List[Dict[str, Any]]) -> bool:
         """
         Write memory entries to a file.
-        
+
         Args:
             file_path (str): Path to the memory file
             entries (List[Dict[str, Any]]): List of memory entries to write
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -160,7 +160,7 @@ class HermesDefaultMemorySource(MemorySource):
                 timestamp = entry.get('timestamp', datetime.datetime.now().strftime('%Y-%m-%d'))
                 content = entry.get('content', '')
                 formatted_entries.append(f"{timestamp}: {content}")
-                
+
             with open(file_path, 'w') as f:
                 f.write('\n'.join(formatted_entries))
             return True
@@ -170,11 +170,11 @@ class HermesDefaultMemorySource(MemorySource):
     def save(self, key: str, value: Any) -> bool:
         """
         Save a memory to Hermes default memory storage.
-        
+
         Args:
             key (str): Unique identifier for the memory
             value (Any): The memory content to store
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -182,7 +182,7 @@ class HermesDefaultMemorySource(MemorySource):
             # Convert value to JSON-serializable format
             if not isinstance(value, (str, int, float, bool, dict, list)):
                 value = str(value)
-                
+
             file_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
             with open(file_path, 'w') as f:
                 json.dump(value, f)
@@ -193,10 +193,10 @@ class HermesDefaultMemorySource(MemorySource):
     def retrieve(self, key: str) -> Optional[Any]:
         """
         Retrieve a memory from Hermes default memory storage.
-        
+
         Args:
             key (str): Unique identifier for the memory
-            
+
         Returns:
             Any: The memory content if found, None otherwise
         """
@@ -325,10 +325,34 @@ class HermesDefaultMemorySource(MemorySource):
 
         return results
 
+    def delete(self, key: str) -> bool:
+        """Remove a memory identified by *key*.
+
+        Tries the safe-key normalized path first (what ``save()`` writes to),
+        then falls back to the raw key name for pre-normalized files.
+        Returns ``True`` if at least one file was removed, ``False`` otherwise.
+        """
+        deleted = False
+        try:
+            # Primary: safe-key normalized path (what save() uses)
+            safe_path = os.path.join(self.memory_dir, f"{self._safe_key(key)}.json")
+            if os.path.exists(safe_path):
+                os.remove(safe_path)
+                deleted = True
+
+            # Fallback: raw key name (pre-placed files may not be normalized)
+            raw_path = os.path.join(self.memory_dir, f"{key}.json")
+            if os.path.exists(raw_path) and not deleted:
+                os.remove(raw_path)
+                deleted = True
+        except Exception:
+            pass
+        return deleted
+
     def is_available(self) -> bool:
         """
         Check if Hermes default memory source is available.
-        
+
         Returns:
             bool: True if the source is available, False otherwise
         """
@@ -341,7 +365,7 @@ class HermesDefaultMemorySource(MemorySource):
     def get_source_info(self) -> Dict[str, Any]:
         """
         Get information about this memory source.
-        
+
         Returns:
             Dict[str, Any]: Metadata about this source
         """
@@ -357,17 +381,17 @@ class HermesDefaultMemorySource(MemorySource):
     def proactive_check(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Proactively check for relevant memories that might inform decisions.
-        
+
         This is a key method demonstrating the foundational role of Hermes default memory.
         It ensures the core source can effectively work without other voices.
-        
+
         Args:
             context (Dict[str, Any], optional): Context about what's being decided
-            
+
         Returns:
             Dict[str, Any]: Relevant memories or recommendations for action
         """
-        # If no context, just return current status  
+        # If no context, just return current status
         if not context:
             return {
                 'status': 'ready',
@@ -375,13 +399,13 @@ class HermesDefaultMemorySource(MemorySource):
                 'source': self._name,
                 'timestamp': datetime.datetime.now().isoformat()
             }
-            
+
         # Search for memories related to the decision context
         query = ' '.join([str(v) for v in context.values() if v])
         findings = self.search(query, limit=3)
         recommendations = []
-        
-        # Look for past similar contexts or decisions 
+
+        # Look for past similar contexts or decisions
         if query:
             # Simple logic based on what's available
             if len(findings) > 0:
@@ -390,7 +414,7 @@ class HermesDefaultMemorySource(MemorySource):
                     'found': len(findings),
                     'memories': [{'key': f['key'], 'content': str(f['content'])} for f in findings]
                 })
-            
+
         return {
             'recommendations': recommendations,
             'source': self._name,
@@ -401,29 +425,29 @@ class HermesDefaultMemorySource(MemorySource):
     def proactive_save(self, key: str, value: Any, context: Optional[Dict[str, Any]] = None) -> bool:
         """
         Proactively save memory after an action or decision.
-        
+
         This is a key method demonstrating the foundational role of Hermes default memory.
         It ensures that decisions and outcomes are reliably stored even without other voices.
-        
+
         Args:
             key (str): Unique identifier for the memory
             value (Any): The memory content to store
             context (Dict[str, Any], optional): Context about what was decided or done
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
-        # Save to default source (resilient core)  
+        # Save to default source (resilient core)
         success = self.save(key, value)
-        
-        # Log the proactive action if needed for tracking 
+
+        # Log the proactive action if needed for tracking
         if success and context:
             # Create an action log in memory as a demonstration
             action_key = f"action_{key}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
             action_log = {
                 'action': 'proactive_save',
                 'memory_key': key,
-                'context': context, 
+                'context': context,
                 'timestamp': datetime.datetime.now().isoformat(),
                 'source': self._name
             }
@@ -436,7 +460,7 @@ class HermesDefaultMemorySource(MemorySource):
                     json.dump(action_log, f)
             except Exception:
                 pass  # Quiet failure on additional logging - core save is what matters
-                
+
         return success
 
     # Add property to access name (needed for interface compliance)

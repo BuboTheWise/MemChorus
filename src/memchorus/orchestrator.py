@@ -16,6 +16,7 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
+import threading
 import hashlib
 import json
 import logging
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
-from memchorus.relevance_engine import RelevanceScorer, ContextWeight
+from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 
 logger = logging.getLogger(__name__)
@@ -123,9 +124,11 @@ class MemoryOrchestrator:
         # Read-side recursion guard (MC-001 / t_7d26af26): prevents orchestrator.search()
         # and orchestrator.retrieve() from recursively triggering enforcement when the recall
         # engine's nested search/recall fires an inner enforce().  Without this flag, pre-decision
-        # recall → AutoRecallEngine._do_search() → orchestrator.search() → enforce() recurses
+        # recall -> AutoRecallEngine._do_search() -> orchestrator.search() -> enforce() recurses
         # indefinitely until RecursionError.
         self._in_enforcement_recall = False
+        # Thread-safe access to the recursion guards (MC-003)
+        self._enforcement_lock = threading.RLock()
 
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
@@ -371,7 +374,12 @@ class MemoryOrchestrator:
         """
         duplicates = self.find_duplicates(key)
         if len(duplicates) <= 1:
-            return {"key": key, "surviving": duplicates[:1], "removed_sources": []}
+            return {
+                "key": key,
+                "surviving": duplicates[:1],
+                "removed_sources": [],
+                "deleted_count": 0,
+            }
 
         # Infer content shape to decide which copy to keep
         # Retrieve from the first source to get the value type
@@ -398,15 +406,48 @@ class MemoryOrchestrator:
                 surviving.append(pref)
                 break
 
-        # Remove from all other copies that were not selected
+        # Safety guard: if no preferred source survived, keep ALL copies
+        # rather than deleting everything — data safety over cleanup
+        if not surviving:
+            logger.warning(
+                "consolidate_key('%s'): no preferred target found; keeping all "
+                "%d copies to prevent data loss", key, len(duplicates)
+            )
+
+        # Identify which copies should be removed ---------------------
         for sname in duplicates:
             if sname not in surviving:
                 removed_sources.append(sname)
+
+        # Actually remove the key from each redundant source ----------
+        deleted_count = 0
+        for sname in removed_sources:
+            src = self.memory_sources.get(sname)
+            if src is not None:
+                try:
+                    ok = src.delete(key)
+                    if ok:
+                        deleted_count += 1
+                        logger.info(
+                            "consolidate_key('%s'): deleted from '%s'", key, sname
+                        )
+                    else:
+                        logger.warning(
+                            "consolidate_key('%s'): delete returned False for "
+                            "source '%s' (may already be gone)",
+                            key, sname,
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "consolidate_key('%s'): exception deleting from '%s': %s",
+                        key, sname, exc,
+                    )
 
         return {
             "key": key,
             "surviving": surviving,
             "removed_sources": removed_sources,
+            "deleted_count": deleted_count,
         }
 
     def save(self,
@@ -479,19 +520,21 @@ class MemoryOrchestrator:
 
         # --- Post-action storage capture (behavioral enforcement hook) ---
         # Guard against recursive enforcement when capture_outcome calls back into save()
-        if saved and self._enforce_on_write and not self._in_enforcement_save:
-            em = self._get_enforcement_manager()
-            if em is not None:
-                self._in_enforcement_save = True
-                try:
-                    outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
-                    _storage_result = em.enforce(outcome_text)
-                    logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
-                                key, _storage_result.triggered_points, len(_storage_result.errors))
-                except Exception:
-                    pass  # degrade gracefully — the save itself already succeeded
-                finally:
-                    self._in_enforcement_save = False
+        if saved and self._enforce_on_write:
+            with self._enforcement_lock:
+                if not self._in_enforcement_save:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        self._in_enforcement_save = True
+                        try:
+                            outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                            _storage_result = em.enforce(outcome_text)
+                            logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
+                                        key, _storage_result.triggered_points, len(_storage_result.errors))
+                        except Exception:
+                            pass  # degrade gracefully — the save itself already succeeded
+                        finally:
+                            self._in_enforcement_save = False
         
         return saved
     
@@ -527,17 +570,19 @@ class MemoryOrchestrator:
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
         _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read and not self._in_enforcement_recall:
-            em = self._get_enforcement_manager()
-            if em is not None:
-                try:
-                    self._in_enforcement_recall = True
-                    _recall_result = em.enforce(key)
-                    _recall_context = getattr(_recall_result, 'recall_context', [])
-                except Exception:
-                    pass  # degrade gracefully
-                finally:
-                    self._in_enforcement_recall = False
+        if self._enforce_on_read:
+            with self._enforcement_lock:
+                if not self._in_enforcement_recall:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        try:
+                            self._in_enforcement_recall = True
+                            _recall_result = em.enforce(key)
+                            _recall_context = getattr(_recall_result, 'recall_context', [])
+                        except Exception:
+                            pass  # degrade gracefully
+                        finally:
+                            self._in_enforcement_recall = False
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -601,17 +646,19 @@ class MemoryOrchestrator:
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
         _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read and not self._in_enforcement_recall:
-            em = self._get_enforcement_manager()
-            if em is not None:
-                try:
-                    self._in_enforcement_recall = True
-                    _recall_result = em.enforce(query)
-                    _recall_context = getattr(_recall_result, 'recall_context', [])
-                except Exception:
-                    pass  # degrade gracefully — base search continues
-                finally:
-                    self._in_enforcement_recall = False
+        if self._enforce_on_read:
+            with self._enforcement_lock:
+                if not self._in_enforcement_recall:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        try:
+                            self._in_enforcement_recall = True
+                            _recall_result = em.enforce(query)
+                            _recall_context = getattr(_recall_result, 'recall_context', [])
+                        except Exception:
+                            pass  # degrade gracefully — base search continues
+                        finally:
+                            self._in_enforcement_recall = False
 
         # Inject domain-level weightings before scoring
         all_results = []
@@ -646,7 +693,28 @@ class MemoryOrchestrator:
         
         # Score and rank via the relevance engine
         ranked = self._scorer.score_and_rank(all_results, query, context)
-        
+
+        # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
+        # Multiple keys can carry identical content (query-echo artifacts). Keep only the
+        # highest-scored instance per unique content text, preserving ranking order.
+        def _content_text_hash(content_obj):
+            """Normalize content to plain text and hash for duplicate detection."""
+            text = RelevanceScorer._extract_content_text(content_obj)
+            normalized = " ".join(text.lower().split()) if text else ""
+            return hashlib.md5(normalized.encode()).hexdigest()
+
+        seen_content: Dict[str, int] = {}          # content_hash -> ranked index
+        pruned_ranked: List[RankedResult] = []
+        dupes_removed = 0
+        for r in ranked:
+            content_hash = _content_text_hash(getattr(r, 'content', ''))
+            if content_hash not in seen_content:
+                seen_content[content_hash] = len(seen_content)
+                pruned_ranked.append(r)
+            else:
+                dupes_removed += 1
+        ranked = pruned_ranked
+
         # Convert RankedResult -> plain dict with score field — use original limit
         results = [
             {
@@ -658,6 +726,12 @@ class MemoryOrchestrator:
             }
             for r in ranked[:limit]
         ]
+
+        if dupes_removed:
+            logger.debug(
+                "Content dedup removed %d duplicate items from %d total (before hash collapse)",
+                dupes_removed, dupes_removed + len(ranked),
+            )
 
         # Inject pre-decision recalled context into the result set (deduped by key)
         if _recall_context:

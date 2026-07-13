@@ -168,7 +168,24 @@ class RelevanceScorer:
 
     @staticmethod
     def _score_quality(query: str, content: Any) -> float:
-        """Unigram overlap between ``query`` and *content* as a float in [0, 1]."""
+        """Normalised quality score in [0, 1] from unigram F1 between query & content.
+
+        Formula::
+
+            Terms are extracted via ``\\w+`` word boundaries on both sides.
+
+                recall    = |Q ∩ C| / max(|Q|, 1)
+                precision = |Q ∩ C| / max(|C|, 1)
+                F1      = 2 * (prec * rec) / (prec + rec)
+
+        Accepts any content type (str, dict, list).  Non-string types are first
+        flattened via :meth:`_extract_content_text`.
+
+        Edge cases:
+            - Empty query or empty content -> 0.3 (neutral floor)
+
+            - Zero precision AND zero recall -> 0.0
+        """
         if not query or not content:
             return 0.3  # neutral when either side is empty
         c_text = RelevanceScorer._extract_content_text(content).lower()
@@ -230,18 +247,38 @@ class RelevanceScorer:
         result: Dict[str, Any],
         query: str,
         context: Optional[ContextWeight] = None,
+        score_max: float = 1.0,
     ) -> float:
         """Compute a single relevance score in [0, 1] for ``result``.
+
+        Scoring formula
+        ~~~~~~~~~~~~~~~
+        Each dimension produces a value in [0, 1]:
+            quality   -- F1 of unigram recall/precision between query & content
+            recency   -- exponential decay (half-life) from result timestamp -> 1.0 when brand new
+            src_dim   -- normalised source prior (domain-aware if _domain hint present)
+
+        The three raw dimension weights are first L1-normalised so they sum to 1.0,
+        ensuring the weighted combination of three [0, 1] components also lands in
+        [0, 1].  A final min/max clamp serves as a safety net against floating-point
+        drift or caller-supplied weight anomalies.
+
+        Normalisation:        w_q' = w_q / (w_q + w_r + w_s)
 
         Args:
             result: A dict produced by a MemorySource.search() call.
                     Expected keys: ``key``, ``content``, ``source``, plus optionally
                     ``timestamp`` and ``_domain`` (injected by the orchestrator).
             query: The original search query (used for quality).
-            context: Optional weighting preferences from the caller.
+            context: Optional weighting preferences from the caller.  Weights are
+                     normalised before use so they always sum to 1.0 regardless of
+                     the absolute values provided.
+            score_max: Hard ceiling for the returned value (default ``1.0``).
+                       Raise if you want a wider range, but [0, 1] is the
+                       documented contract and safest for downstream consumers.
 
         Returns:
-            Float score in [0, 1].  Higher is more relevant.
+            Float score in ``[0, score_max]``.  Higher is more relevant.
         """
         if context is None:
             context = ContextWeight()
@@ -256,18 +293,42 @@ class RelevanceScorer:
 
         # Use domain-aware bias when the caller injected a _domain hint;
         # if not explicitly set, try to infer it from query terms.
-        domain = result.get("_domain")
-        if domain is None:
-            domain = self._guess_domain(query, context)
+        domain_raw = result.get("_domain")
+        if domain_raw is None:
+            domain_raw = self._guess_domain(query, context)
 
-        if domain:
-            src_dim = self._score_domain_bias(source, domain, context)
+        # -- Source component ------------------------------------------------------------------
+        # The source_type_weight factor must be pulled *into* the L1 normalisation step
+        # below, so we compute the unweighted [0, 1] prior first and apply weights later.
+        if domain_raw:
+            src_prior = (
+                float(
+                    context.domain_weights.get(domain_raw, {}).get(source, 0.25)
+                    / max(
+                        max(context.domain_weights[domain_raw].values(), default=1.0),
+                        1e-9,
+                    )
+                )
+            )
         else:
-            src_dim = self._score_source_type(source) * context.source_type_weight
+            src_prior = self._score_source_type(source)
 
-        raw = context.quality_weight * quality + context.recency_weight * recency + src_dim
+        # -- L1-normalise the three dimension weights ------------------------------------------
+        qw = context.quality_weight
+        rw = context.recency_weight
+        sw = context.source_type_weight
+        w_sum = qw + rw + sw
 
-        return float(raw)
+        if w_sum > 0:
+            qw_n, rw_n, sw_n = qw / w_sum, rw / w_sum, sw / w_sum
+        else:
+            # All weights are zero -- fall back to equal contribution
+            qw_n = rw_n = sw_n = 1.0 / 3.0
+
+        raw = qw_n * quality + rw_n * recency + sw_n * src_prior
+
+        # Safety clamp (floating-point drift / user error guard)
+        return float(min(max(raw, 0.0), score_max))
 
     def score_and_rank(
         self,
@@ -293,7 +354,9 @@ class RelevanceScorer:
                     content=r.get("content"),
                     source=r.get("source", "unknown"),
                     score=round(s, 4),
-                    meta={k: v for k, v in r.items() if k not in ("key", "content", "source")},
+                    # Exclude 'score' so the RelevanceScorer's normalized value is not
+                    # overwritten by the raw source-level word-count score (G3 fix).
+                    meta={k: v for k, v in r.items() if k not in ("key", "content", "source", "score")},
                 )
 
         ranked = sorted(scored.values(), key=lambda x: x.score, reverse=True)
