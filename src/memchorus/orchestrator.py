@@ -33,6 +33,7 @@ from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
+from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,10 @@ class MemoryOrchestrator:
             logger.debug(
                 "MemoryOrchestrator: lifecycle disabled (lifecycle_config.enabled=False or not set)"
             )
-    
+
+        # --- Merge engine (pre-save interception) -----------------------
+        self._merge_engine: Optional[MergeEngine] = create_merge_engine(self, resolved)
+
     def _initialize_default_sources(self):
         """Initialize the default memory sources."""
         # Add Hermes default as the resilient core
@@ -505,6 +509,11 @@ class MemoryOrchestrator:
         saved = False
         if source_name:
             if source_name in self.memory_sources:
+                # Merge engine pre-save check
+                if self._merge_engine is not None:
+                    merge_result = self._merge_engine.pre_save_check(key, value, source_name)
+                    if not merge_result.should_proceed:
+                        value = merge_result.final_value
                 saved = self.memory_sources[source_name].save(key, value)
             # GAP008: invalidate cache on explicit-source write too -----
             if saved and key in self._retrieve_cache:
@@ -520,6 +529,14 @@ class MemoryOrchestrator:
         # --- get ranked target sources for this profile -----------------\
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
 
+        # ---- merge engine pre-save check (before any source write) -----
+        if self._merge_engine is not None:
+            merge_result = self._merge_engine.pre_save_check(
+                key, value, profile=effective_profile
+            )
+            if not merge_result.should_proceed:
+                value = merge_result.final_value
+
         # ---- preferred targets first (skip disabled) -----------
         for t in preferred_targets:
             src = self.memory_sources.get(t)
@@ -530,7 +547,7 @@ class MemoryOrchestrator:
         # ---- safety net: try ANY available non-disabled source --------
         if not saved:
             for n, src in self.memory_sources.items():
-                if src.is_available() and self.is_source_enabled(n):
+                if src and src.is_available() and self.is_source_enabled(n):
                     saved = self._try_save_to(src, key, value)
                     break
 
