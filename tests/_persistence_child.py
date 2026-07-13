@@ -1,54 +1,38 @@
-#!/usr/bin/env python3
-"""Child worker for multi-run persistence subprocess tests.
+"""Child worker for multi-run persistence subprocess tests."""
+import sys, os, json, hashlib
 
-Invoked by test_multi_run_persistence.py via separate Python processes.
-Uses env vars for configuration. Outputs JSON to stdout."""
-
-import sys, json, os
-
+# Busted cached modules so each subprocess gets a fresh copy
+for mod in list(sys.modules.keys()):
+    if "memchorus" in mod:
+        del sys.modules[mod]
 sys.path.insert(0, "/home/bubo/MemChorus/src")
 
-from memchorus.orchestrator import MemoryOrchestrator
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 
-run_id   = int(os.environ.get("RUN_ID", "0"))
-mode     = os.environ.get("MODE", "store")
-store    = os.environ.get("STORE_DIR", "/tmp/memtest")
-payloads = json.loads(os.environ.get("PAYLOADS_JSON", "[]"))
-exp_raw  = os.environ.get("EXPECTED_IDS", "")
-expected = [x.strip() for x in exp_raw.split(",") if x.strip()]
-
-os.makedirs(store, exist_ok=True)
-
-orc = MemoryOrchestrator(config={})
-src = HermesDefaultMemorySource(name="persist", config={"memory_dir": store})
-orc.memory_sources["persist"] = src
+run_id = int(os.environ["RUN_ID"])
+mode = os.environ["MODE"]
+store_dir = os.environ["STORE_DIR"]
+src = HermesDefaultMemorySource(name="subproc_" + str(run_id), config={"memory_dir": store_dir})
 
 if mode == "store":
+    payloads = json.loads(os.environ["PAYLOADS_JSON"])
     results = []
-    for idx, text in enumerate(payloads):
-        key_id = "r{}_item{}".format(run_id, idx)
-        saved = orc.save(key_id, text, source_name="persist")
-        ok = bool(saved)
-        results.append({"key": key_id, "saved_ok": ok})
-    out = {
-        "ok": True, "mode": "store", "run": run_id,
-        "count": len(results), "results": results,
-    }
-    print(json.dumps(out))
-
+    for payload in payloads:
+        key = "persist_r" + str(run_id) + "_" + hashlib.md5(payload.encode()).hexdigest()[:8]
+        saved = src.save(key, payload)
+        retrieved = src.retrieve(key)
+        results.append({"key": key, "payload": payload, "saved_ok": (retrieved == payload)})
+    print(json.dumps({"ok": True, "mode": "store", "run_id": run_id, "count": len(results), "results": results}))
 elif mode == "recall":
-    found_ids = []
-    missing_ids = []
-    for eid in expected:
-        hit = src.retrieve(eid)
-        if hit is not None:
-            found_ids.append(eid)
+    expected_ids = os.environ["EXPECTED_IDS"].split(",")
+    matched = []
+    missing = []
+    for eid in expected_ids:
+        val = src.retrieve(eid)
+        if val is not None:
+            matched.append({"key": eid, "retrieved": True, "value": val})
         else:
-            missing_ids.append(eid)
-    out = {
-        "ok": True, "mode": "recall", "run": run_id,
-        "found_ids": found_ids, "missing_ids": missing_ids,
-        "total_expected": len(expected), "matched_count": len(found_ids),
-    }
-    print(json.dumps(out))
+            missing.append(eid)
+    print(json.dumps({"ok": True, "mode": "recall", "run_id": run_id, "matched_count": len(matched), "results": matched, "missing_ids": missing}))
+else:
+    print(json.dumps({"ok": False, "error": "unknown mode"}))
