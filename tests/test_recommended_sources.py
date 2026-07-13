@@ -182,8 +182,10 @@ class TestAC3WriteRestrictions(unittest.TestCase):
         orch = _build_orch([_MockMemorySource(
             name="mem_only", src_config={"write_restrictions": ["memory"]}
         )])
-        self.assertIn("mem_only", orch.recommended_sources(write_type="memory"))
-        self.assertNotIn("mem_only", orch.recommended_sources(write_type="decision"))
+        # memory IS in restrictions → source EXCLUDED for memory writes
+        self.assertNotIn("mem_only", orch.recommended_sources(write_type="memory"))
+        # decision is NOT restricted → source INCLUDED for decision writes
+        self.assertIn("mem_only", orch.recommended_sources(write_type="decision"))
 
     def test_no_restriction_accepts_everything(self) -> None:
         orch = _build_orch([_MockMemorySource(name="open")])
@@ -200,9 +202,12 @@ class TestAC3WriteRestrictions(unittest.TestCase):
         orch = _build_orch([_MockMemorySource(
             name="m", src_config={"write_restrictions": ["memory", "decision"]}
         )])
-        self.assertIn("m", orch.recommended_sources(write_type="memory"))
-        self.assertIn("m", orch.recommended_sources(write_type="decision"))
-        self.assertNotIn("m", orch.recommended_sources(write_type="general"))
+        # memory IS in restrictions → source EXCLUDED for memory writes
+        self.assertNotIn("m", orch.recommended_sources(write_type="memory"))
+        # decision IS in restrictions → source EXCLUDED for decision writes
+        self.assertNotIn("m", orch.recommended_sources(write_type="decision"))
+        # general is NOT restricted → source INCLUDED for general writes
+        self.assertIn("m", orch.recommended_sources(write_type="general"))
 
 
 # -----------------------------------------------------------------------
@@ -231,31 +236,33 @@ class TestEdgeCases(unittest.TestCase):
     def test_combined_gating_priority_restriction(self) -> None:
         """All three acceptance criteria together."""
         orch = _build_orch([
-            # high tier, memory only
+            # high tier, refuses memory writes
             _MockMemorySource(
                 name="hm", src_config={"priority_tier": 10, "write_restrictions": ["memory"]}
             ),
             # mid tier, accepts all
             _MockMemorySource(name="ma", src_config={"priority_tier": 5}),
-            # low tier, decision only
+            # low tier, refuses decision writes
             _MockMemorySource(
                 name="ld", src_config={"priority_tier": 1, "write_restrictions": ["decision"]}
             ),
         ])
+        # memory write: hm excluded (refuses), ma first (tier 5), ld second (tier 1)
         m = orch.recommended_sources(write_type="memory")
-        self.assertIn("hm", m)
+        self.assertNotIn("hm", m)
         self.assertIn("ma", m)
-        self.assertNotIn("ld", m)
-        self.assertEqual(m[0], "hm")
+        self.assertIn("ld", m)
+        self.assertEqual(m[0], "ma")
 
+        # decision write: ld excluded (refuses), hm first (tier 10), ma second (tier 5)
         d = orch.recommended_sources(write_type="decision")
+        self.assertIn("hm", d)
         self.assertIn("ma", d)
-        self.assertIn("ld", d)
-        self.assertNotIn("hm", d)
+        self.assertNotIn("ld", d)
 
-        # disable top source -> mid becomes first for memory
+        # disable top source -> ma becomes first for decision
         orch.disable_source("hm")
-        self.assertEqual(orch.recommended_sources(write_type="memory")[0], "ma")
+        self.assertEqual(orch.recommended_sources(write_type="decision")[0], "ma")
 
 
 if __name__ == "__main__":
