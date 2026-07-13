@@ -1,0 +1,47 @@
+{
+  "_comment": "Realistic agent inputs derived from session diagnostic output and actual memory content. Used by test_recall_quality.py.",
+  "queries": [
+    {
+      "text": "I need to implement the search scoring fix for the relevance engine",
+      "description": "Agent implementing a code change - should match development-related memories",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["fix", "scoring", "implement"]
+    },
+    {
+      "text": "Tool call to create kanban tasks for the review workflow",
+      "description": "Agent performing orchestration - should match Kanban/workflow memories",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["kanban", "task", "workflow"]
+    },
+    {
+      "text": "I just learned the database migration script was broken and needed a fix",
+      "description": "Learning/mistake record - should match LEARNING or MISTAKE category memories",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["learned", "database", "migration", "broken"]
+    },
+    {
+      "text": "Running code review on the behavioral trigger changes before merge",
+      "description": "Review decision - should match review process and quality gates",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["review", "merge", "code"]
+    },
+    {
+      "text": "Need to verify pytest coverage results passed before pushing changes",
+      "description": "QA verification - should match testing and CI pipeline references",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["test", "coverage", "pytest"]
+    },
+    {
+      "text": "The orchestrator needs to enforce on-read recall for decision points",
+      "description": "Decision memory about enforcement - should match behavioral/decision memories",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["enforcement", "decision", "orchestrator"]
+    },
+    {
+      "text": "Bug found in routing map causing LEARNING category to silently fall through",
+      "description": "Bug/mistake pattern - should match debugging and error handling memories",
+      "expected_min_results": 2,
+      "should_match_content_keywords": ["bug", "routing", "fix"]
+    }
+  ]
+}
