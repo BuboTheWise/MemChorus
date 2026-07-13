@@ -493,10 +493,13 @@ orchestrate.save(
 
 Other v1.5.0 features:
 
-**Audited 2026-07-11 — zero spec-to-code gaps. Two bugs found and fixed:**
+**Post-Audit Fixes (2026-07-11+):**
 
 - **Hooks feedback integration (commit 148e713):** `on_pre_llm_call` wired to both memory recall AND feedback loop evaluation. Before fix, feedback corrections were silently bypassed despite full implementation in `feedback_loop/integration.py`. Verified live during runtime effectiveness check — all 8 architectural claims confirmed true against behavior.
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
+- **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
+
+**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design), but the `MergeEngine` implementation is still pending. Writes with `enabled: true` will be a no-op until the engine ships — the config key exists so users can prepare ahead of time without breaking existing deployments.
 
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
@@ -512,7 +515,7 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **685 tests** collected across all modules (v1.5.0 audit verified)
+- **769 tests** collected across all modules (current)
 
 
 ## Tipping the Owl
