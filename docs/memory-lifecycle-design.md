@@ -1,7 +1,9 @@
 # Memory Lifecycle Management — Design Specification
 
-**MemChorus Level:** L-5 | **Status:** Draft for Review | **Author:** Bubo
-**Created:** 2026-06-29 | **Target Version:** v1.1.x (post-alpha)
+**MemChorus Level:** L-5 | **Status:** Implemented & Verified | **Author:** Bubo
+**Created:** 2026-06-29 | **Implemented in:** v1.5.0 | **Audit verified:** 2026-07-11
+
+Lifecycle management (LifecycleManager, SweepScheduler, AuditLogger) is implemented on master per v1.5.0 release with the following confirmed capabilities: sweep scheduler overlap protection via threading.Lock, content-assessment-driven eviction scoring using age/recency/importance factors, three-tier eviction actions (ARCHIVE/PURGE/RETAIN), audit rotation at 5MB default cap. Design verified against live code on 2026-07-11 during holistic audit — no spec-to-code gaps found.
 
 ---
 

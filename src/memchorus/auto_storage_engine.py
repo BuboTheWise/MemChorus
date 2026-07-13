@@ -87,6 +87,38 @@ _TRIVIAL_PATTERNS: List[re.Pattern] = [
 # Single-word confirmations that are trivial when there's little else to say.
 _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 
+# ---------------------------------------------------------------------------
+# Known query templates from AutoRecallEngine._QUERY_MAP — if text matches one of
+# these verbatim, it is a query echo artifact and must be skipped.
+# Hardcoded copy to keep storage engine independent of recall engine import.
+# ---------------------------------------------------------------------------
+
+_KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
+    "past planning patterns architecture decisions strategy notes",
+    "tool usage history command conventions domain-specific guidance",
+    "post-action learnings outcomes results",
+    "errors recovery patterns failure modes known issues",
+})
+
+
+def _is_query_echo(text: str) -> bool:
+    """Return True when *text* is a deterministic recall query template rather
+    than actual meaningful content.
+
+    Prevents query echo artifacts — where the search query string itself gets
+    stored as memory content via the post-recall storage cycle.
+    """
+    stripped = text.strip()
+    if stripped in _KNOWN_QUERY_TEMPLATES:
+        return True
+    # Also catch near-exact matches (substring containment in either direction)
+    stripped_lower = stripped.lower()
+    for template in _KNOWN_QUERY_TEMPLATES:
+        if template.lower() in stripped_lower or stripped_lower in template.lower():
+            if min(len(stripped), len(template)) / max(len(stripped), len(template)) >= 0.85:
+                return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Public dataclass
@@ -214,7 +246,19 @@ class AutoStorageEngine:
         Returns a dict with keys: saved, key, significance, outcome_type,
         reason (optional), importance_score.
         """
-        # --- Step 1: filter trivial content ---
+        # --- Step 1: filter query echo artifacts ---
+        if _is_query_echo(text):
+            logger.debug("AutoStorageEngine: skipping query echo artifact")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "query_echo_artifact",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 2: filter trivial content ---
         if self._is_trivial(text):
             return {
                 "saved": False,
@@ -265,26 +309,43 @@ class AutoStorageEngine:
         try:
             # B-2 fix (t_b9205369): route through recommended_sources() so that
             # enabled gating, priority tiering, and write restrictions are honoured.
-            # Map the detected significance category to a write_type token the
-            # orchestrator understands.
             # Map every SignificanceCategory to a write_type token the orchestrator
             # understands. LEARNING / MISTAKE -> "memory" ensures they route to
             # memory-specialised sources rather than falling through to generic.
+            #
+            # Dual-write (t_87b41d3a): LEARNING/MISTAKE/DECISION must land in
+            # hermes_default (searchable JSON) AND mempalace so recall() can find them.
             write_type = {
-                "LEARNING":   "memory",
-                "MISTAKE":    "memory",
-                "DECISION":   "decision",
-                "RESULT":     "general",
+                "LEARNING":     "memory",
+                "MISTAKE":      "memory",
+                "MEMORY":       "memory",
+                "DECISION":     "decision",
+                "RESULT":       "general",
+                "RELATIONSHIP": "graph",
             }.get(category_str.upper(), "general")
 
             candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
 
+            # Dual-write flag: LEARNING/MISTAKE/DECISION go to hermes_default AND mempalace
+            write_both = category_str.upper() in ("LEARNING", "MISTAKE", "DECISION")
+
             success = False
+            saved_to: set[str] = set()
+
             for src_name in candidate_sources:
                 result = self.orchestrator.save(key, payload, source_name=src_name)  # type: ignore[union-attr]
                 if result:
+                    saved_to.add(src_name)
                     success = True
-                    break
+                    # Single-write: stop after first success
+                    if not write_both:
+                        break
+
+            # Dual-write: ensure hermes_default also got the record
+            if write_both and "hermes_default" not in saved_to:
+                result = self.orchestrator.save(key, payload, source_name="hermes_default")  # type: ignore[union-attr]
+                if result:
+                    success = True
 
         except Exception as exc:
             logger.warning("AutoStorageEngine: orchestrator save failed: %s", exc)
