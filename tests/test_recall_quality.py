@@ -80,8 +80,10 @@ def recall_queries():
 
 
 # ---------------------------------------------------------------------------
-# Helper utilities
+# Tests (live-data E2E — skipped in CI since runners lack ~/.hermes/memories/)
 # ---------------------------------------------------------------------------
+
+_MEMORIES_EXIST = os.path.isdir(REAL_MEMORIES_DIR) and len(os.listdir(REAL_MEMORIES_DIR)) > 0
 
 def _extract_content_texts(results):
     """Pull readable content strings from a results list for diversity checks."""
@@ -102,6 +104,7 @@ def _extract_content_texts(results):
 # AC-1: Each realistic query returns >= 2 meaningful results (limit=10)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMinResultCount:
     """Verify each of the 7+ realistic agent inputs yields at least 1 result."""
 
@@ -147,6 +150,7 @@ class TestRecallMinResultCount:
 # AC-2: Result keys are unique (dedup by key working)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallDeduplication:
     """Verify that orchestrator.search() results have unique keys.
 
@@ -199,6 +203,7 @@ class TestRecallDeduplication:
 # AC-3: Scores returned are within [0, MAX] where MAX <= 5
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallScoreBounds:
     """Verify all scores fall within the expected numerical range."""
 
@@ -248,6 +253,7 @@ class TestRecallScoreBounds:
 # AC-4: Zero-result detection for queries that should match existing memory
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallZeroResultDetection:
     """When search returns 0 results but memory clearly exists, flag it as FAIL."""
 
@@ -292,6 +298,7 @@ class TestRecallZeroResultDetection:
 # AC-5: Every result carries provenance fields; results sorted by score desc
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMultiSourceDiversity:
     """Provenance and ordering."""
 
@@ -340,6 +347,7 @@ class TestRecallMultiSourceDiversity:
 # AC-6: Content is meaningful (not empty or placeholder)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMeaningfulContent:
     """Returned content must contain actual text, not near-empty stubs."""
 
@@ -365,6 +373,7 @@ class TestRecallMeaningfulContent:
 # Data integrity smoke tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallDataIntegrity:
     """Sanity checks on the underlying memory store itself."""
 
