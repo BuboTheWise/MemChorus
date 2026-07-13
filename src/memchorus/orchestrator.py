@@ -531,7 +531,9 @@ class MemoryOrchestrator:
 
         # ---- merge engine pre-save check (before any source write) -----
         if self._merge_engine is not None:
-            merge_result = self._merge_engine.pre_save_check(key, value)
+            merge_result = self._merge_engine.pre_save_check(
+                key, value, profile=effective_profile
+            )
             if not merge_result.should_proceed:
                 value = merge_result.final_value
 
