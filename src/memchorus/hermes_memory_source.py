@@ -5,9 +5,10 @@ This implementation provides integration with the default Hermes memory system (
 It serves as the resilient core that must remain functional even if other voices are unavailable.
 """
 
+import difflib as _difflib
+import json
 import os
 import re as _re
-import json
 import datetime
 from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
@@ -16,28 +17,81 @@ from memchorus.memory_source import MemorySource
 class HermesDefaultMemorySource(MemorySource):
     """
     Memory source implementation for Hermes default memory system.
-    
+
     This provides integration with the local curated memory files such as MEMORY.md,
     USER.md, and session context that form the resilient core of MemChorus.
     """
 
+    # Minimum score threshold — results below this floor are filtered out before
+    # being returned to the orchestrator so that low-confidence noise is suppressed.
+    MIN_RECALL_SCORE = 1.5
+
     def __init__(self, name: str = "hermes_default", config: Optional[Dict[str, Any]] = None):
         """
         Initialize the Hermes default memory source.
-        
+
         Args:
             name (str): Unique identifier for this memory source
-            config (Dict[str, Any], optional): Configuration parameters for this source
+            config (Dict[str, Any], optional): Configuration parameters for this source.
+              Overrides:\n                min_recall_score – override MIN_RECALL_SCORE at runtime
         """
         super().__init__(name, config)
         self._name = name  # Store as private attribute to avoid access issues
         self.config = config or {}
         self._initialize_memory_directory()
-        
+
     def _initialize_memory_directory(self):
         """Initialize the memory storage directory."""
         self.memory_dir = self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories'))
         os.makedirs(self.memory_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Content matching / scoring helpers
+    # ------------------------------------------------------------------
+
+    def _content_matches(self, query: str, content_text: str) -> float:
+        """Score how well *query* matches *content_text*.
+
+        Algorithm:
+          1. Split the query into individual terms (lowercased).
+          2. For each term, count substring occurrences in the content text.
+             Each distinct term found contributes to the score (substring
+             matching is deliberately permissive — 'fix' does match 'suffix').
+          3. Bonus: add +0.5 for every extra occurrence beyond the first per term
+             (term frequency bonus, capped at +2 bonus to avoid runaway scoring).
+          4. Self-match penalty: if the content is essentially identical to
+             the query (SequenceMatcher ratio > 0.9), halve the final score
+             so that query-echo artifacts don't dominate results.
+
+        Args:
+            query: The search query string.
+            content_text: Plain-text representation of the memory content.
+
+        Returns:
+            float: Relevance score >= 0.  Zero means no match terms found.
+        """
+        q_lower = query.lower()
+        c_lower = content_text.lower()
+        terms = [t for t in q_lower.split() if len(t) > 1]
+        if not terms:
+            return 0.0
+
+        score = 0.0
+        for term in terms:
+            count = c_lower.count(term)
+            if count > 0:
+                score += 2.0 + min(count - 1, 4) * 0.5
+
+        # Self-match / query-echo penalty
+        ratio = _difflib.SequenceMatcher(None, q_lower, c_lower).ratio()
+        if ratio > 0.9:
+            score *= 0.5
+
+        return score
+
+    def _effective_min_score(self) -> float:
+        """Return the effective minimum recall score from config override."""
+        return self.config.get('min_recall_score', self.MIN_RECALL_SCORE)
 
     @staticmethod
     def _safe_key(key: str) -> str:
@@ -161,57 +215,114 @@ class HermesDefaultMemorySource(MemorySource):
         except Exception:
             return None
 
-    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def _content_to_search_text(self, content: Any) -> str:
+        """Convert a memory value to searchable text.
+
+        Handles all JSON types (dict, list, str, int, float, bool, None).
+        Recursively walks dicts and lists so that nested values are also
+        included in the searchable text body.
+
+        Args:
+            content: The JSON-deserialized value loaded from a .json file.
+
+        Returns:
+            str: Plain-text representation suitable for substring matching.
         """
-        Search for memories matching a query.
-        
-        For the Hermes default memory system, this is a simplified search that 
-        looks for files matching the query pattern in the memory directory.
-        
+        if isinstance(content, dict):
+            parts = []
+            for k, v in content.items():
+                parts.append(str(k))
+                parts.append(self._content_to_search_text(v))
+            return ' '.join(parts)
+        elif isinstance(content, list):
+            return ' '.join(self._content_to_search_text(item) for item in content)
+        else:
+            return str(content)
+
+    def search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Scored search for memories matching a query.
+
+        For each .json file in memory_dir the method:
+          1. Scores the filename (key) against the query via _content_matches.
+          2. Reads and scores the extracted content text against the query.
+          3. Uses the maximum of the two as the file's score.
+
+        Results scoring < MIN_RECALL_SCORE are dropped to suppress low-confidence
+        noise. The remaining results are sorted by score descending and trimmed
+        to *limit*.
+
         Args:
             query (str): Search query string
             limit (int): Maximum number of results to return
-            
-        Returns:
-            List[Dict[str, Any]]: List of matching memories with metadata
-        """
-        results = []
-        try:
-            # Check file-based search — also try safe-key normalized variant of the query
-            # so that underscores in the lookup term still match hyphen-normalized filenames.
-            variants = [query.lower()]
-            safe_q = self._safe_key(query).lower()
-            if safe_q not in variants:
-                variants.append(safe_q)
-            for filename in os.listdir(self.memory_dir):
-                if filename.endswith('.json'):
-                    # Does any variant of the query appear in this filename?
-                    hit = any(variant in filename.lower() for variant in variants)
-                    if hit:
-                        key_name = filename[:-5]  # Remove .json extension
-                        content = self.retrieve(key_name)
-                        if content:
-                            # Get file modification time if available
-                            import time
-                            try:
-                                mtime = os.path.getmtime(os.path.join(self.memory_dir, filename))
-                                ts = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat()
-                            except Exception:
-                                ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
-                            results.append({
-                                'key': key_name,
-                                'content': content,
-                                'source': self._name,
-                                'timestamp': ts
-                            })
-                if len(results) >= limit:
-                    break
-                    
-            # Also search metadata files if available, but that's more complex for now
-            
+        Returns:
+            List[Dict[str, Any]]: Ranked matching memories with metadata
+        """
+        candidates: List[Dict[str, Any]] = []
+        min_score = self._effective_min_score()
+
+        try:
+            filenames = sorted(os.listdir(self.memory_dir))
+            for filename in filenames:
+                if not filename.endswith('.json'):
+                    continue
+
+                key_name = filename[:-5]  # Remove .json extension
+                file_path = os.path.join(self.memory_dir, filename)
+
+                # --- Score the key (filename) ---
+                key_score = self._content_matches(query, key_name)
+
+                # --- Read & score content ---
+                raw = None
+                content_text = ''
+                try:
+                    with open(file_path, 'r') as f:
+                        raw = json.load(f)
+                    content_text = self._content_to_search_text(raw).lower()
+                except Exception:
+                    # Corrupt or unreadable file — skip content scoring
+                    pass
+
+                content_score = self._content_matches(query, content_text)
+                score = max(key_score, content_score)
+
+                if score < min_score:
+                    continue
+
+                # Resolve timestamp & actual content for the result dict
+                content_val = raw if raw is not None else self.retrieve(key_name)
+                if content_val is None:
+                    continue
+
+                try:
+                    mtime = os.path.getmtime(file_path)
+                    ts = datetime.datetime.fromtimestamp(
+                        mtime, tz=datetime.timezone.utc
+                    ).isoformat()
+                except Exception:
+                    ts = datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
+
+                candidates.append({
+                    'key': key_name,
+                    'content': content_val,
+                    'source': self._name,
+                    'timestamp': ts,
+                    '_score': score,       # internal — stripped before return
+                })
+
+            # Rank by score descending
+            candidates.sort(key=lambda r: r['_score'], reverse=True)
+
         except Exception:
             pass
+
+        # Trim to limit and strip the internal _score field
+        results = []
+        for c in candidates[:limit]:
+            c.pop('_score', None)
+            results.append(c)
+
         return results
 
     def is_available(self) -> bool:
