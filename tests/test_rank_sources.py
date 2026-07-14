@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -132,10 +133,19 @@ class TestRankSourcesIntegration(unittest.TestCase):
 
             # Save a key only to mempalace, then verify retrieve() still finds it (fallback)
             mp_src = orch.memory_sources["mempalace"]
-            # Use TempMemPalaceSource to write directly to our temp dir
-            self.patch_mempalace_dir(mp_src, os.path.join(tmpdir, "mp"))
+            os.makedirs(os.path.join(tmpdir, "mp"))
 
-            key = "test_key"
+            # Force the MemPalace source into offline fallback mode so we don't
+            # pollute / read from the global MCP server shared by other tests.
+            mempalace_source = orch.memory_sources.get("mempalace")  # type: ignore[attr-defined]
+            if hasattr(mempalace_source, "_cache_dir"):
+                mempalace_source._cache_dir = Path(os.path.join(tmpdir, "mp"))  # type: ignore[attr-defined]
+            if hasattr(mempalace_source, "_connected"):
+                mempalace_source._connected = False  # type: ignore[attr-defined]
+
+            import uuid
+
+            key = f"test_key_{uuid.uuid4().hex[:8]}"
             value = {"data": "in mempalace"}
             mp_src.save(key, value)
 
