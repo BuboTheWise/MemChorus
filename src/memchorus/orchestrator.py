@@ -740,6 +740,24 @@ class MemoryOrchestrator:
         # Score and rank via the relevance engine
         ranked = self._scorer.score_and_rank(all_results, query, context)
 
+        # Provenance filter: demote auto-generated session metadata results so real
+        # user-authored content dominates search rankings. Auto-storage marks entries
+        # with categories: ["RESULT"] — these echo query text and otherwise outrank
+        # genuine documents through coincidental similarity.
+        def _is_auto_metadata(c):
+            """Check if a result is auto-generated session metadata rather than authored content."""
+            cat = c.get("categories", []) if isinstance(c, dict) else []
+            return "RESULT" in [s.upper() for s in cat]
+
+        PENALTY_FACTOR = 0.3  # Scale auto-metadata scores to 30% so real docs win
+        for _rr in ranked:
+            if _is_auto_metadata(getattr(_rr, "content", {})):
+                _rr.score *= PENALTY_FACTOR
+
+        # Re-sort descending (highest first) to preserve the contract that ranked[0]
+        # holds the best result after penalty adjustment.
+        ranked = sorted(ranked, key=lambda r: -r.score)
+
         # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
         # Multiple keys can carry identical content (query-echo artifacts). Keep only the
         # highest-scored instance per unique content text, preserving ranking order.
