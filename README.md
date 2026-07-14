@@ -427,6 +427,16 @@ RUN_LIVE_MCP=1 pytest -v
 
 The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery.
 
+### Multi-Pass Decision Intelligence Benchmark
+
+Beyond unit tests there is a physical proof benchmark that validates real memory accumulation across separate Python processes:
+
+```bash
+python3 tests/benchmark_multipass.py --report ~/\memchorus_report.json
+```
+
+Methodology runs five passes through isolated subprocesses (`PYTHONPATH=""` forces fresh interpreters): cold start baseline knowledge seeding recall measurement and cross-process persistence validation. Produces SHA-256 file hashes and a timestamped machine-readable JSON report proving disk writes survived interpreter death. Full methodology lives in `docs/BENCHMARKS.md`.
+
 ### CI/CD Pipeline
 
 GitHub Actions runs the full test suite against Python 3.11 and 3.12 on every push to `master` and on all pull requests:
