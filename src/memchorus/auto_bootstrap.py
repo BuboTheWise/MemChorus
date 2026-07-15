@@ -134,6 +134,12 @@ def _bootstrap() -> Optional[Any]:
     yaml_cfg = _load_yaml_config()
     config: Dict[str, Any] = dict(_DEFAULTS)
 
+    # enforcement toggles — recall (pre-decision memory retrieval) and storage
+    # (post-action automatic capture). Both default to True so enforcement is
+    # opt-out, not opt-in. The user must explicitly set these to false to disable.
+    enforce_on_read = _resolve_boolean(yaml_cfg.get("enforce_on_read", True))
+    enforce_on_write = _resolve_boolean(yaml_cfg.get("enforce_on_write", True))
+
     # YAML layer (medium priority)
     for key in ("default_source", "half_life_days", "cache_ttl_seconds"):
         if key in yaml_cfg:
@@ -190,6 +196,13 @@ def _bootstrap() -> Optional[Any]:
         default_source, half_life_days, cache_ttl_seconds, custom_loops_dir,
     )
 
+    # Log enforcement toggle state so the user knows what is active at startup.
+    logger.info(
+        "MEMCHORUS enforcement toggles -- recall: %s, storage: %s",
+        "enabled" if enforce_on_read else "disabled",
+        "enabled" if enforce_on_write else "disabled",
+    )
+
     # --- Step 3: MemPalace probe ---
     mp_available = False
     try:
@@ -216,6 +229,8 @@ def _bootstrap() -> Optional[Any]:
         "default_source": default_source,
         "half_life_days": half_life_days,
         "cache_ttl_seconds": float(cache_ttl_seconds),
+        "enforce_on_read": enforce_on_read,
+        "enforce_on_write": enforce_on_write,
         "mempalace_config": {
             "skip_mcp": not mp_available,
             "mempalace_routing": yaml_cfg.get("mempalace_routing", _DEFAULT_MEMPALACE_ROUTING),
