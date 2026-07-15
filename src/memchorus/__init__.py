@@ -4,7 +4,10 @@ __version__ = "1.5.0"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
 
+import logging
 import sys  # loaded early for __getattr__ / sys.modules access
+
+logger = logging.getLogger(__name__)
 
 # Lazy bootstrap guard (set to True by __getattr__ after first trigger).
 _bootstrap_done: bool = False
@@ -70,6 +73,12 @@ def _trigger_lazy_bootstrap():
     result = _orig_bootstrap()
     sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
     _bootstrap_done = True
+    if result is None:
+        logger.warning(
+            "MemChorus bootstrap completed but _instance is None — "
+            "hooks will degrade gracefully (return None). "
+            "Check MEMCHORUS_AUTO_ENABLED env var or memchorus.yaml config."
+        )
 
 
 def __getattr__(name: str) -> object:
@@ -98,6 +107,12 @@ def __getattr__(name: str) -> object:
         result = _orig_bootstrap()
         sys.modules[__name__]._instance = result  # type: ignore[attr-defined]  # can be None when disabled or errored
         _bootstrap_done = True
+        if result is None:
+            logger.warning(
+                "MemChorus bootstrap completed but _instance is None — "
+                "hooks will degrade gracefully (return None). "
+                "Check MEMCHORUS_AUTO_ENABLED env var or memchorus.yaml config."
+            )
 
     # Step 2 — resolve the requested name from lazy table or module globals
     if name in _LAZY_SYMBOLS:
