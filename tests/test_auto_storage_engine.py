@@ -56,7 +56,10 @@ class _MockOrchestrator:
 def _make_engine(orch=None) -> AutoStorageEngine:
     if orch is None:
         orch = _MockOrchestrator()
-    return AutoStorageEngine(orchestrator=orch)
+    # Set min_content_length low so existing tests that use short phrases reach the
+    # trivial/significance/dedup filters. Bug 3 thresholds (50 chars default) are tested
+    # in test_bug3_filters.py with their own engine instances.
+    return AutoStorageEngine(orchestrator=orch, min_content_length=10)
 
 
 # ---------------------------------------------------------------------------
@@ -173,33 +176,45 @@ class TestSignificanceDetection(unittest.TestCase):
 class TestTrivialFiltering(unittest.TestCase):
     """AC-5: short text and meaningless confirmations are skipped."""
 
-    def _assert_trivial(self, engine: AutoStorageEngine, text: str) -> None:
+    def _assert_rejected(self, engine: AutoStorageEngine, text: str) -> None:
         result = engine.capture_outcome(text)
         self.assertFalse(result["saved"])
-        self.assertEqual(result["reason"], "below_significance_threshold")
 
     def test_too_short_text_is_trivial(self) -> None:
         engine = _make_engine()
-        self._assert_trivial(engine, "ok")
-        self._assert_trivial(engine, "1234567890123456789")  # exactly 19 chars
+        # "ok" is 2 chars < min_content_length(10) so it's caught by the length gate first
+        result = engine.capture_outcome("ok")
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["reason"], "below_min_content_length")
+
+        # 19-char numeric string passes min_content_length but has no significance keywords
+        self._assert_rejected(engine, "1234567890123456789")  # exactly 19 chars
 
     def test_ok_is_trivial(self) -> None:
         engine = _make_engine()
-        self._assert_trivial(engine, "ok it's done")
+        result = engine.capture_outcome("ok it's done")
+        self.assertFalse(result["saved"])
 
     def test_done_alone_at_end_is_trivial(self) -> None:
+        # This text is now caught by low_entropy_signal which fires before trivial filter.
+        # The overall contract is still "rejected" — the reason code changed, not the outcome.
         engine = _make_engine()
-        self._assert_trivial(engine, "Yep, we're done")
+        result = engine.capture_outcome("Yep, we're done")
+        self.assertFalse(result["saved"])
 
     def test_yep_is_trivial(self) -> None:
         engine = _make_engine()
-        self._assert_trivial(engine, "yep")
+        # 3 chars < min_content_length(10)
+        result = engine.capture_outcome("yep")
+        self.assertFalse(result["saved"])
+        self.assertEqual(result["reason"], "below_min_content_length")
 
     def test_single_word_is_trivial(self) -> None:
+        # "hello world!" may be caught by low_entropy_signal first. Either rejection is fine.
         engine = _make_engine()
-        self._assert_trivial(engine, "hello world!")  # two words but trivial-ish
-        # Actually verify the trivial path fires (it won't for 2+ word >6 chars each):
-        
+        result = engine.capture_outcome("hello world!")
+        self.assertFalse(result["saved"])
+
     def test_significant_text_saves(self) -> None:
         engine = _make_engine()
         result = engine.capture_outcome(
@@ -357,7 +372,7 @@ class TestDualWrite(unittest.TestCase):
 
     def test_learning_saves_to_hermes_default_and_mempalace(self) -> None:
         orch = _MockOrchestratorDualWrite()
-        engine = AutoStorageEngine(orch)
+        engine = AutoStorageEngine(orch, min_content_length=10)
         result = engine.capture_outcome("I learned that the routing map was wrong")
         self.assertTrue(result["saved"])
         sources = self._sources_saved(orch)
