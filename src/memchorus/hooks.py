@@ -27,12 +27,45 @@ logger = logging.getLogger(__name__)
 
 def _get_orchestrator() -> Optional[Any]:
     """Return the global MemoryOrchestrator singleton if it was created by
-    auto_bootstrap (lazy init on first memchorus import after that module loads)."""
+    auto_bootstrap (lazy init on first memchorus import after that module loads).
+
+    Logs a one-shot WARNING when bootstrap ran but produced None — so operators
+    see why hooks are returning early.  The warning fires once per process to
+    avoid spamming on every hook invocation.
+    """
     try:
-        return __import__('memchorus', fromlist=['_instance'])._instance
+        mod = __import__('memchorus', fromlist=['_instance'])
     except Exception as exc:  # pragma: no cover - defensive fallback
-        logger.debug("_get_orchestrator failed (no auto_bootstrap yet): %s", exc)
+        logger.debug("_get_orchestrator: could not import memchorus: %s", exc)
         return None
+
+    if not getattr(mod, "_bootstrap_done", False):
+        # Bootstrap never triggered — this is normal before hooks fire.
+        logger.debug("_get_orchestrator: bootstrap not yet triggered, returning None")
+        return None
+
+    instance = getattr(mod, "_instance", None)
+    if instance is None:
+        _warn_once("MemChorus orchestrator unavailable: bootstrap completed but "
+                   "_instance is None. All hooks will degrade gracefully (return None). "
+                   "Check that MEMCHORUS_AUTO_ENABLED is not set to false and that "
+                   "~/.hermes/memchorus.yaml is valid.", logger)
+        return None
+
+    return instance
+
+
+# ---------------------------------------------------------------------------
+# One-shot warning helper (avoids WARNING spam on every hook call)
+# ---------------------------------------------------------------------------
+
+def _warn_once(msg: str, log: logging.Logger) -> None:
+    """Log a WARNING exactly once per process for *msg*."""
+    if not hasattr(_warn_once, "_seen"):  # type: ignore[attr-defined]
+        _warn_once._seen = set()  # type: ignore[attr-defined]
+    if msg not in _warn_once._seen:  # type: ignore[attr-defined]
+        _warn_once._seen.add(msg)  # type: ignore[attr-defined]
+        logger.warning(msg)
 
 
 # ---------------------------------------------------------------------------
