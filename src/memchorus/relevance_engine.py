@@ -248,6 +248,7 @@ class RelevanceScorer:
         query: str,
         context: Optional[ContextWeight] = None,
         score_max: float = 1.0,
+        auto_provenance_penalty: float = 0.3,
     ) -> float:
         """Compute a single relevance score in [0, 1] for ``result``.
 
@@ -265,10 +266,17 @@ class RelevanceScorer:
 
         Normalisation:        w_q' = w_q / (w_q + w_r + w_s)
 
+        Bug 3 addition (AC4): auto_provenance_penalty parameter applies a multiplicative
+            factor to results that contain ``_auto_provenance: True`` in their metadata,
+            down-weighting automatically-captured content so it ranks below deliberately
+            stored memories.  Default factor = 0.3 (i.e., the raw score is multiplied by
+            0.3 for auto-stored items).
+
         Args:
             result: A dict produced by a MemorySource.search() call.
                     Expected keys: ``key``, ``content``, ``source``, plus optionally
                     ``timestamp`` and ``_domain`` (injected by the orchestrator).
+                    Auto-provenance marker: ``_auto_provenance`` set to True for auto-captured.
             query: The original search query (used for quality).
             context: Optional weighting preferences from the caller.  Weights are
                      normalised before use so they always sum to 1.0 regardless of
@@ -276,6 +284,9 @@ class RelevanceScorer:
             score_max: Hard ceiling for the returned value (default ``1.0``).
                        Raise if you want a wider range, but [0, 1] is the
                        documented contract and safest for downstream consumers.
+            auto_provenance_penalty: Multiplicative penalty applied to auto-captured
+                content (default 0.3 so that auto-stored memories get 30% of their
+                raw score).
 
         Returns:
             Float score in ``[0, score_max]``.  Higher is more relevant.
@@ -326,6 +337,11 @@ class RelevanceScorer:
             qw_n = rw_n = sw_n = 1.0 / 3.0
 
         raw = qw_n * quality + rw_n * recency + sw_n * src_prior
+
+        # Bug 3 AC4: provenance penalty -- auto-captured content gets a multiplicative
+        # factor (default 0.3) so it ranks below deliberately stored memories.
+        if result.get("_auto_provenance") is True:
+            raw *= auto_provenance_penalty
 
         # Safety clamp (floating-point drift / user error guard)
         return float(min(max(raw, 0.0), score_max))
