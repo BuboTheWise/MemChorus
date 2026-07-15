@@ -4,13 +4,21 @@ auto_storage_engine -- automatic post-action outcome capture module.
 Provides ``AutoStorageEngine`` that intercepts text after task/tool completion,
 detects significance (LEARNING/MISTAKE/DECISION/RESULT), filters trivial
 content, deduplicates, and writes structured payloads via a MemoryOrchestrator.
+
+Bug 3 additions (t_da9e2362):
+    - AC1: min_content_length threshold (default 50 chars before storage)
+    - AC2: Noise pattern recognition (rejects tracebacks, boilerplate, hex dumps)
+    - AC3: Shannon entropy gating (rejects repetitive/low-signal content)
+    - AC4: Provenance marker on payloads for RelevanceScorer penalty (P=0.3)
 """
 
 from __future__ import annotations
 
+import math
 import logging
 import re
 import time as _time_mod
+from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -87,8 +95,110 @@ _TRIVIAL_PATTERNS: List[re.Pattern] = [
 # Single-word confirmations that are trivial when there's little else to say.
 _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 
+
 # ---------------------------------------------------------------------------
-# Known query templates from AutoRecallEngine._QUERY_MAP — if text matches one of
+# Noise pattern rejection (Bug 3 AC-2) -- precompiled regex patterns that match
+# error stacks, tracebacks, binary dumps, empty imports, and boilerplate that
+# provides no semantic signal worth storing.
+# ---------------------------------------------------------------------------
+
+_NOISE_PATTERNS: List[Tuple[str, re.Pattern]] = [
+    # Python/Java tracebacks (stack traces)
+    ("traceback_header", re.compile(r'^\s*Traceback\s*\(most recent call last\)', re.M)),
+    ("python_trace_files", re.compile(r'''^\s*File\s+"[^"]+",\s*line\s+\d+''', re.M)),
+    # Common Python exception classes at line start
+    ("exception_class", re.compile(
+        r'^\s*(?:ValueError|KeyError|TypeError|AttributeError|'
+        r'ImportError|ModuleNotFoundError|RuntimeError|IndexError|'
+        r'OSError|FileNotFoundError|PermissionError|ConnectionError)\b', re.M)),
+    # Java-style stack frames (at com.example.Class.method(...))
+    ("stack_frame_java", re.compile(r'^\s+at\s+\w+(\.\w+)+\(\w+:\d+\)', re.M)),
+    # Hex dumps -- pairs of hex bytes with spaces/tabs between (8+ pairs)
+    ("hex_dump", re.compile(r'(?:[0-9a-fA-F]{2}\s){8,}')),
+    # Import-only blocks where most lines are just 'import X' or 'from X import Y'
+    # and less than 30% of lines are actual code.
+    ("import_block_pattern", re.compile(
+        r'^\s*(?:import\s+\w+|from\s+\w+\s+import\s+.+)$', re.M)),
+    # License copyright boilerplate alone (lines starting with copyright/license/mit)
+    ("license_boilerplate", re.compile(
+        r'^\s*(?:#\s*(?:copyright|licen[se]|MIT licen|Apache Licen)'
+        r'|^\s*\([Cc]\))', re.M)),
+    # Repeated identical lines (>5 consecutively) -- padding / whitespace walls
+    ("repeated_lines", re.compile(r'(^.*\n)(?:\1){5,}')),
+    # All-dashes-or-equals separator walls (>5 consecutive separator-only lines)
+    ("separator_wall", re.compile(r'(?:^[-=~]{3,}\s*$\n){5,}', re.M)),
+]
+
+
+def _is_noise(text: str) -> bool:
+    """Return True when *text* matches known noise patterns (tracebacks, binary dumps,
+    boilerplate, etc.) that would waste memory without providing meaningful content.
+
+    Checks each precompiled pattern; returns True on the first match found.
+    For import blocks specifically, a density threshold of 70% must be met to
+    account for mixed input containing some real code alongside imports.
+    """
+    for label, pattern in _NOISE_PATTERNS:
+        if label == "import_block_pattern":
+            # Special case: only reject if imports dominate the whole text (>70% of lines)
+            matches = pattern.findall(text)
+            total_lines = max(len(text.splitlines()), 1)
+            if len(matches) / total_lines >= 0.7:
+                return True
+        else:
+            if pattern.search(text):
+                return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Shannon entropy gating -- Bug 3 AC-3
+# ---------------------------------------------------------------------------
+
+_MIN_ENTROPY_CHARS = 20
+"""Minimum number of characters required before Shannon entropy is calculated at all."""
+
+_MIN_ENTROPY_THRESHOLD = 1.5
+"""Shannon entropy floor (bits/char) -- below this the content is considered repetitive noise."""
+
+
+def _shannon_entropy(text: str) -> float:
+    """Calculate Shannon entropy (bits per character) from raw character frequencies.
+
+    Returns a value between 0.0 (single repeated char) and ~8.0 (dense random).
+    English prose typically sits around 3.5-4.5 bits/char, while repetitive or
+    boilerplate content tends below 2.5 bits/char.
+    """
+    if not text:
+        return 0.0
+
+    length = len(text)
+    freqs = Counter(text)
+    entropy = 0.0
+    for count in freqs.values():
+        p = count / length
+        if p > 0:
+            entropy -= p * math.log2(p)
+
+    return float(entropy)
+
+
+def _has_minimum_signal(text: str, threshold_entropy: float = 1.5) -> bool:
+    """Return True when *text* has sufficient Shannon entropy to be considered
+    meaningful (above *threshold_entropy* bits/char).
+
+    Low-entropy text such as repeated separators, whitespace walls, or extremely
+    repetitive boilerplate will fail this check regardless of length."""
+    normalized = re.sub(r'\s+', ' ', text.strip())
+    if len(normalized) < _MIN_ENTROPY_CHARS:
+        return False
+    ent = _shannon_entropy(normalized)
+    return ent >= threshold_entropy
+
+
+# ---------------------------------------------------------------------------
+# Known query templates from AutoRecallEngine._QUERY_MAP -- if text matches one of
 # these verbatim, it is a query echo artifact and must be skipped.
 # Hardcoded copy to keep storage engine independent of recall engine import.
 # ---------------------------------------------------------------------------
@@ -105,7 +215,7 @@ def _is_query_echo(text: str) -> bool:
     """Return True when *text* is a deterministic recall query template rather
     than actual meaningful content.
 
-    Prevents query echo artifacts — where the search query string itself gets
+    Prevents query echo artifacts -- where the search query string itself gets
     stored as memory content via the post-recall storage cycle.
     """
     stripped = text.strip()
@@ -191,7 +301,7 @@ def _gen_key(text: str, categories: List[SignificanceCategory]) -> str:
 
 
 def _text_to_bag(text: str) -> Set[str]:
-    """Lowercased, deduplicated bag of ≥2-character alpha-words excluding stop words."""
+    """Lowercased, deduplicated bag of >=2-character alpha-words excluding stop words."""
     return {w.lower() for w in re.findall(r'[a-z]{2,}', text) if w not in _STOP_WORDS}
 
 
@@ -219,7 +329,12 @@ class AutoStorageEngine:
 
     Constructor::
 
-        AutoStorageEngine(orchestrator, dedup_window_seconds=30.0, dedup_similarity_threshold=0.6)
+        AutoStorageEngine(orchestrator, dedup_window_seconds=30.0,
+                         dedup_similarity_threshold=0.6, min_content_length=50)
+
+    Bug 3 parameters (AC1):
+        min_content_length: minimum characters before storage is attempted
+                            (default 50 to reject near-empty tool outputs)
 
     Public API:
         capture_outcome(text, outcome_type='automatic') -> dict
@@ -230,10 +345,14 @@ class AutoStorageEngine:
         orchestrator: Any,  # MemoryOrchestrator or None
         dedup_window_seconds: float = 30.0,
         dedup_similarity_threshold: float = 0.6,
+        min_content_length: int = 50,
     ) -> None:
         self.orchestrator = orchestrator
         self.dedup_window_seconds = dedup_window_seconds
         self.dedup_similarity_threshold = dedup_similarity_threshold
+
+        # AC1: minimum content length threshold (default 50 chars)
+        self.min_content_length = min_content_length
 
         # Internal dedup store: list of (text, key, timestamp)
         self._dedup_cache: List[Tuple[str, str, float]] = []
@@ -245,6 +364,16 @@ class AutoStorageEngine:
 
         Returns a dict with keys: saved, key, significance, outcome_type,
         reason (optional), importance_score.
+
+        Filtering pipeline (in order):
+         1. Query echo prevention (existing)
+         2. Min content length gate (Bug 3 AC1)
+         3. Noise pattern rejection (Bug 3 AC2)
+         4. Shannon entropy signal gating (Bug 3 AC3)
+         5. Trivial content filter (existing)
+         6. Significance detection + scoring (existing)
+         7. Deduplication (existing)
+         8. Save via orchestrator with provenance marker (Bug 3 AC4)
         """
         # --- Step 1: filter query echo artifacts ---
         if _is_query_echo(text):
@@ -258,7 +387,49 @@ class AutoStorageEngine:
                 "importance_score": 0.0,
             }
 
-        # --- Step 2: filter trivial content ---
+        # --- Step 2: min content length gate (Bug 3 AC1) ---
+        if len(text.strip()) < self.min_content_length:
+            logger.debug(
+                "AutoStorageEngine: content too short (%d chars < %d threshold)",
+                len(text.strip()), self.min_content_length,
+            )
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "below_min_content_length",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 3: noise pattern rejection (Bug 3 AC2) ---
+        if _is_noise(text):
+            logger.debug("AutoStorageEngine: rejecting noise-pattern content")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "noise_pattern_matched",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 4: Shannon entropy gate (Bug 3 AC3) ---
+        if not _has_minimum_signal(text):
+            logger.debug(
+                "AutoStorageEngine: low entropy content rejected (%.2f bits/char)",
+                _shannon_entropy(text.strip()),
+            )
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "low_entropy_signal",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 5: filter trivial content (existing) ---
         if self._is_trivial(text):
             return {
                 "saved": False,
@@ -269,7 +440,7 @@ class AutoStorageEngine:
                 "importance_score": 0.0,
             }
 
-        # --- Step 2: detect significance ---
+        # --- Step 6: detect significance ---
         categories = _detect_significance(text)
         if categories:
             chosen_category = categories[0]  # highest priority first
@@ -280,11 +451,11 @@ class AutoStorageEngine:
 
         importance = _score_importance(text, categories)
 
-        # --- Step 3: generate key ---
+        # --- Step 7: generate key ---
         category_list = [chosen_category] if chosen_category else []
         key = _gen_key(text, category_list)
 
-        # --- Step 4: dedup check ---
+        # --- Step 8: dedup check ---
         merged_result = self._check_dedup(text)
         if merged_result is not None:
             return {
@@ -296,7 +467,7 @@ class AutoStorageEngine:
                 "importance_score": importance,
             }
 
-        # --- Step 5: save to orchestrator ---
+        # --- Step 9: save to orchestrator with provenance marker (Bug 3 AC4) ---
         payload = {
             "text": text,
             "categories": [c.value for c in categories] or ["RESULT"],
@@ -304,17 +475,11 @@ class AutoStorageEngine:
             "outcome_type": outcome_type,
             "timestamp": _time_mod.time(),
             "importance_score": importance,
+            # AC4: provenance marker -- RelevanceScorer checks this key to apply P=0.3
+            "_auto_provenance": True,
         }
 
         try:
-            # B-2 fix (t_b9205369): route through recommended_sources() so that
-            # enabled gating, priority tiering, and write restrictions are honoured.
-            # Map every SignificanceCategory to a write_type token the orchestrator
-            # understands. LEARNING / MISTAKE -> "memory" ensures they route to
-            # memory-specialised sources rather than falling through to generic.
-            #
-            # Dual-write (t_87b41d3a): LEARNING/MISTAKE/DECISION must land in
-            # hermes_default (searchable JSON) AND mempalace so recall() can find them.
             write_type = {
                 "LEARNING":     "memory",
                 "MISTAKE":      "memory",
@@ -326,7 +491,6 @@ class AutoStorageEngine:
 
             candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
 
-            # Dual-write flag: LEARNING/MISTAKE/DECISION go to hermes_default AND mempalace
             write_both = category_str.upper() in ("LEARNING", "MISTAKE", "DECISION")
 
             success = False
@@ -337,7 +501,6 @@ class AutoStorageEngine:
                 if result:
                     saved_to.add(src_name)
                     success = True
-                    # Single-write: stop after first success
                     if not write_both:
                         break
 
@@ -411,4 +574,3 @@ class AutoStorageEngine:
                     return True
 
         return False
-
