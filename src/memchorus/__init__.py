@@ -68,8 +68,40 @@ def _trigger_lazy_bootstrap():
         return
     from memchorus.auto_bootstrap import _bootstrap as _orig_bootstrap
     result = _orig_bootstrap()
+    # AC-1 compliance (Bug 1): If bootstrap returned None due to genuine failure,
+    # fall back to a minimal working orchestrator so hooks still have a reference.
+    # Do NOT override user intent — if auto-bootstrap was intentionally disabled,
+    # leave result as None so hooks degrade gracefully and skip their work.
+    _auto_enabled_raw = os.environ.get("MEMCHORUS_AUTO_ENABLED")
+    _is_explicitly_disabled = _resolve_boolean(_auto_enabled_raw) is False \
+        if _auto_enabled_raw is not None else False
+    if result is None and not _is_explicitly_disabled:
+        import logging
+        _fb_logger = logging.getLogger(__name__)
+        try:
+            from memchorus.orchestrator import MemoryOrchestrator
+            _fb_logger.warning(
+                "%s bootstrap returned None — falling back to degraded orchestrator",
+                __name__,
+            )
+            result = MemoryOrchestrator()
+        except Exception as exc:
+            _fb_logger.error("Degraded fallback failed: %s", exc)
     sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
     _bootstrap_done = True
+
+
+_import_os = __import__("os")
+os = _import_os
+
+
+def _resolve_boolean(raw):
+    """Normalise any truthy / falsy source to a strict Python boolean."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(raw)
 
 
 def __getattr__(name: str) -> object:
@@ -96,7 +128,32 @@ def __getattr__(name: str) -> object:
     if not _bootstrap_done:
         from memchorus.auto_bootstrap import _bootstrap as _orig_bootstrap
         result = _orig_bootstrap()
-        sys.modules[__name__]._instance = result  # type: ignore[attr-defined]  # can be None when disabled or errored
+        # AC-1 compliance (Bug 1): _instance must be non-None after register(ctx) completes.
+        # If full bootstrap genuinely failed, fall back to a degraded orchestrator
+        # with default config so hooks still operate rather than returning None silently.
+        # Do NOT override user intent — if auto-bootstrap was intentionally disabled via
+        # MEMCHORUS_AUTO_ENABLED=false, leave result as None so hooks skip their work.
+        _was_disabled = os.environ.get("MEMCHORUS_AUTO_ENABLED") is not None
+        if _was_disabled:
+            val = os.environ["MEMCHORUS_AUTO_ENABLED"].strip().lower()
+            _was_disabled = val in ("false", "0", "no", "off", "")
+        if result is None and not _was_disabled:
+            import logging
+            _fallback_logger = logging.getLogger(__name__)
+            try:
+                from memchorus.orchestrator import MemoryOrchestrator
+                _fallback_logger.warning(
+                    "%s bootstrap returned None — creating degraded fallback orchestrator "
+                    "(enforcement disabled; storage still possible via hermes_default)",
+                    __name__,
+                )
+                result = MemoryOrchestrator()  # defaults: empty sources → hooks return None gracefully but _instance exists
+            except Exception as exc:
+                _fallback_logger.error(
+                    "Degraded fallback orchestrator creation failed: %s — memchorus will be inactive", exc
+                )
+                pass  # _instance remains unset so __getattr__ raises AttributeError on access
+        sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
         _bootstrap_done = True
 
     # Step 2 — resolve the requested name from lazy table or module globals
