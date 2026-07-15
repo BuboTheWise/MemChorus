@@ -204,22 +204,36 @@ class MemoryOrchestrator:
         self._merge_engine: Optional[MergeEngine] = create_merge_engine(self, resolved)
 
     def _initialize_default_sources(self):
-        """Initialize the default memory sources."""
-        # Add Hermes default as the resilient core
+        """Initialize the default memory sources.
+
+        HermesDefault is always registered — it only needs a local file directory
+        and never blocks orchestrator creation. MemPalace is added when available;
+        if MCP or its import fails, we log a warning and continue with degraded
+        but operational state so that _instance remains non-None (AC-1).
+        """
+        # Add Hermes default as the resilient core — this cannot fail because
+        # it only depends on local filesystem access which is guaranteed.
         hermes_source = HermesDefaultMemorySource(
             name='hermes_default',
             config=self.config.get('hermes_default_config', {})
         )
         self.memory_sources['hermes_default'] = hermes_source
         self._source_enabled['hermes_default'] = True
-        
-        # Add MemPalace as the primary voice  
-        mempalace_source = MemPalaceMemorySource(
-            name='mempalace',
-            config=self.config.get('mempalace_config', {})
-        )
-        self.memory_sources['mempalace'] = mempalace_source
-        self._source_enabled['mempalace'] = True
+
+        # Add MemPalace as the primary voice — tolerate failure so that
+        # MCP unavailability does not destroy the orchestrator.
+        try:
+            mempalace_source = MemPalaceMemorySource(
+                name='mempalace',
+                config=self.config.get('mempalace_config', {})
+            )
+            self.memory_sources['mempalace'] = mempalace_source
+            self._source_enabled['mempalace'] = True
+        except Exception as exc:
+            logger.warning(
+                "MemPalace source unavailable during orchestrator init — "
+                "continuing with hermes_default only. Error: %s", exc,
+            )
     
     def register_source(self, source: MemorySource) -> bool:
         """
