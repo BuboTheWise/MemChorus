@@ -161,7 +161,9 @@ def test_orchestrator_graceful_degradation_fills_source_gaps():
         assert result is not None
         assert result.get('gap') == 'filled_by_hermes'
 
-        results = orch.search('gap_filler')
+        # Search for a term that ACTUALLY appears in the stored value
+        # so hermes_default can find it via its content-matching search.
+        results = orch.search('filled_by_hermes')
         assert len(results) > 0
 
     finally:
