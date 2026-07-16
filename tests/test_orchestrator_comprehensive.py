@@ -153,8 +153,8 @@ def test_single_source_operations_work_through_that_path_only():
         assert retrieved is not None
         assert retrieved['only_source'] is True
 
-        # Search by key name (orchestrator.search matches any source with data)
-        results = orch.search('single_path')
+        # Search by a term that appears in the stored value (hermes_default matches content, not keys)
+        results = orch.search('only_source')
         assert len(results) > 0, f"Expected results from search; got {results!r}. Check if data landed in a searchable source."
         for r in results:
             assert r['source'] == 'hermes_default'
