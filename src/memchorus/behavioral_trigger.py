@@ -188,8 +188,8 @@ class _PatternStore:
                 regex_str = ".*?".join(parts)
             compiled = re.compile(regex_str, re.IGNORECASE | re.UNICODE)
             compiled_keywords.append((compiled, pattern_str))
-        for c, _ in compiled_keywords:
-            self._groups[DecisionPoint.POST_ACTION_COMPLETE].append(c)
+        for compiled, kwd in compiled_keywords:
+            self._groups[DecisionPoint.POST_ACTION_COMPLETE].append((compiled, kwd))
 
         logger.info(
             "BehavioralTrigger: merged %d user-provided save_trigger keywords "
