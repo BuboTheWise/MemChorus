@@ -53,35 +53,35 @@ def _make_engine(orch=None) -> AutoStorageEngine:
 
 
 # ---------------------------------------------------------------------------
-# AC1: min_content_length threshold (default 50 chars before storage)
+# AC1: min_content_length threshold (default 30 chars before storage)
 # ---------------------------------------------------------------------------
 
 class TestMinContentLength(unittest.TestCase):
     """AC1: Content below the length threshold is rejected with reason='below_min_content_length'"""
 
-    def test_default_minimum_is_50_chars(self) -> None:
+    def test_default_minimum_is_30_chars(self) -> None:
         engine = _make_engine()
-        self.assertEqual(engine.min_content_length, 50)
+        self.assertEqual(engine.min_content_length, 30)
 
     def test_can_configure_custom_threshold(self) -> None:
         orch = _MockOrchestrator()
         engine = AutoStorageEngine(orch, min_content_length=100)
         self.assertEqual(engine.min_content_length, 100)
 
-    def test_exactly_49_chars_rejected_default(self) -> None:
-        """Text of exactly 49 chars (one below threshold) must be rejected."""
+    def test_exactly_29_chars_rejected_default(self) -> None:
+        """Text of exactly 29 chars (one below threshold) must be rejected."""
         engine = _make_engine()
-        short_text = "X" * 49
+        short_text = "X" * 29
         result = engine.capture_outcome(short_text)
         self.assertFalse(result["saved"])
         self.assertEqual(result["reason"], "below_min_content_length")
 
-    def test_exactly_50_chars_accepted_default(self) -> None:
-        """Text of exactly 50 chars must pass the threshold gate."""
+    def test_exactly_30_chars_accepted_default(self) -> None:
+        """Text of exactly 30 chars must pass the threshold gate."""
         engine = _make_engine()
-        # 50-char text with significance keywords to avoid trivial/noise/entropy filters
-        text = "I learned that this system achieved success and we decided the outcome was great"
-        self.assertGreaterEqual(len(text), 50)
+        # 30-char text with significance keywords to avoid trivial/noise/entropy filters
+        text = "I learned that this system succeeded"
+        self.assertGreaterEqual(len(text), 30)
         result = engine.capture_outcome(text)
         # Should NOT be rejected with below_min_content_length (may save or be deduped)
         if not result["saved"]:
@@ -457,9 +457,9 @@ class TestFilterOrderingIntegration(unittest.TestCase):
     """Verify each filter fires independently and reports its own reason code."""
 
     def test_below_min_content_length_reason_distinguishable(self) -> None:
-        """Short content should be rejected with below_min_content_length, NOT noise_pattern_matched."""
+        """Short content should be rejected with below_min_content_length, NOT other reasons."""
         engine = _make_engine()
-        result = engine.capture_outcome("A" * 40)  # 40 chars < 50 threshold
+        result = engine.capture_outcome("A" * 20)  # 20 chars < 30 threshold
         self.assertFalse(result["saved"])
         self.assertEqual(result["reason"], "below_min_content_length")
 
