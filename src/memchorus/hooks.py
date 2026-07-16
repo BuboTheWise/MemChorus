@@ -13,6 +13,7 @@ calling agent to do anything beyond `import memchorus`.
 Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 """
 
+import hashlib
 import importlib  # for dynamic entry_point discovery
 import logging
 import os
@@ -48,8 +49,20 @@ class MemChorusHooks:
       - on_session_start(session_id)   once per new Hermes session start)
 
     Each method queries the global orchestrator and injects relevant context or
-    saves newly significant outcomes automatically.
+    saves newly significant outcomes automatically. BehavioralTrigger.detect() is
+    used to shape recall/saving based on detected decision points.
     """
+
+    def __init__(self) -> None:
+        # Instantiate BehavioralTrigger for decision-point detection in hooks.
+        # We import lazily here so the class remains usable even when
+        # behavioral_trigger isn't available (graceful degradation).
+        try:
+            from memchorus.behavioral_trigger import BehavioralTrigger, DecisionPoint  # noqa: F401
+            self._btrigger = BehavioralTrigger()
+        except Exception as exc:
+            logger.debug("BehavioralTrigger unavailable: %s — hooks will operate in fallback mode", exc)
+            self._btrigger = None
 
     def on_pre_llm_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         logger.info("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
@@ -69,9 +82,27 @@ class MemChorusHooks:
             if not input_text:
                 return None
 
+            # Detect behavioral decision points to shape the search strategy.
+            detected_points = []
+            if self._btrigger is not None:
+                input_str = str(input_text)[:4096]  # cap for performance
+                detected_points = self._btrigger.detect(input_str)
+
+            # Determine search limit based on decision point priority:
+            # PLANNING_START / CONTEXTUAL_SYNTHESIS -> broader recall (limit=5)
+            # TOOL_CALL_INTENT / ERROR_STATE -> focused recall (limit=3)
+            # Default: limit=3
+            search_limit = 3
+            if detected_points:
+                from memchorus.behavioral_trigger import DecisionPoint as _DP
+                for dp in detected_points:
+                    if dp.type in (_DP.PLANNING_START, _DP.CONTEXTUAL_SYNTHESIS_COMPLETION):
+                        search_limit = 5
+                        break
+
             # Use search() (not retrieve()) for pre-decision recall — retrieve(key)
             # only does exact-key lookup and doesn't accept a limit param.
-            context_items = orchestrator.search(input_text, limit=3)
+            context_items = orchestrator.search(input_text, limit=search_limit)
 
             injected_blocks: List[str] = []
 
@@ -148,9 +179,16 @@ class MemChorusHooks:
                 logger.debug("hooks: skipping query echo artifact in tool output")
                 return None
 
-            # Orchestrator.save(key, value) is the actual API — no save_auto() exists.
+            # BehavioralTrigger gate: only auto-save when decision points detected.
+            # This prevents noise-flooding (Bug 4 fix) and makes the behavioral
+            # significance detector actually functional.
+            if self._btrigger is not None:
+                detected = self._btrigger.detect(output_str)
+                if not detected:
+                    logger.debug("hooks: no behavioral decision points in tool output — skipping auto-save")
+                    return None
+
             # Derive a deterministic key from the tool output hash for smart placement.
-            import hashlib
             content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
             auto_key = f"auto_tool_{content_hash}"
             saved = orchestrator.save(auto_key, output_str)
