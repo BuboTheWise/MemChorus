@@ -345,13 +345,15 @@ class AutoStorageEngine:
         orchestrator: Any,  # MemoryOrchestrator or None
         dedup_window_seconds: float = 30.0,
         dedup_similarity_threshold: float = 0.6,
-        min_content_length: int = 50,
+        min_content_length: int = 30,
     ) -> None:
         self.orchestrator = orchestrator
         self.dedup_window_seconds = dedup_window_seconds
         self.dedup_similarity_threshold = dedup_similarity_threshold
 
-        # AC1: minimum content length threshold (default 50 chars)
+        # AC1: minimum content length threshold (default 30 chars — rejects
+        # single-word confirmations and empty tool outputs while allowing
+        # legitimate short sentences like "I learned that X")
         self.min_content_length = min_content_length
 
         # Internal dedup store: list of (text, key, timestamp)
