@@ -841,6 +841,7 @@ class MemoryOrchestrator:
                 "content": r.content,
                 "source": r.source,
                 "score": r.score,  # <-- always present
+                "preview": MemoryOrchestrator._synthesize_preview(r.content),
                 **r.meta,
             }
             for r in ranked[:limit]
@@ -885,11 +886,43 @@ class MemoryOrchestrator:
                 "content": r.content,
                 "source": r.source,
                 "score": r.score,  # --- always present per acceptance criterion
+                "preview": MemoryOrchestrator._synthesize_preview(r.content),
                 **r.meta,
             }
             for r in scored
         ]
     
+    @staticmethod
+    def _synthesize_preview(content: Any) -> str:
+        """Extract a readable preview string from whatever content structure a
+        memory source returns. Different sources use different keys ('text',
+        'content', 'summary', etc.) and some return plain strings or lists.
+
+        Returns at most 200 characters so it fits in chat context without
+        blowing token budgets.
+        """
+        if isinstance(content, str):
+            truncated = content[:200] + "..." if len(content) > 200 else content
+            return truncated
+        elif isinstance(content, dict):
+            # Try well-known readable keys in preference order
+            for key in ("text", "content", "summary", "description", "note"):
+                val = content.get(key)
+                if isinstance(val, str) and val.strip():
+                    t = val[:200] + "..." if len(val) > 200 else val
+                    return t
+            # Fallback: join the first few string values
+            parts = [str(v) for v in content.values() if isinstance(v, str)]
+            combined = " ".join(parts[:3])
+            truncated = combined[:200] + "..." if len(combined) > 200 else combined
+            return truncated
+        elif isinstance(content, list):
+            t = str(content)[:200] + "..." if len(str(content)) > 200 else str(content)
+            return t if t else ""
+        else:
+            t = str(content)[:200] + "..." if content and len(str(content)) > 200 else (str(content) if content else "")
+            return t
+
     def is_available(self) -> bool:
         """
         Check if the memory orchestrator and any sources are available.
