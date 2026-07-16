@@ -500,6 +500,115 @@ class TestMultiWordPatternRegression(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# CONTEXTUAL_SYNTHESIS_COMPLETION: New reasoning keyword patterns (Gap 1)
+# ---------------------------------------------------------------------------
+
+
+class TestContextualSynthesisCompletion(unittest.TestCase):
+    """Tests for CONTEXTUAL_SYNTHESIS_COMPLETION decision point category.
+
+    Covers AC-1: New patterns compile into _PATTERN_STORE without breaking imports.
+    Covers AC-2: Patterns match realistic agent synthesis turns containing project context.
+    Covers AC-3: Expanded keywords do not increase false positive rate beyond thresholds.
+    """
+
+    def test_pattern_store_includes_new_category(self) -> None:
+        """AC-1: CONTEXTUAL_SYNTHESIS_COMPLETION appears in DecisionPoint enum."""
+        self.assertTrue(hasattr(DecisionPoint, "CONTEXTUAL_SYNTHESIS_COMPLETION"))
+
+    def test_learned_that_matches(self) -> None:
+        """'learned that' triggers on realistic agent synthesis output."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "After reading the docs, I learned that MergeEngine uses ordered union semantics "
+            "for category mapping — this means user config appends after built-in defaults."
+        )
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertGreaterEqual(len(synth_types), 1)
+        self.assertIn("learned that", [r.matched_keyword for r in synth_types])
+
+    def test_discovered_important_matches(self) -> None:
+        """'discovered important' matches on architecture understanding turns."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "I discovered important details about how the behavioral trigger pipeline "
+            "routes through hooks.py register() before any callbacks execute."
+        )
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertGreaterEqual(len(synth_types), 1)
+        self.assertIn("discovered important", [r.matched_keyword for r in synth_types])
+
+    def test_found_evidence_showing_matches(self) -> None:
+        """'found evidence showing' fires on investigative analysis."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "Found evidence showing the routing map was silently dropping LEARNING entries "
+            "to general due to missing enum coverage in v1.4."
+        )
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertGreaterEqual(len(synth_types), 1)
+        self.assertIn("found evidence showing", [r.matched_keyword for r in synth_types])
+
+    def test_after_analyzing_matches(self) -> None:
+        """'after analyzing' triggers on multi-file documentation review."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "After analyzing three config files, the dependency chain is clear: "
+            "plugin.yaml feeds into hooks.py which initializes BehavioralTrigger."
+        )
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertGreaterEqual(len(synth_types), 1)
+        self.assertIn("after analyzing", [r.matched_keyword for r in synth_types])
+
+    def test_key_finding_matches(self) -> None:
+        """'key finding' matches on conclusion-style synthesis."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "Key finding: the _PATTERN_STORE singleton compiles at module import time, "
+            "so any config changes need to trigger a pattern refresh cycle."
+        )
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertGreaterEqual(len(synth_types), 1)
+        self.assertIn("key finding", [r.matched_keyword for r in synth_types])
+
+    def test_synthesis_does_not_fire_on_boilerplate(self) -> None:
+        """AC-3: Normal operational chatter without synthesis markers stays clean."""
+        trigger = _make_orch()
+        results = trigger.detect("Running the tests now to verify everything works and I'll report results")
+        synth_types = [r for r in results if r.type == DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION]
+        self.assertEqual(synth_types, [],
+                         "Operational noise should not fire CONTEXTUAL_SYNTHESIS_COMPLETION")
+
+    def test_synthesis_priority_is_lowest(self) -> None:
+        """CONTEXTUAL_SYNTHESIS_COMPLETION has priority 4 — lowest of all categories."""
+        self.assertEqual(DecisionPoint.priority(DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION), 4)
+
+    def test_synthesis_with_existing_keywords_shows_all_types(self) -> None:
+        """Text containing both synthesis AND existing keywords surfaces both."""
+        trigger = _make_orch()
+        results = trigger.detect(
+            "After analyzing the error logs, the key finding is that the fix "
+            "completed successfully — strategy implemented."
+        )
+        types_found = {r.type for r in results}
+        self.assertIn(DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION, types_found)
+        self.assertIn(DecisionPoint.ERROR_STATE, types_found)  # 'error' keyword
+
+    def test_synthesis_callback_fires(self) -> None:
+        """Callback registered for CONTEXTUAL_SYNTHESIS_COMPLETION receives hits."""
+        tracker = _CallbackTracker()
+        trigger = BehavioralTrigger()
+        trigger.on(DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION, tracker.record)
+
+        text = "After analyzing the config files, I learned that the merge logic uses ordered union."
+        trigger.fire(text)
+
+        self.assertGreater(len(tracker.points), 0)
+        for point in tracker.points:
+            self.assertEqual(point.type, DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION)
+
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
