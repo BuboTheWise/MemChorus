@@ -34,15 +34,17 @@ class DecisionPoint(Enum):
     PLANNING_START = auto()                   # Agent begins planning or selecting an approach
     TOOL_CALL_INTENT = auto()                 # Agent prepares to execute a tool/operation
     POST_ACTION_COMPLETE = auto()             # Agent finishes a task/tool execution
+    CONTEXTUAL_SYNTHESIS_COMPLETION = auto()  # Agent processes docs and produces understanding
 
     @classmethod
     def priority(cls, dp: "DecisionPoint") -> int:
         """Return lower number = higher priority. ERROR_STATE > PLANNING_START …"""
         order = {
-            cls.ERROR_STATE:          0,
-            cls.PLANNING_START:       1,
-            cls.TOOL_CALL_INTENT:     2,
-            cls.POST_ACTION_COMPLETE: 3,
+            cls.ERROR_STATE:                    0,
+            cls.PLANNING_START:                 1,
+            cls.TOOL_CALL_INTENT:               2,
+            cls.POST_ACTION_COMPLETE:           3,
+            cls.CONTEXTUAL_SYNTHESIS_COMPLETION: 4,
         }
         return order[dp]
 
@@ -121,6 +123,13 @@ _PRIORITY_KEYWORDS = [
     ("done with",       DecisionPoint.POST_ACTION_COMPLETE),
     ("output received", DecisionPoint.POST_ACTION_COMPLETE),
     ("result is",       DecisionPoint.POST_ACTION_COMPLETE),
+
+    # --- CONTEXTUAL_SYNTHESIS_COMPLETION (priority 4) -----------------------
+    ("learned that",            DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("discovered important",    DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("found evidence showing",  DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("after analyzing",         DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("key finding",             DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
 ]
 
 
