@@ -9,6 +9,11 @@ import sys  # loaded early for __getattr__ / sys.modules access
 # Lazy bootstrap guard (set to True by __getattr__ after first trigger).
 _bootstrap_done: bool = False
 
+# _instance as a real module-level default so `from memchorus import _instance`
+# does NOT raise ImportError before bootstrap runs. After bootstrap completes,
+# sys.modules[__name__]._instance is overwritten with the actual orchestrator.
+_instance = None  # type: ignore[type-arg]
+
 # Cache for lazily-loaded symbols so subsequent attribute hits are instant.
 _attr_cache: dict[str, object] = {}
 
@@ -112,17 +117,6 @@ def __getattr__(name: str) -> object:
     actually accesses a symbol from this module.
     """
     global _bootstrap_done  # noqa: PLW0603
-
-    # Handle _instance specially: before bootstrap it genuinely does not exist,
-# so accessing it should raise AttributeError rather than triggering bootstrap.
-# After bootstrap, it lives on the module namespace and __getattribute__ finds it.
-    if name == "_instance":
-        mod = sys.modules[__name__]
-        try:
-            return object.__getattribute__(mod, name)
-        except AttributeError:
-            raise AttributeError(f"module 'memchorus' has no attribute '{name}' "
-                                 f"(bootstrap not yet triggered)")
 
     # Step 1 — run bootstrap exactly once before any resolution
     if not _bootstrap_done:
