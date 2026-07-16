@@ -26,10 +26,35 @@ logger = logging.getLogger(__name__)
 # Lazy-global bootstrap helper
 # ---------------------------------------------------------------------------
 
+def _trigger_memchorus_bootstrap() -> None:
+    """Force lazy-init bootstrap by accessing a symbol from the package's
+    __getattr__ dispatch table.
+
+    The package defines `_instance = None` as a module-level default so that
+    ``from memchorus import _instance`` doesn't crash before bootstrap runs —
+    but that also means simply reading ``memchorus._instance`` returns the stale
+    default without ever calling ``__getattr__``. Accessing any lazy symbol
+    (e.g. ``BehavioralTrigger``) *does* route through ``__getattr__``, which
+    kicks off auto_bootstrap and overwrites sys.modules[memchorus]._instance
+    with the real orchestrator before returning.
+
+    Calling this once is cheap; subsequent accesses benefit from the internal
+    _bootstrap_done guard inside __getattr__.
+    """
+    import sys
+    mod = sys.modules.get("memchorus")
+    if mod is not None and not getattr(mod, "_bootstrap_done", True):
+        # Touch a lazy symbol to fire bootstrap (safe — already imported above)
+        try:
+            _ = mod.BehavioralTrigger  # noqa: F841
+        except Exception:            # pragma: no cover - fallback is harmless
+            pass
+
+
 def _get_orchestrator() -> Optional[Any]:
-    """Return the global MemoryOrchestrator singleton if it was created by
-    auto_bootstrap (lazy init on first memchorus import after that module loads)."""
+    """Return the global MemoryOrchestrator singleton, ensuring bootstrap fires first."""
     try:
+        _trigger_memchorus_bootstrap()
         return __import__('memchorus', fromlist=['_instance'])._instance
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.debug("_get_orchestrator failed (no auto_bootstrap yet): %s", exc)
