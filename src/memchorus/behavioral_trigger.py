@@ -132,6 +132,12 @@ _PRIORITY_KEYWORDS = [
     ("done with",       DecisionPoint.POST_ACTION_COMPLETE),
     ("output received", DecisionPoint.POST_ACTION_COMPLETE),
     ("result is",       DecisionPoint.POST_ACTION_COMPLETE),
+    # Bug 3 fix: cover test success, green status, and documentation review phrases
+    # Real agent output patterns that hit boundary-word matching rules
+    ("tests passed",          DecisionPoint.POST_ACTION_COMPLETE),
+    ("exit code 0",           DecisionPoint.POST_ACTION_COMPLETE),
+    ("all tests passed",      DecisionPoint.POST_ACTION_COMPLETE),
+    ("confirmed green",       DecisionPoint.POST_ACTION_COMPLETE),
 
     # --- CONTEXTUAL_SYNTHESIS_COMPLETION (priority 4) -----------------------
     ("learned that",            DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
@@ -139,6 +145,10 @@ _PRIORITY_KEYWORDS = [
     ("found evidence showing",  DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
     ("after analyzing",         DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
     ("key finding",             DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    # Documentation review / understanding phrases agents actually produce
+    ("read through ",          DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("understand where things stand", DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
+    ("audit complete",         DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
 ]
 
 
