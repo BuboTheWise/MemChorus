@@ -7,19 +7,28 @@ proactive component of MemChorus v1.0 behavioral enforcement.
 
 Decision point types (priority-highest first):
 
-- ERROR_STATE          -- Agent encounters errors / failures
-- PLANNING_START       -- Agent begins planning / selecting an approach
-- TOOL_CALL_INTENT     -- Agent prepares to execute a tool / operation
-- POST_ACTION_COMPLETE -- Agent finishes a task/tool execution
+- ERROR_STATE                      -- Agent encounters errors / failures
+- PLANNING_START                   -- Agent begins planning / selecting an approach
+- TOOL_CALL_INTENT                 -- Agent prepares to execute a tool/operation
+- POST_ACTION_COMPLETE             -- Agent finishes a task/tool execution
+- CONTEXTUAL_SYNTHESIS_COMPLETION  -- Agent processes docs and produces understanding
 
 Patterns are keyword-based (case-insensitive, word-boundary matching). No
 external dependencies beyond the Python standard library.
+
+Extensibility: call ``configure_save_triggers(keywords)`` with a list of extra
+keyword strings loaded from ``plugin.yaml::save_triggers`` before creating
+BehavioralTrigger instances.  User patterns are appended AFTER built-in defaults
+(ordered union semantics) so baseline coverage is never replaced.
 """
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Callable, Dict, List, Optional
+from typing import Callable, ClassVar, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -155,8 +164,69 @@ class _PatternStore:
         """Return list of (compiled_regex, original_keyword) for *dp*."""
         return self._groups.get(dp, [])
 
+    def merge_user_keywords(self, raw: List[str]) -> None:
+        """Append user-provided keyword strings AFTER built-in defaults.
+
+        Raw keywords are mapped to POST_ACTION_COMPLETE by default (they signal
+        new-knowledge events worth persisting).  Compilation is atomic -- the
+        entire list is processed before any group is updated."""
+        if not raw:
+            return
+        validated: List[tuple] = []
+        for kw in raw:
+            if isinstance(kw, str) and kw.strip():
+                validated.append((kw, DecisionPoint.POST_ACTION_COMPLETE))
+            else:
+                logger.warning("Skipping malformed save_trigger keyword: %r", kw)
+        compiled_keywords: List[tuple] = []
+        for pattern_str, dp_class in validated:
+            words = pattern_str.lower().split()
+            if len(words) == 1:
+                regex_str = rf"\b{re.escape(words[0])}\b"
+            else:
+                parts = [rf"\b{re.escape(w)}\b" for w in words]
+                regex_str = ".*?".join(parts)
+            compiled = re.compile(regex_str, re.IGNORECASE | re.UNICODE)
+            compiled_keywords.append((compiled, pattern_str))
+        for c, _ in compiled_keywords:
+            self._groups[DecisionPoint.POST_ACTION_COMPLETE].append(c)
+
+        logger.info(
+            "BehavioralTrigger: merged %d user-provided save_trigger keywords "
+            "(total patterns per group: %s)",
+            len(validated),
+            {dp.name: len(self._groups[dp]) for dp in DecisionPoint},
+        )
+
 
 _PATTERN_STORE = _PatternStore()           # module-level singleton
+
+# ---------------------------------------------------------------------------
+# Class-level configuration surface -- called from hooks.py register() with
+# save_triggers loaded from plugin.yaml BEFORE any BehavioralTrigger instance
+# is created.  Safe to call before import-time _PATTERN_STORE init because
+# merge_user_keywords() validates input first and skips on bad data.
+# ---------------------------------------------------------------------------
+
+def configure_save_triggers(keywords: List[str]) -> None:
+    """Merge user-provided save_trigger keywords into the global pattern store.
+
+    Call from hooks.py register(ctx) with ctx.plugin_config.get('save_triggers', []).
+    Keywords are appended AFTER built-in _PRIORITY_KEYWORDS (ordered union).
+    Malformed entries log a warning and are silently skipped -- import never crashes.
+    """
+    try:
+        if not isinstance(keywords, (list, tuple)):
+            logger.warning(
+                "save_triggers in plugin.yaml is not a list; ignoring (%r)", keywords
+            )
+            return
+        _PATTERN_STORE.merge_user_keywords(list(keywords))
+    except Exception as exc:  # AC-3 fallback guarantee
+        logger.warning(
+            "Failed to apply save_triggers from plugin.yaml -- falling back to "
+            "built-in defaults only. Error: %s", exc
+        )
 
 # ---------------------------------------------------------------------------
 # H-3: Validate all priority keywords were assigned at module load time

@@ -233,8 +233,31 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
 
+# Plugin configuration loader — reads plugin.yaml save_triggers before bootstrap
+import yaml as _yml  # Optional: skip if PyYAML not installed
+from pathlib import Path as _Path
+
+__PLUGIN_YAML_PATH = str(_Path.home() / ".hermes" / "plugins" / "hermes-memchorus" / "plugin.yaml")
+
+
+def _load_plugin_config() -> dict:
+    """Read plugin.yaml from the default Hermes plugin path. Returns {} on failure."""
+    try:
+        p = _Path(__PLUGIN_YAML_PATH)
+        if not p.exists():
+            return {}
+        raw = p.read_text()
+        cfg = _yml.safe_load(raw) or {}
+        if not isinstance(cfg, dict):
+            return {}
+        return cfg
+    except Exception:
+        # PyYAML missing or file unreadable — caller decides if that's fatal
+        return {}
+
+
 # ---------------------------------------------------------------------------
-# Hermes plugin entry point — called by Hermes gateway at startup
+# Hermes plugin entry point -- called by Hermes gateway at startup
 # ---------------------------------------------------------------------------
 
 _instance_holder: List[Any] = [None]  # mutable container for the registered instance
@@ -246,6 +269,16 @@ def register(ctx: Any) -> None:
     Called by the Hermes gateway when the plugin is discovered via entry points
     or directory scanning. Registers lifecycle hook callbacks with PluginContext.
     """
+    # Merge user-provided save_triggers BEFORE any BehavioralTrigger instance exists
+    plugin_cfg = _load_plugin_config()
+    user_triggers = plugin_cfg.get("save_triggers", [])  # type: ignore[union-attr]
+    if user_triggers and hasattr(ctx, 'plugin_config'):
+        try:
+            from memchorus.behavioral_trigger import configure_save_triggers  # type: ignore[attr-defined]
+            configure_save_triggers(user_triggers)
+        except Exception as exc:
+            logger.warning("Failed to apply save_triggers: %s", exc)
+
     # Trigger lazy bootstrap of orchestrator singleton BEFORE registering hooks.
     # This ensures _instance exists when hooks fire — without it every hook
     # silently returns None (see t_a0d7e8c8). Bubo hit this lazily via MCP tool
