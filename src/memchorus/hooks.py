@@ -222,20 +222,16 @@ class MemChorusHooks:
                 return None
 
             # BehavioralTrigger gate with length-based fallback: auto-save when
-            # decision points are detected OR when the output is substantial
-            # regardless of behavioral markers. This prevents noise-flooding from
-            # tiny trivial outputs while still capturing significant content that
-            # doesn't happen to contain a recognized decision-point keyword.
+            # decision points are detected OR when the output exceeds a modest
+            # size threshold regardless of behavioral markers. Uses 150 chars
+            # as cutoff — enough to filter trivial noise ("OK", empty results)
+            # while still capturing meaningful diagnostic/analysis output.
             skip_by_behavior = False
             if self._btrigger is not None:
                 detected = self._btrigger.detect(output_str)
-                if not detected and len(output_str) < 500:
-                    # Short output without behavioral significance — skip it.
+                if not detected and len(output_str) < 150:
                     logger.debug("hooks: no behavioral decision points in short tool output (%d chars) — skipping auto-save", len(output_str))
                     skip_by_behavior = True
-                elif not detected:
-                    # Long output without explicit decision point still warrants storage.
-                    logger.info("hooks: long tool output without decision point — saving anyway (%d chars)", len(output_str))
 
             if skip_by_behavior:
                 return None
