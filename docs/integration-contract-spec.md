@@ -127,6 +127,34 @@ result = {
 
 ---
 
+## 3. Post-toolcall Auto-Storage Policy (updated 2026-07-17)
+
+### 3.1 BehavioralTrigger Gate with Length Fallback
+
+**File:** `src/memchorus/hooks.py`, `on_post_tool_call()`
+**Implemented in:** commits a74663c, 7470890 (2026-07-17)
+
+The `post_tool_call` hook applies a two-layer filter before passing content to auto-storage:
+
+1. **Behavioral decision-point detection** — if `BehavioralTrigger.detect(output_str)` returns True, the content passes regardless of length. Catches planning, reflection, and architectural reasoning patterns.
+
+2. **Length-based unconditional fallback** — if output is >= 150 characters AND no behavioral markers detected, the content STILL passes through auto-storage. This prevents real but non-decisional output (git status, pip summaries, diagnostics) from being silently skipped.
+
+3. **Short output gate** — results below 150 characters with no detected decision points are dropped to prevent noise-flooding from trivial outputs like `'OK'` or empty stubs.
+
+**Configurable:** `config.auto_storage.min_unconditional_length = 150` (default). Lower values increase noise risk; higher values skip legitimate short diagnostics.
+
+### 3.2 Query Echo Artifact Filter
+
+**File:** `src/memchorus/auto_storage_engine.py`, `_is_query_echo()` function
+**Implemented in:** commits a74663c, 7470890 (2026-07-17)
+
+Before content reaches auto-storage, it passes through `_is_query_echo()` which deterministically detects recall query templates — the structured search prompts that `on_post_llm_call()` injects into the conversation. Without this filter, those queries leak back through the tool pipeline and get stored as genuine memory content, polluting the knowledge base with artificial "recall" artifacts rather than actual observations.
+
+Returns True for patterns matching `[MemChorus Memory Recall]` blocks and similar query echo structures. Content flagged as query echoes is silently dropped with a debug log entry.
+
+---
+
 ## 4. Expected Behavior After Fix
 
 ### Memory Auto-Capture (post_tool_call)
