@@ -214,14 +214,31 @@ class MemChorusHooks:
                 logger.debug("hooks: skipping query echo artifact in tool output")
                 return None
 
-            # BehavioralTrigger gate: only auto-save when decision points detected.
-            # This prevents noise-flooding (Bug 4 fix) and makes the behavioral
-            # significance detector actually functional.
+            # Skip query echo artifacts that leak through the tool pipeline — these
+            # would pollute memory storage with recall prompts rather than actual content.
+            from memchorus.auto_storage_engine import _is_query_echo
+            if _is_query_echo(output_str):
+                logger.debug("hooks: skipping query echo artifact in tool output")
+                return None
+
+            # BehavioralTrigger gate with length-based fallback: auto-save when
+            # decision points are detected OR when the output is substantial
+            # regardless of behavioral markers. This prevents noise-flooding from
+            # tiny trivial outputs while still capturing significant content that
+            # doesn't happen to contain a recognized decision-point keyword.
+            skip_by_behavior = False
             if self._btrigger is not None:
                 detected = self._btrigger.detect(output_str)
-                if not detected:
-                    logger.debug("hooks: no behavioral decision points in tool output — skipping auto-save")
-                    return None
+                if not detected and len(output_str) < 500:
+                    # Short output without behavioral significance — skip it.
+                    logger.debug("hooks: no behavioral decision points in short tool output (%d chars) — skipping auto-save", len(output_str))
+                    skip_by_behavior = True
+                elif not detected:
+                    # Long output without explicit decision point still warrants storage.
+                    logger.info("hooks: long tool output without decision point — saving anyway (%d chars)", len(output_str))
+
+            if skip_by_behavior:
+                return None
 
             # Derive a deterministic key from the tool output hash for smart placement.
             content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
