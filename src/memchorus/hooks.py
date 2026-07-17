@@ -103,7 +103,11 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            input_text = kwargs.get("input_text") or kwargs.get("messages", "")
+            # Hermes passes "user_message" (str) and "conversation_history" (list[dict]) —
+            # NOT "input_text" or "messages". Verified in turn_context.py:527-536.
+            input_text = kwargs.get("user_message", "") or _build_search_text_from_history(
+                kwargs.get("conversation_history")
+            )
             if not input_text:
                 return None
 
@@ -148,10 +152,12 @@ class MemChorusHooks:
 
                 turn_ctx = FeedbackTurnContext(
                     user_message=str(input_text)[:1024],
-                    conversation_length=kwargs.get("conversation_length", 0),
+                    conversation_length=len(kwargs.get("conversation_history", [])),
                     tool_calls_this_turn=kwargs.get("tool_calls_this_turn", 0),
                     empty_tool_responses=kwargs.get("empty_tool_responses", 0),
-                    recent_messages=list(kwargs.get("recent_messages", [])),
+                    recent_messages=list(
+                        kwargs.get("conversation_history", [])[-5:]
+                    ),
                 )
 
                 feedback_text = inject_feedback_corrections(
@@ -169,7 +175,9 @@ class MemChorusHooks:
 
             result: Dict[str, Any] = {
                 "source": "memchorus_pre_llm_call",
-                "injected_context": "\n\n".join(injected_blocks),
+                # Hermes turn_context.py checks r.get("context") — not "injected_context".
+                # Wrong key = silent injection skip.
+                "context": "\n\n".join(injected_blocks),
             }
             return result
 
@@ -191,7 +199,9 @@ class MemChorusHooks:
             return None
 
         try:
-            tool_output = kwargs.get("tool_output")
+            # Bug fix 2026-07-17: Hermes passes "result" not "tool_output".
+            # See docs/integration-contract-spec.md for the verified contract.
+            tool_output = kwargs.get("result")
             if not tool_output:
                 return None
 
@@ -278,6 +288,21 @@ class MemChorusHooks:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _build_search_text_from_history(history):
+    """Build search text from conversation history (list[dict]).
+
+    Extract the last few user/tool messages for search context when
+    user_message is empty (e.g., system-generated turns).
+    """
+    if not history:
+        return ""
+    recent = [m.get("content", "") or ""
+              for m in reversed(history)
+              if m.get("role") != "assistant"
+              ][-3:]
+    return "\n".join(recent)
+
 
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption."""
