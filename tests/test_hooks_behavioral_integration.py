@@ -71,13 +71,13 @@ class TestHooksCallBehavioralTrigger:
             hooks._btrigger = bt_spy
 
             result = hooks.on_pre_llm_call(
-                input_text="I need to plan the next step and implement the fix"
+                user_message="I need to plan the next step and implement the fix"
             )
 
             # detect() was actually called with input text
             bt_spy.detect.assert_called_once()
             call_arg = bt_spy.detect.call_args[0][0]
-            assert "plan" in call_arg.lower(), "detect should receive input_text"
+            assert "plan" in call_arg.lower(), "detect should receive user_message content"
 
     def test_on_post_tool_call_calls_detect(self, mock_orchestrator, mock_bt_results):
         """on_post_tool_call must call _btrigger.detect() before auto-save."""
@@ -92,13 +92,13 @@ class TestHooksCallBehavioralTrigger:
             hooks._btrigger = bt_spy
 
             result = hooks.on_post_tool_call(
-                tool_output="Test completed: verify all assertions passed"
+                result="Test completed: verify all assertions passed"
             )
 
             # detect() was called with the tool output
             bt_spy.detect.assert_called_once()
             call_arg = bt_spy.detect.call_args[0][0]
-            assert "verify" in call_arg.lower(), "detect should receive tool_output"
+            assert "verify" in call_arg.lower(), "detect should receive result content"
 
     def test_on_post_tool_call_skips_save_when_no_behavioral_signal(self, mock_orchestrator):
         """When detect() returns empty list, on_post_tool_call must NOT save."""
@@ -113,7 +113,7 @@ class TestHooksCallBehavioralTrigger:
             hooks._btrigger = bt_spy
 
             result = hooks.on_post_tool_call(
-                tool_output="routine stdout with no special keywords"
+                result="routine stdout with no special keywords"
             )
 
             # detect() should have been called, but save should NOT be called
@@ -134,7 +134,7 @@ class TestHooksCallBehavioralTrigger:
             hooks._btrigger = bt_spy
 
             result = hooks.on_post_tool_call(
-                tool_output="Test completed: all 42 assertions verified successfully"
+                result="Test completed: all 42 assertions verified successfully"
             )
 
             # Both detect and save should have been called
@@ -173,7 +173,7 @@ class TestHooksCallBehavioralTrigger:
             hooks._btrigger = bt_spy
 
             _ = hooks.on_pre_llm_call(
-                input_text="My plan is to implement the fix for the routing bug"
+                user_message="My plan is to implement the fix for the routing bug"
             )
 
             # Verify orchestrator.search was called with limit=5 (wider search)
