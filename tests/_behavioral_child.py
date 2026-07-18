@@ -23,8 +23,12 @@ for _mod in list(sys.modules.keys()):
     if "memchorus" in _mod:
         del sys.modules[_mod]
 
-SRC_PATH = "/home/bubo/MemChorus/src"
-sys.path.insert(0, SRC_PATH)
+# Resolve src/ directory relative to this test file location (works regardless of CWD)
+TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(TEST_DIR)
+SRC_PATH = os.path.join(REPO_ROOT, "src")
+if SRC_PATH not in sys.path:
+    sys.path.insert(0, SRC_PATH)
 
 from memchorus.orchestrator import MemoryOrchestrator
 
