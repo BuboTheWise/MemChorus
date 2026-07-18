@@ -103,6 +103,8 @@ _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 # ---------------------------------------------------------------------------
 
 _NOISE_PATTERNS: List[Tuple[str, re.Pattern]] = [
+    # Generic error/exception prefixes (e.g. "Error: ...", "Exception: ...")
+    ("error_prefix", re.compile(r'^\s*(?:Error|Exception)[:\s]', re.M)),
     # Python/Java tracebacks (stack traces)
     ("traceback_header", re.compile(r'^\s*Traceback\s*\(most recent call last\)', re.M)),
     ("python_trace_files", re.compile(r'''^\s*File\s+"[^"]+",\s*line\s+\d+''', re.M)),
@@ -127,6 +129,16 @@ _NOISE_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("repeated_lines", re.compile(r'(^.*\n)(?:\1){5,}')),
     # All-dashes-or-equals separator walls (>5 consecutive separator-only lines)
     ("separator_wall", re.compile(r'(?:^[-=~]{3,}\s*$\n){5,}', re.M)),
+    # Trivial/empty results: bare "None" or empty list/dict
+    ("trivial_result", re.compile(r'^\s*(?:None(?:\s|$)|\[\]|(?:dict|list)\(\))', re.S)),
+    # Version/copyright metadata boilerplate (e.g. "version: 1.23.45")
+    ("version_metadata", re.compile(
+        r'^\s*version\s*[:=]\s*\d+\.\d+', re.M | re.I)),
+    # importlib.metadata dump lines (package inspection noise)
+    ("importlib_dump", re.compile(
+        r'importlib\.metadata\.(requires|entry_points|files)\s+returns', re.I)),
+    # "No results found" patterns -- empty search/tool output
+    ("no_results", re.compile(r'\bno[ _]?results?\b\s*(?:found|returned)?', re.I)),
 ]
 
 
@@ -411,7 +423,7 @@ class AutoStorageEngine:
                 "saved": False,
                 "key": "",
                 "significance": "",
-                "reason": "noise_pattern_matched",
+                "reason": "noise_pattern",
                 "outcome_type": outcome_type,
                 "importance_score": 0.0,
             }
@@ -479,6 +491,7 @@ class AutoStorageEngine:
             "importance_score": importance,
             # AC4: provenance marker -- RelevanceScorer checks this key to apply P=0.3
             "_auto_provenance": True,
+            "provenance": "auto_stored",
         }
 
         try:
