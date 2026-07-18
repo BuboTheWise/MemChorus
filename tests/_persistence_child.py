@@ -1,11 +1,12 @@
 """Child worker for multi-run persistence subprocess tests."""
 import sys, os, json, hashlib
+from pathlib import Path
 
 # Busted cached modules so each subprocess gets a fresh copy
 for mod in list(sys.modules.keys()):
     if "memchorus" in mod:
         del sys.modules[mod]
-sys.path.insert(0, "/home/bubo/MemChorus/src")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 

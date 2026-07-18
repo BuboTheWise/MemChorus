@@ -381,7 +381,7 @@ class TestPipelineIntegration(unittest.TestCase):
                 "the increased load during peak traffic periods effectively today."
             )
             result = hooks_instance.on_post_tool_call(
-                tool_output=long_significant,
+                result=long_significant,
                 tool_name="terminal",
             )
             self.assertIsNotNone(result)
@@ -397,7 +397,7 @@ class TestPipelineIntegration(unittest.TestCase):
 
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
             result = hooks_instance.on_post_tool_call(
-                tool_output=short_text,
+                result=short_text,
                 tool_name="terminal",
             )
             self.assertIsNone(result)

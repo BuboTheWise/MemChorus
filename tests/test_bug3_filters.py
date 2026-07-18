@@ -115,7 +115,7 @@ class TestMinContentLength(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestNoisePattern(unittest.TestCase):
-    """AC2: Known noise patterns are rejected with reason='noise_pattern_matched'"""
+    """AC2: Known noise patterns are rejected with reason='noise_pattern'"""
 
     def test_python_traceback_rejected(self) -> None:
         text = (
@@ -198,7 +198,7 @@ class TestNoisePattern(unittest.TestCase):
         self.assertFalse(_is_noise(text))
 
     def test_error_output_rejected_via_capture_outcome(self) -> None:
-        """Full integration: capture_outcome should return noise_pattern_matched for tracebacks."""
+        """Full integration: capture_outcome should return noise_pattern for tracebacks."""
         engine = _make_engine()
         traceback_text = (
             "Traceback (most recent call last):\n"
@@ -208,7 +208,7 @@ class TestNoisePattern(unittest.TestCase):
         )
         result = engine.capture_outcome(traceback_text)
         self.assertFalse(result["saved"])
-        self.assertEqual(result["reason"], "noise_pattern_matched")
+        self.assertEqual(result["reason"], "noise_pattern")
 
     def test_hex_dump_rejected_via_capture_outcome(self) -> None:
         """Full integration: hex data should be rejected at the noise filter stage."""
@@ -216,7 +216,7 @@ class TestNoisePattern(unittest.TestCase):
         hex_text = "a1 b2 c3 d4 e5 f6 78 90 ab cd ef 12 34 56 78 9a bc de fg"
         result = engine.capture_outcome(hex_text)
         self.assertFalse(result["saved"])
-        self.assertEqual(result["reason"], "noise_pattern_matched")
+        self.assertEqual(result["reason"], "noise_pattern")
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ class TestShannonEntropy(unittest.TestCase):
         result = engine.capture_outcome(text)
         self.assertFalse(result["saved"])
         # The separator wall should be caught by EITHER noise filter or entropy gate
-        self.assertIn(result["reason"], ("noise_pattern_matched", "low_entropy_signal"))
+        self.assertIn(result["reason"], ("noise_pattern", "low_entropy_signal"))
 
     def test_high_entropy_content_passes(self) -> None:
         """Content with significant variation passes the entropy gate easily."""
@@ -464,7 +464,7 @@ class TestFilterOrderingIntegration(unittest.TestCase):
         self.assertEqual(result["reason"], "below_min_content_length")
 
     def test_noise_pattern_reason_distinguishable(self) -> None:
-        """Traceback content should be rejected with noise_pattern_matched, NOT other reasons."""
+        """Traceback content should be rejected with noise_pattern, NOT other reasons."""
         engine = _make_engine()
         traceback_content = (
             "Traceback (most recent call last):\n"
@@ -475,7 +475,7 @@ class TestFilterOrderingIntegration(unittest.TestCase):
         result = engine.capture_outcome(traceback_content)
         self.assertFalse(result["saved"])
         # Must hit noise filter BEFORE entropy filter (traceback has higher entropy than repetitive text)
-        self.assertEqual(result["reason"], "noise_pattern_matched")
+        self.assertEqual(result["reason"], "noise_pattern")
 
     def test_entropy_reason_distinguishable(self) -> None:
         """Low-entropy repetitive content that passes length + noise should hit the entropy gate."""
@@ -485,7 +485,7 @@ class TestFilterOrderingIntegration(unittest.TestCase):
         sep_text = "===" * 30  # Very long, low-entropy content
         result = engine.capture_outcome(sep_text)
         self.assertFalse(result["saved"])
-        self.assertEqual(result["reason"], "noise_pattern_matched" if _is_noise(sep_text) else "low_entropy_signal")
+        self.assertEqual(result["reason"], "noise_pattern" if _is_noise(sep_text) else "low_entropy_signal")
 
     def test_meaningful_long_content_saves(self) -> None:
         """Significant content that passes all filters should actually save to orchestrator."""
