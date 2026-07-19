@@ -214,13 +214,6 @@ class MemChorusHooks:
                 logger.debug("hooks: skipping query echo artifact in tool output")
                 return None
 
-            # Skip query echo artifacts that leak through the tool pipeline — these
-            # would pollute memory storage with recall prompts rather than actual content.
-            from memchorus.auto_storage_engine import _is_query_echo
-            if _is_query_echo(output_str):
-                logger.debug("hooks: skipping query echo artifact in tool output")
-                return None
-
             # BehavioralTrigger gate with length-based fallback: auto-save when
             # decision points are detected OR when the output exceeds a modest
             # size threshold regardless of behavioral markers. Uses 150 chars
@@ -322,13 +315,19 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
     if not items:
         return ""
 
+    MAX_CONTENT_CHARS = 300  # hard cap per-hit to prevent KB-scale recall bloat
+
     lines: List[str] = []
     seen_keys = set()  # quick de-dup helper
     for item in items[:5]:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        lines.append(f"- **{key}** — {item.get('content') or ''}")
+        content_raw = item.get("content") or ""
+        # Truncate oversized content to prevent recall from bloating context
+        if len(content_raw) > MAX_CONTENT_CHARS:
+            content_raw = content_raw[:MAX_CONTENT_CHARS] + "..."
+        lines.append(f"- **{key}** — {content_raw}")
 
     joined = "\n".join(lines)
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
