@@ -758,14 +758,41 @@ class MemoryOrchestrator:
         # user-authored content dominates search rankings. Auto-storage marks entries
         # with categories: ["RESULT"] — these echo query text and otherwise outrank
         # genuine documents through coincidental similarity.
-        def _is_auto_metadata(c):
-            """Check if a result is auto-generated session metadata rather than authored content."""
-            cat = c.get("categories", []) if isinstance(c, dict) else []
-            return "RESULT" in [s.upper() for s in cat]
+        # GAP P0-1 FIX (2026-07-19): Also catch auto-tool-* string-typed artifacts that
+        # lack the dict structure entirely, PLUS result-delivery markers for completeness.
+        _AUTO_KEY_PREFIXES = ("auto-tool-", "result-", "auto-result-")
+        def _is_auto_metadata(rr_obj):
+            """Check if a RankedResult is auto-generated session metadata."""
+            content = getattr(rr_obj, "content", None)
+
+            # PATH 1: dict-typed content with RESULT/AUTO categories (existing path)
+            if isinstance(content, dict):
+                cat = content.get("categories", [])
+                for tag in cat:
+                    upper_tag = str(tag).upper()
+                    if "RESULT" == upper_tag or "AUTO" == upper_tag:
+                        return True
+
+            # PATH 2: key-name pattern match (catches ALL auto-tool- and result- artifacts)
+            key = getattr(rr_obj, "key", "")
+            for prefix in _AUTO_KEY_PREFIXES:
+                if key.startswith(prefix):
+                    return True
+
+            # PATH 3: raw string content without categories is almost certainly auto-generated
+            # user-authored memories save as dicts with structured fields; tool dumps save as strings
+            if isinstance(content, str) and len(content) > 500:
+                try:
+                    json.loads(content)
+                    return True  # JSON-parsed string = machine-generated artifact
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            return False  # Default: NOT auto metadata
 
         PENALTY_FACTOR = 0.3  # Scale auto-metadata scores to 30% so real docs win
         for _rr in ranked:
-            if _is_auto_metadata(getattr(_rr, "content", {})):
+            if _is_auto_metadata(_rr):
                 _rr.score *= PENALTY_FACTOR
 
         # Re-sort descending (highest first) to preserve the contract that ranked[0]
