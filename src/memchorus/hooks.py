@@ -323,7 +323,7 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        content_raw = item.get("content") or ""
+        content_raw = str(item.get("content") or "")
         # Truncate oversized content to prevent recall from bloating context
         if len(content_raw) > MAX_CONTENT_CHARS:
             content_raw = content_raw[:MAX_CONTENT_CHARS] + "..."
