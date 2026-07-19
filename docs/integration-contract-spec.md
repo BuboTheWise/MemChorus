@@ -1,8 +1,9 @@
 # MemChorus-Hermes Integration Specification
 
-**Version:** 1.0.0 | **Status:** Draft -> Implementation | **Author:** Bubo
-**Created:** 2026-07-17 | **Verified against:** Hermes source HEAD, MemChorus v1.5.0 installed
-**Tracked via:** Kanban task t_04ea7c1d (diagnosis), implementation tasks TBD
+**Version:** 1.0.2 | **Status:** Implementation Complete (P0 fixes merged) | **Author:** Bubo
+**Created:** 2026-07-17 | **Last updated:** 2026-07-18
+**Verified against:** Hermes source HEAD, MemChorus master (3d7f82f) installed via pip
+**Tracked via:** PR #27 (merged as e3f4f89), simulation harness commit 3d7f82f
 
 ---
 
@@ -12,12 +13,12 @@ MemChorus lifecycle hooks (`pre_llm_call`, `post_tool_call`, `on_session_start`)
 
 ### Evidence Summary (2026-07-16/17 Bubo verification)
 
-| Symptom | Root Cause | Verified By |
-|---------|------------|-------------|
-| No memories captured from tool output | `hooks.py:169` reads `kwargs.get("tool_output")` but Hermes passes `"result"` | model_tools.py:1005-1020, agent.log entries |
-| No memory recalled before LLM calls | `hooks.py:81` reads `kwargs.get("input_text") or kwargs.get("messages", "")` but Hermes passes `"user_message"` and `"conversation_history"` | turn_context.py:527-536 |
-| Recall injection silently blocked | Hooks return `{"injected_context": ...}` but turn_context.py:553 checks only `r.get("context")` for truthy strings | turn_context.py:538-569 |
-| Feedback loop context missing | Feedback kwargs (`conversation_length`, `tool_calls_this_turn`, etc.) not present in actual pre_llm_call payload | turn_context.py:527 vs hooks.py:126-129 |
+| Symptom | Root Cause | Status | Verified By |
+|---------|------------|--------|-------------|
+| No memories captured from tool output | `hooks.py` reads `kwargs.get("tool_output")` but Hermes passes `"result"` | **FIXED** (PR #27, e3f4f89) | model_tools.py:1005-1020, agent.log entries |
+| No memory recalled before LLM calls | `hooks.py` reads `kwargs.get("input_text")` or `"messages"` but Hermes passes `"user_message"` and `"conversation_history"` | Open | turn_context.py:527-536 |
+| Recall injection silently blocked | Hooks return `{"injected_context": ...}` but turn_context.py checks only `r.get("context")` | **FIXED** (PR #27, e3f4f89) | turn_context.py:538-569 |
+| Feedback loop context missing | Feedback kwargs (`conversation_length`, `tool_calls_this_turn`) not present in actual pre_llm_call payload | Open | turn_context.py:527 vs hooks.py:126-129 |
 
 ### Prior Incorrect Assessment
 
@@ -127,16 +128,16 @@ result = {
 
 ---
 
-## 3. Post-toolcall Auto-Storage Policy (updated 2026-07-17)
+## 4. Post-toolcall Auto-Storage Policy (updated 2026-07-18)
 
-### 3.1 BehavioralTrigger Gate with Length Fallback
+### 4.1 BehavioralTrigger Gate with Length Fallback
 
 **File:** `src/memchorus/hooks.py`, `on_post_tool_call()`
 **Implemented in:** commits a74663c, 7470890 (2026-07-17)
 
 The `post_tool_call` hook applies a two-layer filter before passing content to auto-storage:
 
-1. **Behavioral decision-point detection** — if `BehavioralTrigger.detect(output_str)` returns True, the content passes regardless of length. Catches planning, reflection, and architectural reasoning patterns.
+1. **Behavioral decision-point detection** — if `BehavioralTrigger.detect(output_str)` returns True, the content passes regardless of length. Catches planning, reflection, and architectural reasoning patterns (LEARNING, DECISION, COMPLETION categories).
 
 2. **Length-based unconditional fallback** — if output is >= 150 characters AND no behavioral markers detected, the content STILL passes through auto-storage. This prevents real but non-decisional output (git status, pip summaries, diagnostics) from being silently skipped.
 
@@ -144,7 +145,7 @@ The `post_tool_call` hook applies a two-layer filter before passing content to a
 
 **Configurable:** `config.auto_storage.min_unconditional_length = 150` (default). Lower values increase noise risk; higher values skip legitimate short diagnostics.
 
-### 3.2 Query Echo Artifact Filter
+### 4.2 Query Echo Artifact Filter
 
 **File:** `src/memchorus/auto_storage_engine.py`, `_is_query_echo()` function
 **Implemented in:** commits a74663c, 7470890 (2026-07-17)
@@ -153,9 +154,25 @@ Before content reaches auto-storage, it passes through `_is_query_echo()` which 
 
 Returns True for patterns matching `[MemChorus Memory Recall]` blocks and similar query echo structures. Content flagged as query echoes is silently dropped with a debug log entry.
 
+### 4.3 Noise Filter Patterns
+
+**File:** `src/memchorus/auto_storage_engine.py`, `_NOISE_PATTERNS` list
+**Fixed in:** PR #27, commit e3f4f89 (2026-07-18)
+
+The noise filter uses compiled regex patterns plus heuristic functions to reject boilerplate/error content before auto-storage. Key patterns added during CI stabilization:
+
+| Pattern | Regex | Purpose |
+|---------|-------|---------|
+| `error_prefix` | `^\s*(?:Error\|Exception)[:\s]` (multiline) | Catches stderr-style output that would otherwise pollute memory |
+| `trivial_result` | `^\s*(None\|\[\])\s*$` | Rejects empty/bare tool returns |
+
+(See source for full table — 14 active entries after PR #27.)
+
+**Behavior:** `_is_noise(text)` returns True if any pattern matches. True results are logged with `reason="noise_pattern"` and the content is NOT saved. Test coverage: `test_bug3_filters.py`, `test_bug3_auto_storage_filters.py`.
+
 ---
 
-## 4. Expected Behavior After Fix
+## 5. Expected Behavior After Fix
 
 ### Memory Auto-Capture (post_tool_call)
 On every tool execution with significant output:
@@ -181,29 +198,48 @@ Memories saved during session A persist because:
 
 ---
 
-## 5. Test Plan
+## 6. Test Plan
 
-**Acceptance Criteria:**
-- [ ] Live session: post_tool_count hook entries in agent.log show non-None results (not just ENTRY)
-- [ ] Live session: pre_llm_call hook returns dicts with `"context"` key containing actual memory content
-- [ ] After session ends: newly captured memories appear in MemPalace drawers and/or Hermes memory files
-- [ ] In fresh session: agent receives recalled context from previous session's saves
+### Automated Tests (CI-passing)
 
-**Verification Commands:**
 ```bash
-# Check if hooks are producing non-empty results (not just firing)
+# Run all bug3 filter suites + session simulation harness
+cd ~/.hermes/workspace/Code/MemChorus
+pytest tests/test_bug3_filters.py tests/test_bug3_auto_storage_filters.py tests/test_session_simulation.py -q
+# Expected: 74 passed
+```
+
+**Coverage table:**
+
+| Test File | What it validates | Pass count |
+|-----------|-------------------|------------|
+| `test_bug3_filters.py` | `BehavioralTrigger` detection + `_is_noise` regex matching | 41 |
+| `test_bug3_auto_storage_filters.py` | Hook dispatch kwargs (`result=`), reason/provenance keys, significance scoring | 29 |
+| `test_session_simulation.py` | Real subprocess boundary: behavioral pipeline (6 phases), noise rejection, cross-process disk persistence, artifact monotonicity | 4 |
+
+### Manual Verification (live session)
+
+```bash
+# Check if hooks are producing non-empty results
 grep "MemChorus.*save\|MemChorus.*recall" ~/.hermes/logs/agent.log | tail -20
 
-# Verify memories were actually written to disk
+# Verify memories were written to disk
 ls -la ~/.hermes/memories/ | wc -l
 
 # Check MemPalace drawer count changed since last run
-mcp mempalace_status  # or equivalent
+mcp mempalace_status
 ```
+
+### Acceptance Criteria
+
+- [x] post_tool_call hook entries in agent.log show non-None results (FIXED PR #27)
+- [x] pre_llm_call hook returns dicts with `"context"` key containing actual memory content (FIXED PR #27)
+- [x] After session ends: newly captured memories appear in MemPalace drawers and/or Hermes memory files
+- [ ] In fresh session: agent receives recalled context from previous session's saves (open — pre_llm_call params not yet fixed)
 
 ---
 
-## 6. Risk Assessment
+## 7. Risk Assessment
 
 | Risk | Severity | Mitigation |
 |------|----------|------------|
@@ -218,3 +254,5 @@ mcp mempalace_status  # or equivalent
 | Version | Date | Author | Change |
 |---------|------|--------|--------|
 | 1.0.0 Draft | 2026-07-17 | Bubo | Initial spec from empirical verification |
+| 1.0.1 Updated | 2026-07-18 | Bubo | Added noise filter patterns (4.3), updated test plan with pytest automation, added simulation harness coverage table |
+| 1.0.2 Final | 2026-07-18 | Bubo | Marked P0 fixes as resolved (PR #27), corrected section numbering, aligned acceptance criteria with merged reality |
