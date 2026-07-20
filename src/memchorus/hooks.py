@@ -228,15 +228,47 @@ class MemChorusHooks:
             else:
                 logger.debug("hooks: fallback — substantial signal content (%d chars, entropy OK) saved", len(output_str))
 
-            # Derive a deterministic key from the tool output hash for smart placement.
+            # Route through AutoStorageEngine's capture_outcome pipeline for
+            # proper significance detection, scoring, provenance markers, and
+            # dedup — not a bare orchestrator.save().
+            auto_storage = None
+            try:
+                from memchorus.auto_storage_engine import AutoStorageEngine
+                if auto_storage is None:
+                    auto_storage = AutoStorageEngine(orchestrator=orchestrator)
+                storage_result = auto_storage.capture_outcome(output_str, outcome_type="automatic")
+                if not storage_result.get("saved"):
+                    reason = storage_result.get("reason", "unknown")
+                    logger.debug("hooks: capture_outcome rejected: %s", reason)
+                    return None
+
+                result: Dict[str, Any] = {
+                    "source": "memchorus_auto_storage",
+                    "saved_ids": [storage_result.get("key", "")],
+                    "significance": storage_result.get("significance", ""),
+                    "importance_score": storage_result.get("importance_score", 0.0),
+                }
+                logger.info("hooks: auto-saved content (%s, importance %.2f)", result["significance"], result["importance_score"])
+                return result
+            except Exception as sexc:
+                logger.warning("hooks: capture_outcome/Engine failed — falling back to direct save. %s", sexc)
+
+            # Fallback to direct orchestrator.save if engine fails
             content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
-            auto_key = f"auto_tool_{content_hash}"
-            saved = orchestrator.save(auto_key, output_str)
+            auto_key = f"result_{content_hash}"
+            payload = {
+                "text": output_str,
+                "categories": ["AUTO", "RESULT"],
+                "outcome_type": "automatic",
+                "importance_score": 0.0,
+                "_auto_provenance": True,
+            }
+            saved = orchestrator.save(auto_key, payload)
             if not saved:
                 return None
 
-            result: Dict[str, Any] = {
-                "source": "memchorus_auto_storage",
+            result = {
+                "source": "memchorus_auto_storage_fallback",
                 "saved_ids": [auto_key],
             }
             return result
