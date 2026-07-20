@@ -183,7 +183,13 @@ async def _call_tool_async(
     name: str,
     arguments: dict,
 ) -> Any:
-    """Async core of _McpClient._call wrapped in proper error handling."""
+    """Async core of _McpClient._call wrapped in proper error handling.
+
+    The entire async context-manager body (including teardown) is caught so
+    that anyio ``BaseExceptionGroup`` — raised when internal TaskGroups
+    cancel on timeout or process exit — cannot escape the sync wrapper
+    and crash the orchestrator session.
+    """
     from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.client.session import ClientSession
 
@@ -192,32 +198,41 @@ async def _call_tool_async(
         args=args,
     )
 
-    async with stdio_client(server_params) as (r_stream, w_stream):
-        async with ClientSession(
-            read_stream=r_stream,
-            write_stream=w_stream,
-            read_timeout_seconds=timedelta(seconds=timeout),
-        ) as session:
-            await session.initialize()
-            result = await session.call_tool(name, arguments=arguments)
+    texts: list[str] = []
+    try:
+        async with stdio_client(server_params) as (r_stream, w_stream):
+            async with ClientSession(
+                read_stream=r_stream,
+                write_stream=w_stream,
+                read_timeout_seconds=timedelta(seconds=timeout),
+            ) as session:
+                await session.initialize()
+                result = await session.call_tool(name, arguments=arguments)
 
-            # Parse the MCP tool result into JSON dict (or raw text if unparsable).
-            texts = []
-            try:
-                if hasattr(result, "content") and result.content:
-                    for block in result.content:
-                        if hasattr(block, "type"):
-                            # MCP SDK blocks have a 'type' discriminator.
-                            if getattr(block, "type", "") == "text":
-                                texts.append(str(getattr(block, "text", "")))
-            except Exception:
-                # Result object is malformed — move on to raw.
-                pass
-        raw = "\n".join(texts) if texts else ""
-        try:
-            return json.loads(raw) if raw else {}
-        except (json.JSONDecodeError, TypeError):
-            return {"raw": raw} if raw else {}
+                # Parse the MCP tool result into JSON dict (or raw text if unparsable).
+                try:
+                    if hasattr(result, "content") and result.content:
+                        for block in result.content:
+                            if hasattr(block, "type"):
+                                if getattr(block, "type", "") == "text":
+                                    texts.append(str(getattr(block, "text", "")))
+                except Exception:
+                    pass
+    # Catch BaseException (excluding KeyboardInterrupt/SysExit) to handle
+    # anyio's BaseExceptionGroup which does NOT inherit from Exception.
+    except BaseExceptionGroup as exc:
+        logger.warning(
+            "_call_tool_async: caught BaseExceptionGroup (%d sub-exc(s)): %s",
+            len(exc.exceptions),
+            ", ".join(type(e).__name__ for e in exc.exceptions),
+        )
+        return {}
+
+    raw = "\n".join(texts) if texts else ""
+    try:
+        return json.loads(raw) if raw else {}
+    except (json.JSONDecodeError, TypeError):
+        return {"raw": raw} if raw else {}
 
 
 class _McpClient:
@@ -391,6 +406,15 @@ class _McpClient:
                 return False
             self._connected = True
             return True
+        except BaseExceptionGroup as exc:
+            # anyio TaskGroup (used inside stdio_client) raises this on cancel/timeout.
+            logger.warning(
+                "connect: MCP init failed with BaseExceptionGroup (%d sub-exc(s)): %s",
+                len(exc.exceptions),
+                ", ".join(type(e).__name__ for e in exc.exceptions),
+            )
+            self._connected = False
+            return False
         except Exception:
             self._connected = False
             return False
@@ -439,6 +463,16 @@ class _McpClient:
                 "_call: OS error communicating with MCP server (%s): %s",
                 type(exc).__name__,
                 exc,
+            )
+            self._connected = False
+            return None
+        except BaseExceptionGroup as exc:
+            # anyio TaskGroup raises this when internal reader/flusher tasks
+            # are cancelled or crash (does NOT inherit from Exception).
+            logger.warning(
+                "_call: MCP call raised BaseExceptionGroup (%d sub-exc(s)): %s",
+                len(exc.exceptions),
+                ", ".join(type(e).__name__ for e in exc.exceptions),
             )
             self._connected = False
             return None
