@@ -383,7 +383,12 @@ class _McpClient:
                     await session.initialize()
 
         try:
-            _run_async(asyncio.wait_for(_do_init(), timeout=self.timeout))
+            result = _run_async(asyncio.wait_for(_do_init(), timeout=self.timeout))
+            # _run_async returns None when it catches ExceptionGroup during teardown.
+            # Treat that as a failed connect attempt — don't mark the connection alive.
+            if result is None:
+                self._connected = False
+                return False
             self._connected = True
             return True
         except Exception:
