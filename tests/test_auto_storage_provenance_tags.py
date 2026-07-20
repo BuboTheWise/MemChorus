@@ -129,7 +129,7 @@ def _build_subprocess_script():
         "import json\n"
         "import sys\n"
         "import os\n"
-        'sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))\n'
+        "sys.path.insert(0, 'src')\n"
         "from memchorus.auto_storage_engine import AutoStorageEngine\n"
         "class TOrch:\n"
         "    def __init__(self):\n"
