@@ -93,6 +93,7 @@ _PRIORITY_KEYWORDS = [
     ("bug",            DecisionPoint.ERROR_STATE),
     ("regression",     DecisionPoint.ERROR_STATE),
     ("resolve",        DecisionPoint.ERROR_STATE),
+    ("crashed",        DecisionPoint.ERROR_STATE),
 
     # --- PLANNING_START (priority 1) -------------------------------------
     ("i need to implement",   DecisionPoint.PLANNING_START),
@@ -138,6 +139,14 @@ _PRIORITY_KEYWORDS = [
     ("exit code 0",           DecisionPoint.POST_ACTION_COMPLETE),
     ("all tests passed",      DecisionPoint.POST_ACTION_COMPLETE),
     ("confirmed green",       DecisionPoint.POST_ACTION_COMPLETE),
+    # Installation / package manager success patterns (real agent stdout)
+    ("successfully installed",   DecisionPoint.POST_ACTION_COMPLETE),
+    ("already satisfied",        DecisionPoint.POST_ACTION_COMPLETE),
+    ("successfully uninstalled", DecisionPoint.POST_ACTION_COMPLETE),
+    # Git operation output patterns
+    ("merge made",       DecisionPoint.POST_ACTION_COMPLETE),
+    ("new branch",       DecisionPoint.POST_ACTION_COMPLETE),
+    ("up to date",       DecisionPoint.POST_ACTION_COMPLETE),
 
     # --- CONTEXTUAL_SYNTHESIS_COMPLETION (priority 4) -----------------------
     ("learned that",            DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION),
@@ -159,12 +168,17 @@ class _PatternStore:
         # Group keywords by priority class
         self._groups: Dict[DecisionPoint, List[tuple]] = {dp: [] for dp in DecisionPoint}  # type: ignore[union-init, arg-type, assignment]
         for pattern_str, dp_class in _PRIORITY_KEYWORDS:
-            # Handle multi-word patterns by wrapping each word with \b individually
+            # Handle multi-word patterns by wrapping each token with letter-only
+            # lookaround instead of \b — \b treats _ as a word char, so "exit_code"
+            # inside JSON like {"exit_code": 0} would NOT match \bexit\b because '_'
+            # is adjacent. Letter-only lookaround solves this:
+            # (?<![a-zA-Z])...(?![a-zA-Z]) allows matching next to _, digits, braces, etc.
             words = pattern_str.lower().split()
             if len(words) == 1:
-                regex_str = rf"\b{re.escape(words[0])}\b"
+                token = re.escape(words[0])
+                regex_str = rf"(?<![a-zA-Z]){token}(?![a-zA-Z])"
             else:
-                parts = [rf"\b{re.escape(w)}\b" for w in words]
+                parts = [rf"(?<![a-zA-Z]){re.escape(w)}(?![a-zA-Z])" for w in words]
                 # .*? allows flexible spacing between words with non-greedy matching
                 regex_str = ".*?".join(parts)
             compiled = re.compile(regex_str, re.IGNORECASE | re.UNICODE)
@@ -191,10 +205,12 @@ class _PatternStore:
         compiled_keywords: List[tuple] = []
         for pattern_str, dp_class in validated:
             words = pattern_str.lower().split()
+            # Same letter-only lookaround as __init__ — \b treats _ as word char
             if len(words) == 1:
-                regex_str = rf"\b{re.escape(words[0])}\b"
+                token = re.escape(words[0])
+                regex_str = rf"(?<![a-zA-Z]){token}(?![a-zA-Z])"
             else:
-                parts = [rf"\b{re.escape(w)}\b" for w in words]
+                parts = [rf"(?<![a-zA-Z]){re.escape(w)}(?![a-zA-Z])" for w in words]
                 regex_str = ".*?".join(parts)
             compiled = re.compile(regex_str, re.IGNORECASE | re.UNICODE)
             compiled_keywords.append((compiled, pattern_str))
