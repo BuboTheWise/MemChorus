@@ -1,6 +1,6 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
-__version__ = "1.5.02"
+__version__ = "1.5.03"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
 

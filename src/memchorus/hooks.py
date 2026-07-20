@@ -207,11 +207,26 @@ class MemChorusHooks:
             # BehavioralTrigger gate: only auto-save when decision points detected.
             # This prevents noise-flooding (Bug 4 fix) and makes the behavioral
             # significance detector actually functional.
+            # Fallback: if output is substantial (>=200 chars with signal entropy),
+            # save it regardless — structured tool results have no natural-language
+            # decision-point cues but can still be meaningful.
+            detected = []
             if self._btrigger is not None:
                 detected = self._btrigger.detect(output_str)
-                if not detected:
-                    logger.debug("hooks: no behavioral decision points in tool output — skipping auto-save")
-                    return None
+
+            from memchorus.auto_storage_engine import _has_minimum_signal
+            has_signal = _has_minimum_signal(output_str)
+
+            if not detected and not has_signal:
+                logger.debug(
+                    "hooks: no behavioral decision points AND no signal entropy in tool output — skipping auto-save"
+                )
+                return None
+
+            if detected:
+                logger.info("hooks: BehavioralTrigger detected %d decision point(s)", len(detected))
+            else:
+                logger.debug("hooks: fallback — substantial signal content (%d chars, entropy OK) saved", len(output_str))
 
             # Derive a deterministic key from the tool output hash for smart placement.
             content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
