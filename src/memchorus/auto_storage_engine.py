@@ -243,6 +243,41 @@ def _is_query_echo(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Placeholder artifact detection -- rejects synthetic boilerplate filler that
+# upstream integration points inject as tool_output when no real content is
+# available (e.g. "session context t_XXXX current task").
+# ---------------------------------------------------------------------------
+
+_PLACEHOLDER_PATTERNS: list[re.Pattern] = [
+    # "session context t_<hex> current task"  (canonical placeholder from gateway)
+    re.compile(r'session\s+context\s+\w+\s+current\s+task', re.IGNORECASE),
+    # Generic filler: short phrase with a hash/hex token but no real information
+    # e.g. "tool output for t_<hex>", "execution context <task_id>"
+    re.compile(r'(?:tool\s+(?:output|result)|execution\s+context)\s+(?:for\s+)?t_[0-9a-f]+', re.IGNORECASE),
+]
+
+
+def _is_placeholder_artifact(text: str) -> bool:
+    """Return True when *text* is a synthetic placeholder / boilerplate filler
+    that carries no real informational signal.
+
+    Catch patterns like "session context t_17cfe174 current task" that slip
+    through entropy gates because their character variety looks superficially
+    informative but contain zero actionable content.
+
+    NOTE: This function uses ONLY explicit regex patterns derived from observed
+    placeholder formats. Heuristic fallbacks (length thresholds, structure
+    checks) were removed because they produced false positives on legitimate
+    short tool output like "pip install completed successfully with exit code 0".
+    New placeholder variants should be added as new patterns here.
+    """
+    for pattern in _PLACEHOLDER_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
 
@@ -398,6 +433,18 @@ class AutoStorageEngine:
                 "key": "",
                 "significance": "",
                 "reason": "query_echo_artifact",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 1b: filter placeholder artifacts (MC-004) ---
+        if _is_placeholder_artifact(text):
+            logger.debug("AutoStorageEngine: skipping placeholder artifact")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "placeholder_artifact",
                 "outcome_type": outcome_type,
                 "importance_score": 0.0,
             }

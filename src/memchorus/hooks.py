@@ -204,6 +204,14 @@ class MemChorusHooks:
                 logger.debug("hooks: skipping query echo artifact in tool output")
                 return None
 
+            # Guard: skip placeholder artifacts — synthetic filler text like
+            # "session context t_17cfe174 current task" that upstream injects
+            # when no real tool_output is available (MC-004).
+            from memchorus.auto_storage_engine import _is_placeholder_artifact
+            if _is_placeholder_artifact(output_str):
+                logger.debug("hooks: skipping placeholder artifact in tool output")
+                return None
+
             # BehavioralTrigger gate: only auto-save when decision points detected.
             # This prevents noise-flooding (Bug 4 fix) and makes the behavioral
             # significance detector actually functional.
