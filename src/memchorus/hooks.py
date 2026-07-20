@@ -281,7 +281,26 @@ class MemChorusHooks:
 
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
 _MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
-_MAX_BLOCK_CHARS = 2000    # hard ceiling on the formatted block
+_MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat (t_32e7877a)
+_HERMES_MEMCHORUS_CHAR_LIMIT = None
+
+# Per-profile override: reads config.yaml memchorus.hook_char_limit before global default
+def _resolve_char_limit() -> int:
+    """Return per-profile char budget if set, else global default."""
+    if _HERMES_MEMCHORUS_CHAR_LIMIT is not None:
+        return _HERMES_MEMCHORUS_CHAR_LIMIT
+    try:
+        profile = os.environ.get("HERMES_PROFILE", "default")
+        cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")
+        p = _Path(cfg_path)
+        if p.exists():
+            data = _yml.safe_load(p.read_text()) or {}
+            limit = data.get("memchorus", {}).get("hook_char_limit", None)
+            if isinstance(limit, int):
+                return max(200, min(limit, 10000))
+    except Exception:
+        pass
+    return _MAX_BLOCK_CHARS
 
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
