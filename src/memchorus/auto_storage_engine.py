@@ -283,14 +283,15 @@ def _detect_significance(text: str) -> List[SignificanceCategory]:
 
 def _score_importance(text: str, categories: List[SignificanceCategory]) -> float:
     """Rough 0-1 importance score.  More matching categories & longer text = higher."""
-    if not categories:
-        return 0.0
     # Base = fraction of matched categories out of total.
-    base = len(categories) / len(ALL_CATEGORIES)
+    base = len(categories) / len(ALL_CATEGORIES) if categories else 0.0
     # Length bonus up to 0.3 (diminishing at 50 tokens).
     words = text.split()
     length_bonus = min(len(words) / 150.0, 0.3)
-    return min(base + length_bonus, 1.0)
+    # Even content that misses all keyword categories still gets a floor of ~0.1 so
+    # it is not completely invisible in recall results (fixes zero-signal gap for
+    # infrastructure/devops content whose terminology predates the keyword list).
+    return min(base + length_bonus, 1.0) if base > 0 else max(length_bonus, 0.1)
 
 
 # ---------------------------------------------------------------------------
