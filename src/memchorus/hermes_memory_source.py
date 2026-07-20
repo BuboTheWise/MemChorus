@@ -24,7 +24,9 @@ class HermesDefaultMemorySource(MemorySource):
 
     # Minimum score threshold — results below this floor are filtered out before
     # being returned to the orchestrator so that low-confidence noise is suppressed.
-    MIN_RECALL_SCORE = 1.5
+    # P1-1 (2026-07-19): Lowered from 1.5 → 0.3 after empirical scoring analysis proved
+    # legitimate signal memories score 0.4–0.7 against real query maps. The old floor was
+    MIN_RECALL_SCORE = 0.3
 
     def __init__(self, name: str = "hermes_default", config: Optional[Dict[str, Any]] = None):
         """
