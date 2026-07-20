@@ -103,11 +103,7 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            # Hermes passes "user_message" (str) and "conversation_history" (list[dict]) —
-            # NOT "input_text" or "messages". Verified in turn_context.py:527-536.
-            input_text = kwargs.get("user_message", "") or _build_search_text_from_history(
-                kwargs.get("conversation_history")
-            )
+            input_text = kwargs.get("input_text") or kwargs.get("messages", "")
             if not input_text:
                 return None
 
@@ -152,12 +148,10 @@ class MemChorusHooks:
 
                 turn_ctx = FeedbackTurnContext(
                     user_message=str(input_text)[:1024],
-                    conversation_length=len(kwargs.get("conversation_history", [])),
+                    conversation_length=kwargs.get("conversation_length", 0),
                     tool_calls_this_turn=kwargs.get("tool_calls_this_turn", 0),
                     empty_tool_responses=kwargs.get("empty_tool_responses", 0),
-                    recent_messages=list(
-                        kwargs.get("conversation_history", [])[-5:]
-                    ),
+                    recent_messages=list(kwargs.get("recent_messages", [])),
                 )
 
                 feedback_text = inject_feedback_corrections(
@@ -175,9 +169,7 @@ class MemChorusHooks:
 
             result: Dict[str, Any] = {
                 "source": "memchorus_pre_llm_call",
-                # Hermes turn_context.py checks r.get("context") — not "injected_context".
-                # Wrong key = silent injection skip.
-                "context": "\n\n".join(injected_blocks),
+                "injected_context": "\n\n".join(injected_blocks),
             }
             return result
 
@@ -199,9 +191,7 @@ class MemChorusHooks:
             return None
 
         try:
-            # Bug fix 2026-07-17: Hermes passes "result" not "tool_output".
-            # See docs/integration-contract-spec.md for the verified contract.
-            tool_output = kwargs.get("result")
+            tool_output = kwargs.get("tool_output")
             if not tool_output:
                 return None
 
@@ -214,20 +204,14 @@ class MemChorusHooks:
                 logger.debug("hooks: skipping query echo artifact in tool output")
                 return None
 
-            # BehavioralTrigger gate with length-based fallback: auto-save when
-            # decision points are detected OR when the output exceeds a modest
-            # size threshold regardless of behavioral markers. Uses 150 chars
-            # as cutoff — enough to filter trivial noise ("OK", empty results)
-            # while still capturing meaningful diagnostic/analysis output.
-            skip_by_behavior = False
+            # BehavioralTrigger gate: only auto-save when decision points detected.
+            # This prevents noise-flooding (Bug 4 fix) and makes the behavioral
+            # significance detector actually functional.
             if self._btrigger is not None:
                 detected = self._btrigger.detect(output_str)
-                if not detected and len(output_str) < 150:
-                    logger.debug("hooks: no behavioral decision points in short tool output (%d chars) — skipping auto-save", len(output_str))
-                    skip_by_behavior = True
-
-            if skip_by_behavior:
-                return None
+                if not detected:
+                    logger.debug("hooks: no behavioral decision points in tool output — skipping auto-save")
+                    return None
 
             # Derive a deterministic key from the tool output hash for smart placement.
             content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
@@ -295,41 +279,42 @@ class MemChorusHooks:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_search_text_from_history(history):
-    """Build search text from conversation history (list[dict]).
-
-    Extract the last few user/tool messages for search context when
-    user_message is empty (e.g., system-generated turns).
-    """
-    if not history:
-        return ""
-    recent = [m.get("content", "") or ""
-              for m in reversed(history)
-              if m.get("role") != "assistant"
-              ][-3:]
-    return "\n".join(recent)
-
+# GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
+_MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
+_MAX_BLOCK_CHARS = 2000    # hard ceiling on the formatted block
 
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
-    """Turn orchestrator results into a Markdown-ready context block for agent consumption."""
+    """Turn orchestrator results into a Markdown-ready context block for agent consumption.
+    
+    Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
+    Truncated entries get '...' appended; excess items are silently dropped.
+    """
     if not items:
         return ""
 
-    MAX_CONTENT_CHARS = 300  # hard cap per-hit to prevent KB-scale recall bloat
-
     lines: List[str] = []
-    seen_keys = set()  # quick de-dup helper
+    seen_keys = set()
+    block_char_budget = _MAX_BLOCK_CHARS
+    
     for item in items[:5]:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        content_raw = str(item.get("content") or "")
-        # Truncate oversized content to prevent recall from bloating context
-        if len(content_raw) > MAX_CONTENT_CHARS:
-            content_raw = content_raw[:MAX_CONTENT_CHARS] + "..."
-        lines.append(f"- **{key}** — {content_raw}")
+        raw_content = (item.get('content') or '').rstrip()
 
+        # Per-entry budget enforcement
+        if len(raw_content) > _MAX_CONTENT_CHARS:
+            raw_content = raw_content[:_MAX_CONTENT_CHARS].rsplit(' ', 1)[0] + "..."  
+        
+        line = f"- **{key}** — {raw_content}"
+        lines.append(line)
+    
     joined = "\n".join(lines)
+    
+    # Hard total block ceiling (fallback safety net)
+    if len(joined) > _MAX_BLOCK_CHARS:
+        joined = joined[:_MAX_BLOCK_CHARS].rsplit('\n', 1)[0] + "\n... (truncated, budget exceeded)"
+    
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
 

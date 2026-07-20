@@ -37,18 +37,26 @@ logger = logging.getLogger(__name__)
 # Query templates per decision point type
 # ---------------------------------------------------------------------------
 
+# GAP P0-3 FIX (2026-07-19): Expanded query templates to cover real-world recall needs.
+# The original templates were engineering-focused, missing key terms from actual stored
+# memories like user preferences, project conventions, debug notes, etc.
 _QUERY_MAP: Dict[DecisionPoint, str] = {
     DecisionPoint.PLANNING_START: (
-        "past planning patterns architecture decisions strategy notes"
+        "past planning patterns architecture decisions strategy notes "
+        "project organization conventions documentation standards workflow"
     ),
     DecisionPoint.TOOL_CALL_INTENT: (
-        "tool usage history command conventions domain-specific guidance"
+        "tool usage history command conventions domain-specific guidance "
+        "preferences user context setup configuration environment "
+        "debug findings verification testing procedures scripts"
     ),
     DecisionPoint.POST_ACTION_COMPLETE: (
-        "post-action learnings outcomes results"
+        "post-action learnings outcomes results decisions made changes "
+        "completed tasks progress milestones reviews improvements"
     ),
     DecisionPoint.ERROR_STATE: (
-        "errors recovery patterns failure modes known issues"
+        "errors recovery patterns failure modes known issues bugs fixes "
+        "troubleshooting diagnostic root cause debugging steps workarounds"
     ),
 }
 

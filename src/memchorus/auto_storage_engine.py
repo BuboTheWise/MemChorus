@@ -482,9 +482,15 @@ class AutoStorageEngine:
             }
 
         # --- Step 9: save to orchestrator with provenance marker (Bug 3 AC4) ---
+        # Always include "AUTO" in categories so _is_auto_metadata() PATH 1 matches
+        # even when detected significance is LEARNING/MISTAKE/DECISION (not RESULT).
+        # This ensures all auto-stored entries are penalized during search, regardless
+        # of which significance keyword triggered storage.
+        detected_cats = [c.value for c in categories] or ["RESULT"]
+        provenance_cats = ["AUTO"] + detected_cats
         payload = {
             "text": text,
-            "categories": [c.value for c in categories] or ["RESULT"],
+            "categories": provenance_cats,
             "category": category_str,
             "outcome_type": outcome_type,
             "timestamp": _time_mod.time(),
