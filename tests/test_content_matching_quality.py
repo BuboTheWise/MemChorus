@@ -167,8 +167,8 @@ class TestMinRecallScoreThreshold:
         return HermesDefaultMemorySource(name='t', config=cfg), tmpdir
 
     def test_default_min_score_constant(self):
-        """MIN_RECALL_SCORE class constant defaults to 1.5."""
-        assert HermesDefaultMemorySource.MIN_RECALL_SCORE == 1.5
+        """MIN_RECALL_SCORE class constant defaults to 0.3 (lowered from 1.5 after empirical analysis)."""
+        assert HermesDefaultMemorySource.MIN_RECALL_SCORE == 0.3
 
     def test_low_score_results_filtered_out(self):
         """Results with score below MIN_RECALL_SCORE are not returned."""
@@ -199,8 +199,9 @@ class TestMinRecallScoreThreshold:
             )
             assert src._effective_min_score() == 0.5
 
+            # Default effective min score is the class constant (0.3 after empirical scoring analysis)
             src2 = HermesDefaultMemorySource(name='t', config={'memory_dir': tmpdir})
-            assert src2._effective_min_score() == 1.5
+            assert src2._effective_min_score() == 0.3
         finally:
             shutil.rmtree(tmpdir)
 
