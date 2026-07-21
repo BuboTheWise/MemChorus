@@ -103,7 +103,8 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            input_text = kwargs.get("input_text") or kwargs.get("messages", "")
+            # Hermes turn_context.invoke_hook() passes user_message + conversation_history
+            input_text = kwargs.get("user_message") or kwargs.get("conversation_history", "")
             if not input_text:
                 return None
 
@@ -191,7 +192,8 @@ class MemChorusHooks:
             return None
 
         try:
-            tool_output = kwargs.get("tool_output")
+            # Hermes model_tools._emit_post_tool_call_hook() passes result=
+            tool_output = kwargs.get("result")
             if not tool_output:
                 return None
 
@@ -374,7 +376,11 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        raw_content = (item.get('content') or '').rstrip()
+        content_raw = item.get('content') or ''
+        # Defensive: some memory sources return nested dicts instead of strings
+        if not isinstance(content_raw, str):
+            content_raw = str(content_raw)
+        raw_content = content_raw.rstrip()
 
         # Per-entry budget enforcement
         if len(raw_content) > _MAX_CONTENT_CHARS:
