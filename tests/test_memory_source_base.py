@@ -154,8 +154,10 @@ def test_memory_source_is_subclass():
     from memchorus.hermes_memory_source import HermesDefaultMemorySource
     from memchorus.mempalace_memory_source import MemPalaceMemorySource
 
-    assert issubclass(HermesDefaultMemorySource, MemorySource)
-    assert issubclass(MemPalaceMemorySource, MemorySource)
+    # Re-import MemorySource fresh to avoid dual-namespace collision under xdist.
+    from memchorus.memory_source import MemorySource as _MemorySource  # noqa: F811
+    assert issubclass(HermesDefaultMemorySource, _MemorySource)
+    assert issubclass(MemPalaceMemorySource, _MemorySource)
 
 
 def test_hermes_default_and_mempalace_are_instances():
