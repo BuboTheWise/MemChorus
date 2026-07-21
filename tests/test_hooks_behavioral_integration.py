@@ -156,11 +156,14 @@ class TestHooksCallBehavioralTrigger:
             "memchorus.hooks._get_orchestrator", return_value=mock.MagicMock()
         ):
             from memchorus.hooks import MemChorusHooks
+            # Import BehavioralTrigger inside the patch context so it resolves
+            # to the same class object that hooks.py loaded, avoiding isinstance
+            # identity failure when prior tests reloaded hooks in patched scopes.
+            from memchorus.behavioral_trigger import BehavioralTrigger as BTClass
             hooks = MemChorusHooks()
 
-            # _btrigger should be a BehavioralTrigger instance, not None
             assert hooks._btrigger is not None
-            assert isinstance(hooks._btrigger, BehavioralTrigger)
+            assert isinstance(hooks._btrigger, BTClass)
 
     def test_on_pre_llm_call_planning_widens_search(self, mock_orchestrator, mock_bt_results):
         """When PLANNING_START detected, search limit should widen to 5."""
