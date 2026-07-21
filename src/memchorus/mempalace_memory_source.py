@@ -51,9 +51,23 @@ def _run_async(coro):
     ``RuntimeError('set_event_loop_policy')``.  We catch that fall‑back to the old
     manual loop pattern while logging a warning so operators know an unusual
     environment is in play.
+
+    Also catches ``BaseExceptionGroup`` (raised by anyio TaskGroups when the MCP
+    subprocess dies mid-operation) and returns ``None`` gracefully instead of
+    crashing the event loop.
     """
     try:
         return asyncio.run(coro)
+    except BaseExceptionGroup as exc:
+        # anyio TaskGroup teardown propagates ExceptionGroup / BaseExceptionGroup
+        # (which inherit from BaseException, NOT Exception).
+        # Return None so callers treat this as a normal failure rather than
+        # crashing the entire event loop.
+        logger.warning(
+            "_run_async: caught %s (%d sub-exc(s)): %s — returning None",
+            type(exc).__name__, len(exc.exceptions), exc,
+        )
+        return None
     except RuntimeError as exc:
         if "set_event_loop" in str(exc):
             # Already inside running event-loop — fall back to manual loop.
