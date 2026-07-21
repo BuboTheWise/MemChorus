@@ -167,16 +167,17 @@ def test_hermes_default_and_mempalace_are_instances():
 
     from memchorus.hermes_memory_source import HermesDefaultMemorySource
     from memchorus.mempalace_memory_source import MemPalaceMemorySource
+    from memchorus.memory_source import MemorySource as _MemorySource  # fresh ref
     import tempfile
 
     d = tempfile.mkdtemp(prefix="mem_src_test_")
     try:
         hermes_src = HermesDefaultMemorySource(name="test", config={"memory_dir": d})
-        assert isinstance(hermes_src, MemorySource)
+        assert isinstance(hermes_src, _MemorySource)
 
         # skip_mcp=True so it doesn't try to connect to a live MCP server in tests
         mp_src = MemPalaceMemorySource(config={"skip_mcp": True})
-        assert isinstance(mp_src, MemorySource)
+        assert isinstance(mp_src, _MemorySource)
     finally:
         import shutil; shutil.rmtree(d, ignore_errors=True)
 
