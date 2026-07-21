@@ -1105,16 +1105,21 @@ class MemPalaceMemorySource(MemorySource):
 
         # Attempt MCP deletion — search for the drawer that matches this key
         if self._connected and self._client.is_alive:
-            hits = self._client.search(query=key, limit=5)
-            if isinstance(hits, list):
-                for hit in hits:
-                    if not isinstance(hit, dict):
-                        continue
-                    # Check if this hit matches our key
-                    hit_key = (hit.get("key", "") or "").lower()
-                    if key.lower() == hit_key:
-                        drawer_id = hit.get("drawer_id") or hit.get("id")
-                        if drawer_id:
+            try:
+                hits = self._client.search(query=key, limit=5)
+                if not isinstance(hits, list):
+                    hits = []
+            except Exception:  # noqa: BLE001 — graceful degradation on MCP unavailability
+                hits = []
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                # Check if this hit matches our key
+                hit_key = (hit.get("key", "") or "").lower()
+                if key.lower() == hit_key:
+                    drawer_id = hit.get("drawer_id") or hit.get("id")
+                    if drawer_id:
+                        try:
                             result = self._client.call_tool(
                                 "mempalace_delete_drawer",
                                 {"drawer_id": str(drawer_id)},
@@ -1122,6 +1127,8 @@ class MemPalaceMemorySource(MemorySource):
                             if result is not None:
                                 deleted = True
                                 break
+                        except Exception:  # noqa: BLE001 — graceful degradation
+                            pass
 
         # Always remove the local cache copy regardless of MCP outcome
         local_ok = False
