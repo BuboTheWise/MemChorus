@@ -189,6 +189,18 @@ def _bootstrap() -> Optional[Any]:
         except (json.JSONDecodeError, TypeError):
             logger.warning("Invalid JSON in MEMCHORUS_CONFIG; ignoring it")
 
+    # Translate nested adapter keys so the orchestrator actually finds them.
+    # MEMCHORUS_CONFIG typically sends {"hermes_default": {...}} or {"mempalace": {...}},
+    # but orchestrator.__init__ reads "hermes_default_config" and "mempalace_config".
+    # Bridge the naming gap so overrides survive into adapter instantiation.
+    _ALIAS_MAP = {
+        "hermes_default": "hermes_default_config",
+        "mempalace":      "mempalace_config",
+    }
+    for src_key, cfg_key in _ALIAS_MAP.items():
+        if src_key in config and cfg_key not in config:
+            config[cfg_key] = config.pop(src_key)
+
     # --- Step 2: Enabled gate ---
     enabled = config.pop("auto_enabled")
     if not enabled:
