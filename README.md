@@ -473,7 +473,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.0 (current — on `master`)
+### v1.5.06 (current — on `master`)
 
 **Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
 
