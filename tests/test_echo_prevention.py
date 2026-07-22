@@ -80,12 +80,16 @@ class TestIsQueryEcho(unittest.TestCase):
         This catches drift if a query template is updated in
         auto_recall_engine but forgotten here — the previous version of this
         test only compared counts and silently passed when contents diverged.
+
+        The guard set may also contain legacy templates (superset), so we check
+        containment rather than exact equality.
         """
         from memchorus.auto_recall_engine import _QUERY_MAP  # type: ignore[import-not-found]
         query_values = set(_QUERY_MAP.values())
+        missing = query_values - _KNOWN_QUERY_TEMPLATES
         self.assertEqual(
-            _KNOWN_QUERY_TEMPLATES, query_values,
-            "_KNOWN_QUERY_TEMPLATES must exactly match _QUERY_MAP values. "
+            missing, set(),
+            f"_KNOWN_QUERY_TEMPLATES is missing {len(missing)} _QUERY_MAP value(s). "
             "If a template was updated, update the guard set too.",
         )
 

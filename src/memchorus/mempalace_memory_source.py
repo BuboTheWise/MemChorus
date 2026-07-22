@@ -51,9 +51,23 @@ def _run_async(coro):
     ``RuntimeError('set_event_loop_policy')``.  We catch that fall‑back to the old
     manual loop pattern while logging a warning so operators know an unusual
     environment is in play.
+
+    Also catches ``BaseExceptionGroup`` (raised by anyio TaskGroups when the MCP
+    subprocess dies mid-operation) and returns ``None`` gracefully instead of
+    crashing the event loop.
     """
     try:
         return asyncio.run(coro)
+    except BaseExceptionGroup as exc:
+        # anyio TaskGroup teardown propagates ExceptionGroup / BaseExceptionGroup
+        # (which inherit from BaseException, NOT Exception).
+        # Return None so callers treat this as a normal failure rather than
+        # crashing the entire event loop.
+        logger.warning(
+            "_run_async: caught %s (%d sub-exc(s)): %s — returning None",
+            type(exc).__name__, len(exc.exceptions), exc,
+        )
+        return None
     except RuntimeError as exc:
         if "set_event_loop" in str(exc):
             # Already inside running event-loop — fall back to manual loop.
@@ -1091,16 +1105,21 @@ class MemPalaceMemorySource(MemorySource):
 
         # Attempt MCP deletion — search for the drawer that matches this key
         if self._connected and self._client.is_alive:
-            hits = self._client.search(query=key, limit=5)
-            if isinstance(hits, list):
-                for hit in hits:
-                    if not isinstance(hit, dict):
-                        continue
-                    # Check if this hit matches our key
-                    hit_key = (hit.get("key", "") or "").lower()
-                    if key.lower() == hit_key:
-                        drawer_id = hit.get("drawer_id") or hit.get("id")
-                        if drawer_id:
+            try:
+                hits = self._client.search(query=key, limit=5)
+                if not isinstance(hits, list):
+                    hits = []
+            except Exception:  # noqa: BLE001 — graceful degradation on MCP unavailability
+                hits = []
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                # Check if this hit matches our key
+                hit_key = (hit.get("key", "") or "").lower()
+                if key.lower() == hit_key:
+                    drawer_id = hit.get("drawer_id") or hit.get("id")
+                    if drawer_id:
+                        try:
                             result = self._client.call_tool(
                                 "mempalace_delete_drawer",
                                 {"drawer_id": str(drawer_id)},
@@ -1108,6 +1127,8 @@ class MemPalaceMemorySource(MemorySource):
                             if result is not None:
                                 deleted = True
                                 break
+                        except Exception:  # noqa: BLE001 — graceful degradation
+                            pass
 
         # Always remove the local cache copy regardless of MCP outcome
         local_ok = False
