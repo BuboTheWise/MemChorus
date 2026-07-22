@@ -1,30 +1,40 @@
+# ═══ OS / System Artifacts ═══
+.DS_Store
+Thumbs.db
+desktop.ini
+*.suo
+*.swp
+*.bak
+
+# Virtual environments
+.venv/
+env/
+.env
+
+# Python artifacts (build/run intermediates)
 __pycache__/
 *.pyc
-*.egg-info/
-.eggs/
-dist/
-build/
 *.pyo
-.pytest_cache/
+.*.pyc
+.egg-info/
+.eggs/
 .mypy_cache/
-*.DS_Store
-.env
-.venv/
-# Coverage and test artifacts
+
+# Build & distribution packages
+build/
+dist/
+
+# Test runner caches, scratch work (not versioned — QA-reports in Bubo_Wisdom)
+.pytest_cache/
 .coverage
 coverage.xml
-*.cover
 htmlcov/
-
-# Test scripts (temporary)
 *_test.sh
 integration_test_*.py
 final_test.sh
-
-# Docs moved outside repo
-Level-Set-Summary.md
-example_memchorus_usage_improved.py
-
-# QA report artifacts (versioned reports live in Bubo_Wisdom, not here)
 QA-Reports/
 .worktrees/
+
+# Docs moved outside repo (Bubo_Wisdom only)
+Level-Set-Summary.md
+example_memchorus_usage_improved.py
