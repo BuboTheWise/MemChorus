@@ -11,21 +11,12 @@ The kwarg contract was fixed by patching hooks.py to read the actual keys Hermes
 - pre_llm_call: user_message (replacing input_text) + conversation_history (replacing messages)
 - post_tool_call: result (replacing tool_output)
 
-STRATEGY: Clear sys.modules before each test so we get a fresh import. Mock _get_orchestrator
-in the hooks module namespace BEFORE MemChorusHooks instantiates. No reload() needed —
-fresh modules are guaranteed when sys.modules is clean.
+STRATEGY: Patch _get_orchestrator on the live module without touching sys.modules.
+Deleting modules was breaking class identity for downstream tests (isinstance failures).
 """
 
 from unittest.mock import patch, MagicMock
-import sys
 import pytest
-
-
-def _clear_memchorus_modules():
-    """Remove all cached memchorus modules so next import runs from disk."""
-    for key in list(sys.modules.keys()):
-        if 'memchorus' in key:
-            del sys.modules[key]
 
 
 def _hermes_pre_llm_kwargs(user_message="test message"):
@@ -59,11 +50,9 @@ class TestPreLlmCallKwargContract:
 
     def test_old_kwargs_return_none(self):
         """OLD keys (input_text / messages) should NOT be accepted — return None immediately."""
-        _clear_memchorus_modules()
         mock_orch = MagicMock()
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
             import memchorus.hooks
-            memchorus.hooks._format_context_block = lambda items: "mocked"
             hook = memchorus.hooks.MemChorusHooks()
 
         old_kwargs = {
@@ -76,14 +65,12 @@ class TestPreLlmCallKwargContract:
 
     def test_hermes_user_message_reaches_search(self):
         """Hermes sends user_message= — hook should reach orchestrator.search()."""
-        _clear_memchorus_modules()
         mock_orch = MagicMock()
         mock_orch.search.return_value = [
             {"key": "test", "content": "recovered context", "wing": "test"},
         ]
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
             import memchorus.hooks
-            memchorus.hooks._format_context_block = lambda items: "mocked context"
             hook = memchorus.hooks.MemChorusHooks()
 
             pre_kwargs = _hermes_pre_llm_kwargs("fix the bug")
@@ -98,7 +85,6 @@ class TestPostToolCallKwargContract:
 
     def test_old_tool_output_key_rejected(self):
         """OLD 'tool_output' key should NOT be accepted."""
-        _clear_memchorus_modules()
         mock_orch = MagicMock()
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
             import memchorus.hooks
@@ -115,7 +101,6 @@ class TestPostToolCallKwargContract:
 
     def test_hermes_result_key_reaches_downstream(self):
         """Hermes sends result= — hook must reach past kwarg gate into downstream code."""
-        _clear_memchorus_modules()
         mock_orch = MagicMock()
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
             import memchorus.hooks
@@ -136,7 +121,6 @@ class TestKwargContractIntegration:
     """Full flow: pre recall + post save both work with Hermes kwargs."""
 
     def test_both_hooks_work_with_hermes_kwargs(self):
-        _clear_memchorus_modules()
         mock_orch = MagicMock()
         mock_orch.search.return_value = [
             {"key": "convention", "content": "use pytest", "wing": "test"},
@@ -161,7 +145,6 @@ class TestFormatRobustness:
 
     def test_dict_content_survives_formatting(self):
         """feedback_loop integration can return nested dicts as content — formatter must not crash."""
-        _clear_memchorus_modules()
         import memchorus.hooks
 
         # Real orchestrator.search() sometimes returns dict-with-nested-content from feedback loop
