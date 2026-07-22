@@ -15,6 +15,7 @@ Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 
 import hashlib
 import importlib  # for dynamic entry_point discovery
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -197,7 +198,14 @@ class MemChorusHooks:
             if not tool_output:
                 return None
 
-            output_str = str(tool_output)
+            # Convert structured outputs to readable text.
+            # dict/list results should become JSON (not Python repr via str())
+            # so downstream significance detection, entropy checks, and recall
+            # see clean data instead of garbled "{'k': 'v'}" strings.
+            if isinstance(tool_output, (dict, list)):
+                output_str = json.dumps(tool_output)
+            else:
+                output_str = str(tool_output)
 
             # Guard: skip query echo artifacts — recall query templates that
             # leaked through the tool pipeline and would pollute memory storage.
