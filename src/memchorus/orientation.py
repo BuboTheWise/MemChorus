@@ -233,4 +233,7 @@ def _execute_query(
 
 def clear_orientation_cache() -> None:
     """Clear all cached orientation results.  Useful for testing."""
-    _cache.clear()
+    # Import ourselves so we always hit the actual module-level _cache, even
+    # when a previous test has monkeypatched/removed our local reference.
+    import memchorus.orientation as _mod
+    _mod._cache.clear()
