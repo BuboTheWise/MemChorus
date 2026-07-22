@@ -19,46 +19,37 @@ The system must stay functional even if every enhancement source disappears. The
 ## High-Level Architecture
 
 ```
-+------------------------------------------+
-|                 AI Agent                 |
-|          (Hermes / OpenClaw / custom)    |
-+------------------+-----------------------+
-                   |
-       +-----------+------------+
-       | save/retrieve/search   | feedback/escalation
-       v                        v
-+--------------------+  +-------------------------------+
-| MemoryOrchestrator |  | BehavioralEnforcementManager  |
-+--------------------+  +-------------------------------+
-
-         Components inside Orchestrator:                   Behaviours inside Manager:
-         +-----------------+                             +--------------------------+
-         | Relevance       |                             | BehavioralTrigger        |
-         | Scorer / Dedup  |                             +--------------------------+
-         +-----------------+                             | AutoRecallEngine           |
-                                                         +--------------------------+
-         +-----------------+                             | AutoStorageEngine          |
-         | Profile         |                             +--------------------------+
-         | Classifier      |                             | FeedbackLoopDetector      |
-         +-----------------+                             |  / Escalation Engine       |
-                                                         +--------------------------+
-                +--------+----+-------------------------------+---------------+
-                |        |    |                               |               |
-          +-----v----+ +---v------+ +-----------------+     +----v-----------+
-          | Hermes   | | MemPalace| | Custom Sources:  |     | Agent feedback |
-          | Default  | | (MCP)    | | vector DB / note  |     | loop endpoint  |
-          +----------+ +----------+ +-----------------+     +-----------------+
-```
-
-```
-Memory sources:
-+--------------+   +--------------+   +--------------+
-| Hermes       |   | MemPalace    |   | Custom       |
-| Default      |   | (MCP)        |   | Sources      |
-| JSON / YAML  |   | Structured   |   | vector DB    |
-| Resilient    |   | knowledge gr.|   | note stores  |
-| fallback     |   | semantic s.  |   | remote APIs  |
-+--------------+   +--------------+   +--------------+
+┌─────────────────────────────────────────────────────────────────┐
+│                          AI Agent                               │
+│                    (Hermes / OpenClaw / custom)                 │
+└──────────────▲──────────────────────▲──────────────────────────┘
+               │ save/retrieve/search  │ feedback/escalation
+    ┌──────────┴──────────┐   ┌─────────┴──────────────────────┐
+    │                     │   │                                │
+    │  MemoryOrchestrator │   │  BehavioralEnforcementManager  │
+    │                     │   │                                │
+    │  ┌───────────────┐  │   │  ┌─────────────────────────┐  │
+    │  │ Relevance     │  │   │  │   BehavioralTrigger     │  │
+    │  │ Scorer +      │  │   │  ├─────────────────────────┤  │
+    │  │ Dedup Engine  │  │   │  │   AutoRecallEngine      │  │
+    │  └───────────────┘  │   │  ├─────────────────────────┤  │
+    │                     │   │  │   AutoStorageEngine     │  │
+    │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
+    │  │ Profile       │  │   │  │   FeedbackLoopDetector  │  │
+    │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
+    │  └───────────────┘  │   │  └─────────────────────────┘  │
+    └────┬──────────┬─────────────┬─────┘   └───────────────────────────────┘
+         │          │             │
+    ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
+    │  Hermes  │  │   MemPalace  │  │   Custom Sources│
+    │  Default │  │   (MCP)      │  │   (MemorySource │
+    │  Memory  │  │              │  │     subclasses) │
+    │ (JSON/   │  │ Structured   │  │                 │
+    │  YAML)   │  │ knowledge    │  │ e.g.: vector DB,│
+    │          │  │ graph +      │  │  note stores,   │
+    │ Resilient│  │ semantic     │  │  remote APIs…   │
+    │  core    │  │ search       │  │                 │
+    └──────────┘  └──────────────┘  └─────────────────┘
 ```
 
 ### Component Summary
@@ -436,12 +427,12 @@ RUN_LIVE_MCP=1 pytest -v
 
 The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery.
 
-### Multi-Pass Decision Intelligence Benchmark (Archived)
+### Multi-Pass Decision Intelligence Benchmark
 
-The multi-pass benchmark was archived to `archive/legacy-tests/benchmark_multipass.py` (moved 2026-07-22). It is no longer part of the active CI pipeline. To run it manually:
+Beyond unit tests there is a physical proof benchmark that validates real memory accumulation across separate Python processes:
 
 ```bash
-python3 archive/legacy-tests/benchmark_multipass.py --report ~/memchorus_report.json
+python3 tests/benchmark_multipass.py --report ~/\memchorus_report.json
 ```
 
 Methodology runs five passes through isolated subprocesses (`PYTHONPATH=""` forces fresh interpreters): cold start baseline knowledge seeding recall measurement and cross-process persistence validation. Produces SHA-256 file hashes and a timestamped machine-readable JSON report proving disk writes survived interpreter death. Full methodology lives in `docs/BENCHMARKS.md`.
@@ -482,36 +473,35 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.08 (current — on `master`)
+### v1.5.06 (current — on `master`)
 
 **Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
 
-```
+\`\`\`
   +------------------+----------------------------+-------------------+---------------------------+
   | Category         | Wing                       | Room              | Example Content           |
   +------------------+----------------------------+-------------------+---------------------------+
   | DECISION         | memchorus_decisions        | decisions         | Architecture, transport   |
   | LEARNING         | memchorus_learning         | lessons-learned   | Shell escape, stderr      |
-  |                  |                            | corrections       | proactive_save fix        |
+  \|                  |                            | corrections       | proactive_save fix        |
   +------------------+----------------------------+-------------------+---------------------------+
   | OUTCOMES         | memchorus_general          | outcomes          | Test suite results        |
   +------------------+----------------------------+-------------------+---------------------------+
-  | (uncategorized)  | memchorus_general          | general           | Untagged content          |
-  |                  | (default)                  |                   |                           |
+  | (uncategorized)  | memchorus_general (default)| general           | Untagged content          |
   +------------------+----------------------------+-------------------+---------------------------+
-```
+\`\`\`
 
-Usage requires `category` metadata injection at write time:
+Usage requires \`category\` metadata injection at write time:
 
-```python
+\`\`\`python
 orchestrate.save(
     key="architecture_decision_x",
     value="We chose MemPalace routing over flat storage...",
     metadata={"category": "DECISION"}     # drives wing + room selection
 )
-```
+\`\`\`
 
-Other v1.5.x features:
+Other v1.5.0 features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
