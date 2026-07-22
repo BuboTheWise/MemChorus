@@ -327,21 +327,16 @@ class TestClearOrientationCache(unittest.TestCase):
     """clear_orientation_cache — global cache purge."""
 
     def test_clearing_removes_all_entries(self):
-        import sys as _sys
+        import memchorus.orientation as _ori_mod
         key = _CacheKey(project="A", query_types=("kg",))
-        # Use sys.modules to get the authoritative module instance — avoids
-        # stale-local-reference under xdist when memchorus.orientation is loaded
-        # into multiple namespace copies.
-        orientation_mod = _sys.modules["memchorus.orientation"]
-        _cache_ref = orientation_mod._cache
-
-        # Put something directly in the global cache
-        _cache_ref.put(key, [{"key": "demo"}], ttl_seconds=60.0)
-        self.assertIsNotNone(_cache_ref.get(key))
+        # Put something directly in the global cache (via the real module ref)
+        _ori_mod._cache.put(key, [{"key": "demo"}], ttl_seconds=60.0)
+        self.assertIsNotNone(_ori_mod._cache.get(key))
 
         clear_orientation_cache()
 
-        self.assertIsNone(_cache_ref.get(key))
+        # Verify via len() on _cache._cache dict — immune to stale-ref issues
+        self.assertEqual(len(_ori_mod._cache._cache), 0)
 
 
 if __name__ == "__main__":
