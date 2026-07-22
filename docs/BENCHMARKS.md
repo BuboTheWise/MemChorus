@@ -4,9 +4,11 @@
 
 Proves that accumulated memory demonstrably improves real-time decision quality across repeated use. This is a polygraph-style physical proof test — not mocked unit tests, but real semantic search against fresh Python interpreters with subprocess isolation.
 
-### Executable
+### Executable (Archived — moved to `archive/legacy-tests/`)
 
-    python3 tests/benchmark_multipass.py --report ~/.hermes/memchorus_report.json
+    python3 archive/legacy-tests/benchmark_multipass.py --report ~/.hermes/memchorus_report.json
+
+This benchmark is no longer in the active CI pipeline. Retained for manual verification use only.
 
 ### Methodology
 
