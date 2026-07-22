@@ -176,6 +176,19 @@ def _bootstrap() -> Optional[Any]:
     if env_loops is not None:
         config["custom_loops_dir"] = os.path.expanduser(env_loops)
 
+    # Adapter-specific config from MEMCHORUS_CONFIG env var (highest priority).
+    # This lets tests and external callers override hermes_default_config,
+    # mempalace_config, etc. without needing to hit YAML.
+    import json
+    env_json = os.environ.get("MEMCHORUS_CONFIG")
+    if env_json:
+        try:
+            env_cfg = json.loads(env_json)
+            if isinstance(env_cfg, dict):
+                config.update(env_cfg)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Invalid JSON in MEMCHORUS_CONFIG; ignoring it")
+
     # --- Step 2: Enabled gate ---
     enabled = config.pop("auto_enabled")
     if not enabled:
@@ -241,6 +254,11 @@ def _bootstrap() -> Optional[Any]:
     routing_override = yaml_cfg.get("mempalace_routing")
     if isinstance(routing_override, dict):
         orchestrator_cfg["mempalace_config"]["mempalace_routing"] = routing_override
+
+    # Forward any remaining adapter-specific config through to the orchestrator
+    # so keys like 'hermes_default_config' propagate from MEMCHORUS_CONFIG env var
+    # or YAML. This is essential for test isolation and runtime overrides.
+    orchestrator_cfg.update(config)
 
     # --- Step 5: Orchestrator creation & return ---
     try:
