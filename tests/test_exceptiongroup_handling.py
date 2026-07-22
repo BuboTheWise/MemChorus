@@ -129,12 +129,15 @@ class TestMemorySourceGracedegradation:
 
     def test_delete_does_not_crash_on_exceptiongroup(self):
         from memchorus.mempalace_memory_source import MemPalaceMemorySource
+        import tempfile
 
-        src = MemPalaceMemorySource(config={"cache_dir": "/tmp"})
-        with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
-                "tg", [RuntimeError("server died")]
-        )):
-            # Should return False without crashing
-            result = src.delete("test_key")
+        # Use an isolated temp dir so stale cache files from other tests don't leak in
+        with tempfile.TemporaryDirectory() as tmp:
+            src = MemPalaceMemorySource(config={"cache_dir": tmp})
+            with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
+                    "tg", [RuntimeError("server died")]
+            )):
+                # Should return False without crashing (no MCP, no local cache file to remove)
+                result = src.delete("test_key")
 
-        assert result is False, "delete should return False when ExceptionGroup occurs"
+            assert result is False, "delete should return False when ExceptionGroup occurs"

@@ -26,9 +26,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+# Import the module object itself so we can patch it by reference (not string).
+# This avoids namespace divergence under pytest-xdist where a string path may
+# resolve to a different copy of the module than what _McpClient._call already
+# uses for LOAD_GLOBAL lookups.
 from memchorus.mempalace_memory_source import (
     MemPalaceMemorySource, _McpClient, _run_async, _call_tool_async
 )
+import memchorus.mempalace_memory_source as mps_module  # noqa: E402
 
 
 def _make_fake_python(tmp_path):
@@ -61,7 +66,7 @@ class TestBaseExceptionGroupCrashFix:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=_raise_base_eg()):
+            with patch.object(mps_module, '_run_async', side_effect=_raise_base_eg()):
                 result = client._call("mempalace_search", {"query": "test"})
 
         assert result is None, f"_call must return None on BaseExceptionGroup, got {result}"
@@ -73,7 +78,7 @@ class TestBaseExceptionGroupCrashFix:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=_raise_base_eg()):
+            with patch.object(mps_module, '_run_async', side_effect=_raise_base_eg()):
                 result = client.connect()
 
         assert result is False, f"_connect must return False, got {result}"
@@ -98,7 +103,7 @@ class TestBaseExceptionGroupCrashFix:
             "skip_mcp": False  # try to connect — expect failure
         }
 
-        with patch('memchorus.mempalace_memory_source._run_async', side_effect=_raise_base_eg()):
+        with patch.object(mps_module, '_run_async', side_effect=_raise_base_eg()):
             src = MemPalaceMemorySource(name="test-fallback", config=config)
             assert src.is_available() is True, "Should still be available via local fallback"
 
@@ -113,7 +118,7 @@ class TestBaseExceptionGroupCrashFix:
             "skip_mcp": False
         }
 
-        with patch('memchorus.mempalace_memory_source._run_async', side_effect=_raise_base_eg()):
+        with patch.object(mps_module, '_run_async', side_effect=_raise_base_eg()):
             src = MemPalaceMemorySource(name="test-fallback", config=config)
 
             # Save succeeds via local cache fallback
@@ -133,7 +138,7 @@ class TestExceptionGroupStillHandled:
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
             def raise_eg(*args, **kwargs):
                 raise ExceptionGroup("mcp task error", [ValueError("inner")])
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=raise_eg):
+            with patch.object(mps_module, '_run_async', side_effect=raise_eg):
                 result = client._call("mempalace_search", {"query": "test"})
 
         assert result is None, "_call must degrade on ExceptionGroup too"
@@ -145,7 +150,7 @@ class TestExceptionGroupStillHandled:
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
             def raise_eg(*args, **kwargs):
                 raise ExceptionGroup("init", [ConnectionError()])
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=raise_eg):
+            with patch.object(mps_module, '_run_async', side_effect=raise_eg):
                 result = client.connect()
 
         assert result is False
@@ -159,7 +164,7 @@ class TestAllOriginalExceptionPaths:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=BrokenPipeError()):
+            with patch.object(mps_module, '_run_async', side_effect=BrokenPipeError()):
                 assert client._call("x", {}) is None
 
     def test_call_oserror(self, tmp_path):
@@ -167,7 +172,7 @@ class TestAllOriginalExceptionPaths:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=OSError("enoent")):
+            with patch.object(mps_module, '_run_async', side_effect=OSError("enoent")):
                 assert client._call("x", {}) is None
 
     def test_call_timeout(self, tmp_path):
@@ -176,7 +181,7 @@ class TestAllOriginalExceptionPaths:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=aio.TimeoutError()):
+            with patch.object(mps_module, '_run_async', side_effect=aio.TimeoutError()):
                 assert client._call("x", {}) is None
 
     def test_call_generic_exception(self, tmp_path):
@@ -184,7 +189,7 @@ class TestAllOriginalExceptionPaths:
         client = _McpClient(timeout=1.0, config={"python_bin": str(fake_py)})
 
         with patch.object(client, '_get_transport', return_value=(str(fake_py), [])):
-            with patch('memchorus.mempalace_memory_source._run_async', side_effect=RuntimeError()):
+            with patch.object(mps_module, '_run_async', side_effect=RuntimeError()):
                 assert client._call("x", {}) is None
 
 
