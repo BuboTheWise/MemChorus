@@ -38,18 +38,18 @@ The system must stay functional even if every enhancement source disappears. The
     │  │ Profile       │  │   │  │   FeedbackLoopDetector  │  │
     │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
     │  └───────────────┘  │   │  └─────────────────────────┘  │
-    └────┬──────────┬─────┘   └───────────────────────────────┘
-         │          │
-    ┌────▼─────┐  ┌──▼───────────┐  ┌───────────────────┐
-    │  Hermes  │  │   MemPalace  │  │   Custom Sources   │
-    │  Default │  │   (MCP)      │  │   (MemorySource    │
-    │  Memory  │  │              │  │     subclasses)    │
-    │ (JSON/   │  │ Structured   │  │                   │
-    │  YAML)   │  │ knowledge    │  │ e.g.: vector DBs, │
-    │          │  │ graph +      │  │   note stores,     │
-    │ Resilient│  │ semantic     │  │   remote APIs, ... │
-    │  core    │  │ search       │  │                   │
-    └──────────┘  └──────────────┘  └───────────────────┘
+    └────┬──────────┬─────────────┬─────┘   └───────────────────────────────┘
+         │          │             │
+    ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
+    │  Hermes  │  │   MemPalace  │  │   Custom Sources│
+    │  Default │  │   (MCP)      │  │   (MemorySource │
+    │  Memory  │  │              │  │     subclasses) │
+    │ (JSON/   │  │ Structured   │  │                 │
+    │  YAML)   │  │ knowledge    │  │ e.g.: vector DB,│
+    │          │  │ graph +      │  │  note stores,   │
+    │ Resilient│  │ semantic     │  │  remote APIs…   │
+    │  core    │  │ search       │  │                 │
+    └──────────┘  └──────────────┘  └─────────────────┘
 ```
 
 ### Component Summary
