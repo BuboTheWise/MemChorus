@@ -142,6 +142,11 @@ class MemoryOrchestrator:
         # GAP008: configurable source priority for retrieval
         self._priority_order: List[str] = list(self.config.get('priority_order', []))
 
+        # GAP013: per-source priority for save routing.  Higher value = tried first.
+        # Built-in sources default to 0; dynamically registered sources get 10+ so
+        # they actually compete rather than losing to the built-in fallback order.
+        self._source_priority: Dict[str, int] = {}
+
         # Lifecycle management (§6.2 / Phase 1 — opt-in)
         self._lifecycle_manager: Optional['LifecycleManager'] = None
         self._initialize_lifecycle()
@@ -219,6 +224,7 @@ class MemoryOrchestrator:
         )
         self.memory_sources['hermes_default'] = hermes_source
         self._source_enabled['hermes_default'] = True
+        self._source_priority['hermes_default'] = 0
 
         # Add MemPalace as the primary voice — tolerate failure so that
         # MCP unavailability does not destroy the orchestrator.
@@ -229,18 +235,31 @@ class MemoryOrchestrator:
             )
             self.memory_sources['mempalace'] = mempalace_source
             self._source_enabled['mempalace'] = True
+            self._source_priority['mempalace'] = 0
         except Exception as exc:
             logger.warning(
                 "MemPalace source unavailable during orchestrator init — "
                 "continuing with hermes_default only. Error: %s", exc,
             )
     
-    def register_source(self, source: MemorySource) -> bool:
+    def register_source(self, source: MemorySource, priority: int = 10) -> bool:
         """
         Register a new memory source with the orchestrator.
-        
+
+        The ``priority`` parameter controls save routing order when no explicit
+        ``source_name`` or profile hint targets this source directly. Higher
+        priority means the source is tried FIRST in the save loop, giving it
+        a chance to actually intercept writes rather than losing to the
+        built-in hermes_default/mempalace fallback.
+
+        Default priority of 10 puts dynamically registered sources ahead of
+        built-ins (priority 0), so that ``orchestrator.save("k", "v")`` will
+        consider the custom source before the generic fallback wins.
+
         Args:
             source (MemorySource): The memory source to register
+            priority (int): Save routing priority — higher = tried first.
+                           Built-ins ship at 0, so custom sources default to 10.
             
         Returns:
             bool: True if successfully registered, False otherwise
@@ -250,6 +269,8 @@ class MemoryOrchestrator:
             # GAP010: newly registered sources are enabled by default — without this
             # they crash on every save/retrieve/search with KeyError in _source_enabled.
             self._source_enabled.setdefault(source.name, True)
+            # GAP013: assign priority so dynamic sources compete in target ordering
+            self._source_priority[source.name] = priority
             return True
         except Exception:
             return False
@@ -268,6 +289,8 @@ class MemoryOrchestrator:
             if source_name in self.memory_sources:
                 del self.memory_sources[source_name]
                 self._source_enabled.pop(source_name, None)
+                # GAP013: clean up priority entry too
+                self._source_priority.pop(source_name, None)
                 return True
             return False
         except Exception:
@@ -313,7 +336,22 @@ class MemoryOrchestrator:
         # If the source exists but was never added to the toggle dict (e.g. injected
         # mocks or old code paths), treat it as implicitly enabled.
         return True
-    
+
+    # ---------------------------------------------------------------------------
+    # GAP013: Priority accessors for save routing
+    # ---------------------------------------------------------------------------
+
+    def get_source_priority(self, source_name: str) -> int:
+        """Return the save-routing priority for a source (higher = tried first)."""
+        return self._source_priority.get(source_name, 0)
+
+    def set_source_priority(self, source_name: str, priority: int) -> bool:
+        """Change the save-routing priority of an existing source."""
+        if source_name in self.memory_sources:
+            self._source_priority[source_name] = priority
+            return True
+        return False
+
     def _infer_profile(self, value: Any) -> MemoryProfile:
         """
         Infer the memory profile from the content's characteristics when AUTO.
@@ -540,8 +578,20 @@ class MemoryOrchestrator:
         else:
             effective_profile = self._infer_profile(value)
         
-        # --- get ranked target sources for this profile -----------------\
+        # --- get ranked target sources for this profile ----------
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
+
+        # GAP013: build the final target list using source priority so that
+        # dynamically registered sources (priority 10+) actually compete with
+        # built-ins (priority 0).  When priorities are equal, preferred profile
+        # hints come first as a tiebreaker.
+        all_names = list(self.memory_sources.keys())
+        ordered_union = list(dict.fromkeys(preferred_targets + all_names))
+        final_targets = sorted(
+            ordered_union,
+            key=lambda n: self._source_priority.get(n, 0),
+            reverse=True,  # higher priority first; stable sort preserves hint order on ties
+        )
 
         # ---- merge engine pre-save check (before any source write) -----
         if self._merge_engine is not None:
@@ -552,18 +602,20 @@ class MemoryOrchestrator:
                 value = merge_result.final_value
 
         # ---- preferred targets first (skip disabled) -----------
-        for t in preferred_targets:
+        for t in final_targets:
             src = self.memory_sources.get(t)
             if src and src.is_available() and self.is_source_enabled(t):
                 saved = self._try_save_to(src, key, value)
-                break
+                if saved:
+                    break
 
         # ---- safety net: try ANY available non-disabled source --------
         if not saved:
             for n, src in self.memory_sources.items():
                 if src and src.is_available() and self.is_source_enabled(n):
                     saved = self._try_save_to(src, key, value)
-                    break
+                    if saved:
+                        break
 
         # GAP008: invalidate cache entry on successful write --------------
         if saved and key in self._retrieve_cache:
