@@ -38,6 +38,33 @@ from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
 logger = logging.getLogger(__name__)
 
 
+def _check_source_available(source: Any) -> bool:
+    """Check source availability safely, handling both method and property forms.
+
+    The ABC contract in memory_source.py defines is_available as an abstract
+    *method*, but some implementations (e.g. BehavioralEnforcementManager)
+    implement it as a @property, and custom subclasses may use either form.
+    This helper resolves the mismatch transparently:
+
+      - If callable (method), call it to get the boolean result.
+      - If not callable (property/data field), read the value directly.
+      - Return False if source is None or is_available attribute is missing.
+      - Return False on exception (fail-closed) so broken availability checks
+        don't silently allow writes to unavailable sources (GAP014).
+    """
+    if source is None:
+        return False
+    attr = getattr(source, "is_available", None)
+    if attr is None:
+        return False
+    try:
+        if callable(attr):
+            return bool(attr())
+        return bool(attr)
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # 1. Enum: memory_profile (explicit or inferred)
 # ---------------------------------------------------------------------------
@@ -415,7 +442,7 @@ class MemoryOrchestrator:
         """
         duplicates = []
         for name, source in self.memory_sources.items():
-            if not source.is_available() or not self.is_source_enabled(name):
+            if not _check_source_available(source) or not self.is_source_enabled(name):
                 continue
             try:
                 result = source.retrieve(key)
@@ -604,7 +631,7 @@ class MemoryOrchestrator:
         # ---- preferred targets first (skip disabled) -----------
         for t in final_targets:
             src = self.memory_sources.get(t)
-            if src and src.is_available() and self.is_source_enabled(t):
+            if _check_source_available(src) and self.is_source_enabled(t):
                 saved = self._try_save_to(src, key, value)
                 if saved:
                     break
@@ -612,7 +639,7 @@ class MemoryOrchestrator:
         # ---- safety net: try ANY available non-disabled source --------
         if not saved:
             for n, src in self.memory_sources.items():
-                if src and src.is_available() and self.is_source_enabled(n):
+                if _check_source_available(src) and self.is_source_enabled(n):
                     saved = self._try_save_to(src, key, value)
                     if saved:
                         break
@@ -705,7 +732,7 @@ class MemoryOrchestrator:
 
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
-            if source and source.is_available() and self.is_source_enabled(src_name):
+            if _check_source_available(source) and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
                 if result is not None:
                     self._retrieve_cache[key] = (result, time.monotonic())
@@ -776,7 +803,7 @@ class MemoryOrchestrator:
         all_results = []
         remaining_fetch_budget = limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
-            if not source.is_available() or not self.is_source_enabled(source_name):
+            if not _check_source_available(source) or not self.is_source_enabled(source_name):
                 continue
             try:
                 results = source.search(query, limit)
@@ -1010,7 +1037,7 @@ class MemoryOrchestrator:
             bool: True if at least one source is available, False otherwise
         """
         for source in self.memory_sources.values():
-            if source.is_available():
+            if _check_source_available(source):
                 return True
         return False
     
@@ -1026,7 +1053,7 @@ class MemoryOrchestrator:
                 'name': 'memchorus_orchestrator',
                 'version': __import__('memchorus').__version__,
                 'default_source': self._default_source_name,
-                'available_sources': len([s for s in self.memory_sources.values() if s.is_available()]),
+                'available_sources': len([s for s in self.memory_sources.values() if _check_source_available(s)]),
                 'total_sources': len(self.memory_sources)
             },
             'sources': {}
@@ -1063,12 +1090,8 @@ class MemoryOrchestrator:
             if not self.is_source_enabled(name):
                 continue
 
-            # availability guard
-            try:
-                available = src.is_available()
-            except TypeError:
-                # is_available may be unbound if it's a dataclass method stub
-                available = True
+            # availability guard (GAP014)
+            available = _check_source_available(src)
             if not available:
                 continue
 

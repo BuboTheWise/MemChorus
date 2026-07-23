@@ -72,12 +72,18 @@ class MemorySource(ABC):
             List[Dict[str, Any]]: List of matching memories with metadata
         """
         pass
-    
+
+    @property
     @abstractmethod
     def is_available(self) -> bool:
         """
         Check if this memory source is available and functioning.
-        
+
+        IMPLEMENTATION NOTE: Defined as `@property` in the ABC contract so
+        subclasses MUST implement it as a read-only boolean attribute.
+        This avoids `.is_available()` callable errors when orchestrator.py
+        accesses it (GAP014 – `'bool' object is not callable` crash).
+
         Returns:
             bool: True if the source is available, False otherwise
         """
