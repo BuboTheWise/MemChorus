@@ -16,6 +16,7 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
+import threading
 import hashlib
 import json
 import logging
@@ -33,24 +34,20 @@ from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
-from memchorus.recursion_guard import RecursionGuard
 
 logger = logging.getLogger(__name__)
 
 
-def _check_source_available(source: Any) -> bool:
+def _check_source_available(source) -> bool:
     """Check source availability safely, handling both method and property forms.
 
-    The ABC contract in memory_source.py defines is_available as an abstract
-    *method*, but some implementations (e.g. BehavioralEnforcementManager)
-    implement it as a @property, and custom subclasses may use either form.
-    This helper resolves the mismatch transparently:
-
+    The ABC contract in memory_source.py defines is_available as an abstract *method*,
+    but enforcement_manager.py implements it as a @property, and custom subclasses
+    may use either form. This helper resolves the mismatch transparently:
       - If callable (method), call it to get the boolean result.
-      - If not callable (property/data field), read the value directly.
+      - If not callable (property/data), read the value directly.
       - Return False if source is None or is_available attribute is missing.
-      - Return False on exception (fail-closed) so broken availability checks
-        don't silently allow writes to unavailable sources (GAP014).
+      - Return True on exception so a broken availability check doesn't kill operations.
     """
     if source is None:
         return False
@@ -62,7 +59,7 @@ def _check_source_available(source: Any) -> bool:
             return bool(attr())
         return bool(attr)
     except Exception:
-        return False
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +144,16 @@ class MemoryOrchestrator:
         self._enforce_on_read = bool(self.config.get('enforce_on_read', True))
         self._enforce_on_write = bool(self.config.get('enforce_on_write', True))
         self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
-        # Gap027/Gap059: RecursionGuard replaces per-method booleans + RLock that only
-        # blocked at depth==1 and broke when different call paths (save vs retrieve)
-        # shared the same boolean flag.  Uses a depth counter so nested calls
-        # at depth < max_depth still trigger, preventing legitimate multi-layer
-        # recall chains from being silently skipped.
-        self._guard: RecursionGuard = RecursionGuard(
-            max_depth=int(self.config.get('enforcement_max_depth', 5))
-        )
+        # Guard against recursive enforcement when capture_outcome calls back into save()
+        self._in_enforcement_save = False
+        # Read-side recursion guard (MC-001 / t_7d26af26): prevents orchestrator.search()
+        # and orchestrator.retrieve() from recursively triggering enforcement when the recall
+        # engine's nested search/recall fires an inner enforce().  Without this flag, pre-decision
+        # recall -> AutoRecallEngine._do_search() -> orchestrator.search() -> enforce() recurses
+        # indefinitely until RecursionError.
+        self._in_enforcement_recall = False
+        # Thread-safe access to the recursion guards (MC-003)
+        self._enforcement_lock = threading.RLock()
 
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
@@ -166,11 +165,6 @@ class MemoryOrchestrator:
 
         # GAP008: configurable source priority for retrieval
         self._priority_order: List[str] = list(self.config.get('priority_order', []))
-
-        # GAP013: per-source priority for save routing.  Higher value = tried first.
-        # Built-in sources default to 0; dynamically registered sources get 10+ so
-        # they actually compete rather than losing to the built-in fallback order.
-        self._source_priority: Dict[str, int] = {}
 
         # Lifecycle management (§6.2 / Phase 1 — opt-in)
         self._lifecycle_manager: Optional['LifecycleManager'] = None
@@ -225,16 +219,6 @@ class MemoryOrchestrator:
 
         if self._lifecycle_manager.is_enabled:
             logger.info("MemoryOrchestrator: lifecycle management enabled")
-            try:
-                from memchorus.lifecycle_manager import SweepScheduler
-                scheduler = SweepScheduler(manager=self._lifecycle_manager)
-                self._lifecycle_manager._scheduler = scheduler  # type: ignore[attr-defined]
-                scheduler.start()
-                logger.info("MemoryOrchestrator: SweepScheduler started (interval=%ds)", scheduler._interval_secs)
-            except Exception as exc:
-                logger.warning(
-                    "SweepScheduler start failed — lifecycle enabled but sweeps disabled: %s", exc
-                )
         else:
             logger.debug(
                 "MemoryOrchestrator: lifecycle disabled (lifecycle_config.enabled=False or not set)"
@@ -259,7 +243,6 @@ class MemoryOrchestrator:
         )
         self.memory_sources['hermes_default'] = hermes_source
         self._source_enabled['hermes_default'] = True
-        self._source_priority['hermes_default'] = 0
 
         # Add MemPalace as the primary voice — tolerate failure so that
         # MCP unavailability does not destroy the orchestrator.
@@ -270,31 +253,18 @@ class MemoryOrchestrator:
             )
             self.memory_sources['mempalace'] = mempalace_source
             self._source_enabled['mempalace'] = True
-            self._source_priority['mempalace'] = 0
         except Exception as exc:
             logger.warning(
                 "MemPalace source unavailable during orchestrator init — "
                 "continuing with hermes_default only. Error: %s", exc,
             )
     
-    def register_source(self, source: MemorySource, priority: int = 10) -> bool:
+    def register_source(self, source: MemorySource) -> bool:
         """
         Register a new memory source with the orchestrator.
-
-        The ``priority`` parameter controls save routing order when no explicit
-        ``source_name`` or profile hint targets this source directly. Higher
-        priority means the source is tried FIRST in the save loop, giving it
-        a chance to actually intercept writes rather than losing to the
-        built-in hermes_default/mempalace fallback.
-
-        Default priority of 10 puts dynamically registered sources ahead of
-        built-ins (priority 0), so that ``orchestrator.save("k", "v")`` will
-        consider the custom source before the generic fallback wins.
-
+        
         Args:
             source (MemorySource): The memory source to register
-            priority (int): Save routing priority — higher = tried first.
-                           Built-ins ship at 0, so custom sources default to 10.
             
         Returns:
             bool: True if successfully registered, False otherwise
@@ -304,8 +274,6 @@ class MemoryOrchestrator:
             # GAP010: newly registered sources are enabled by default — without this
             # they crash on every save/retrieve/search with KeyError in _source_enabled.
             self._source_enabled.setdefault(source.name, True)
-            # GAP013: assign priority so dynamic sources compete in target ordering
-            self._source_priority[source.name] = priority
             return True
         except Exception:
             return False
@@ -324,8 +292,6 @@ class MemoryOrchestrator:
             if source_name in self.memory_sources:
                 del self.memory_sources[source_name]
                 self._source_enabled.pop(source_name, None)
-                # GAP013: clean up priority entry too
-                self._source_priority.pop(source_name, None)
                 return True
             return False
         except Exception:
@@ -371,22 +337,7 @@ class MemoryOrchestrator:
         # If the source exists but was never added to the toggle dict (e.g. injected
         # mocks or old code paths), treat it as implicitly enabled.
         return True
-
-    # ---------------------------------------------------------------------------
-    # GAP013: Priority accessors for save routing
-    # ---------------------------------------------------------------------------
-
-    def get_source_priority(self, source_name: str) -> int:
-        """Return the save-routing priority for a source (higher = tried first)."""
-        return self._source_priority.get(source_name, 0)
-
-    def set_source_priority(self, source_name: str, priority: int) -> bool:
-        """Change the save-routing priority of an existing source."""
-        if source_name in self.memory_sources:
-            self._source_priority[source_name] = priority
-            return True
-        return False
-
+    
     def _infer_profile(self, value: Any) -> MemoryProfile:
         """
         Infer the memory profile from the content's characteristics when AUTO.
@@ -613,20 +564,8 @@ class MemoryOrchestrator:
         else:
             effective_profile = self._infer_profile(value)
         
-        # --- get ranked target sources for this profile ----------
+        # --- get ranked target sources for this profile -----------------\
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
-
-        # GAP013: build the final target list using source priority so that
-        # dynamically registered sources (priority 10+) actually compete with
-        # built-ins (priority 0).  When priorities are equal, preferred profile
-        # hints come first as a tiebreaker.
-        all_names = list(self.memory_sources.keys())
-        ordered_union = list(dict.fromkeys(preferred_targets + all_names))
-        final_targets = sorted(
-            ordered_union,
-            key=lambda n: self._source_priority.get(n, 0),
-            reverse=True,  # higher priority first; stable sort preserves hint order on ties
-        )
 
         # ---- merge engine pre-save check (before any source write) -----
         if self._merge_engine is not None:
@@ -637,38 +576,40 @@ class MemoryOrchestrator:
                 value = merge_result.final_value
 
         # ---- preferred targets first (skip disabled) -----------
-        for t in final_targets:
+        for t in preferred_targets:
             src = self.memory_sources.get(t)
             if _check_source_available(src) and self.is_source_enabled(t):
                 saved = self._try_save_to(src, key, value)
-                if saved:
-                    break
+                break
 
         # ---- safety net: try ANY available non-disabled source --------
         if not saved:
             for n, src in self.memory_sources.items():
-                if _check_source_available(src) and self.is_source_enabled(n):
+                if src and getattr(src, 'is_available', True) and self.is_source_enabled(n):
                     saved = self._try_save_to(src, key, value)
-                    if saved:
-                        break
+                    break
 
         # GAP008: invalidate cache entry on successful write --------------
         if saved and key in self._retrieve_cache:
             del self._retrieve_cache[key]
 
         # --- Post-action storage capture (behavioral enforcement hook) ---
-        # GAP027: RecursionGuard replaces _in_enforcement_save + RLock
+        # Guard against recursive enforcement when capture_outcome calls back into save()
         if saved and self._enforce_on_write:
-            with self._guard as depth:
-                em = self._get_enforcement_manager()
-                if em is not None:
-                    try:
-                        outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
-                        _storage_result = em.enforce(outcome_text)
-                        logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
-                                    key, _storage_result.triggered_points, len(_storage_result.errors))
-                    except Exception:
-                        pass  # degrade gracefully — the save itself already succeeded
+            with self._enforcement_lock:
+                if not self._in_enforcement_save:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        self._in_enforcement_save = True
+                        try:
+                            outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                            _storage_result = em.enforce(outcome_text)
+                            logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
+                                        key, _storage_result.triggered_points, len(_storage_result.errors))
+                        except Exception:
+                            pass  # degrade gracefully — the save itself already succeeded
+                        finally:
+                            self._in_enforcement_save = False
         
         return saved
     
@@ -702,13 +643,21 @@ class MemoryOrchestrator:
             else:
                 del self._retrieve_cache[key]  # expired
 
-        # --- GAP044: skip pre-decision recall and em.enforce() on retrieve ---
-        # Exact-key retrieval is not a behavioral decision — it's an exact lookup.
-        # em.enforce(key) as side effect calls capture_outcome(key), which auto-stores
-        # the key string to MemPalace, so subsequent source iteration finds data that
-        # didn't exist before the "read" call — mutating state on a read path.
-        # Additionally, recall context comes from semantic search results unrelated to
-        # the exact key requested, so recall-context shortcuts return fabricated hits.
+        # --- Pre-decision recall (behavioral enforcement hook) ---
+        _recall_context: List[Dict[str, Any]] = []
+        if self._enforce_on_read:
+            with self._enforcement_lock:
+                if not self._in_enforcement_recall:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        try:
+                            self._in_enforcement_recall = True
+                            _recall_result = em.enforce(key)
+                            _recall_context = getattr(_recall_result, 'recall_context', [])
+                        except Exception:
+                            pass  # degrade gracefully
+                        finally:
+                            self._in_enforcement_recall = False
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -718,19 +667,17 @@ class MemoryOrchestrator:
                 list(self.memory_sources.keys()),
             )
 
-        # GAP044: Do NOT short-circuit retrieve based on _recall_context.
-        # Recall context comes from search results (AutoRecallEngine.on_decision_point),
-        # which are general query matches unrelated to exact-key retrieval. Returning
-        # data from recall context without verifying the named source actually stores
-        # that key causes fabricated hits for keys that were never saved.
-        # Furthermore, em.enforce(key) as a side-effect auto-stores *key* via
-        # capture_outcome, so any subsequent source iteration would find the just-
-        # stored data even for truly unknown keys — mutating state on a read path.
-        # Normal source iteration below (lines 734+) correctly checks each source.
+        # If recall fired and found exact-key hit, cache + return it early  ----------
+        if _recall_context:
+            for rec in _recall_context:
+                if rec.get("key") == key:
+                    self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
+                    self._evict_oldest_if_needed()
+                    return rec.get("content", rec)
 
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
-            if _check_source_available(source) and self.is_source_enabled(src_name):
+            if source and getattr(source, 'is_available', True) and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
                 if result is not None:
                     self._retrieve_cache[key] = (result, time.monotonic())
@@ -738,72 +685,7 @@ class MemoryOrchestrator:
                     return result
 
         return None
-
-    def retrieve_with_source(self, key: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a memory entry along with source attribution metadata.
-
-        Wraps the same retrieval logic as :meth:`retrieve` but returns both the
-        content *and* which registered memory source actually held the data.
-        Useful for audit trails and verifying where specific memories live.
-
-        Args:
-            key (str): Unique identifier for the memory entry.
-
-        Returns:
-            Dict with ``key``, ``content`` and ``source_name`` if found, ``None``
-            otherwise.  When a cache hit occurs, the cached source provenance is
-            reused without querying the underlying backend again.
-        """
-        # --- GAP008: check LRU cache first (extended to prove source) --
-        if key in self._retrieve_cache:
-            cached_value, cached_ts = self._retrieve_cache[key]
-            if time.monotonic() - cached_ts < self._cache_ttl:
-                return self._retrieve_with_source_from_cache(key, cached_value)
-
-        # --- GAP044: skip pre-decision recall and em.enforce() on retrieve_with_source ---
-        # Same reasoning as retrieve(): exact-key retrieval is not a behavioral decision,
-        # and enforce() auto-stores the queried key via capture_outcome mid-operation,
-        # mutating unknown keys into known entries before source iteration runs.
-
-        # --- Source iteration ----------------------------------------
-        if self._priority_order:
-            candidate_sources = list(self._priority_order)
-        else:
-            candidate_sources = self._scorer.rank_sources(
-                list(self.memory_sources.keys()),
-            )
-
-        for src_name in candidate_sources:
-            source = self.memory_sources.get(src_name)
-            if _check_source_available(source) and self.is_source_enabled(src_name):
-                result = source.retrieve(key)
-                if result is not None:
-                    hit = {
-                        "key": key,
-                        "content": result,
-                        "source_name": src_name,
-                    }
-                    self._retrieve_cache[key] = (hit, time.monotonic())
-                    self._evict_oldest_if_needed()
-                    return hit
-
-        return None
-
-    def _retrieve_with_source_from_cache(
-        self, key: str, cached_hit: Any
-    ) -> Optional[Dict[str, Any]]:
-        """Reconstruct a provenance dict from a cache value."""
-        # If the cache already stores the full dict (from a prior retrieve_with_source call), return it
-        if isinstance(cached_hit, dict) and "content" in cached_hit:
-            cached_hit["key"] = key
-            return cached_hit
-        # Fallback for plain content from retrieve() — wrap it with source unknown marker
-        return {
-            "key": key,
-            "content": cached_hit,
-            "source_name": "<cached>",
-        }
-
+    
     def clear_cache(self) -> None:
         """Clear the retrieval LRU cache (GAP008)."""
         self._retrieve_cache.clear()
@@ -822,15 +704,7 @@ class MemoryOrchestrator:
             )
             del self._retrieve_cache[oldest_key]
 
-    def search(
-        self,
-        query: str,
-        limit: int = 10,
-        context: Optional[ContextWeight] = None,
-        domain: Optional[str] = None,
-        *,
-        max_results: int | None = None,
-    ) -> List[Dict[str, Any]]:
+    def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query across all sources.
 
@@ -847,40 +721,37 @@ class MemoryOrchestrator:
             context: Optional ContextWeight for custom scoring preferences
             domain: Optional domain hint (e.g. 'memory', 'graph') that influences
                     source-type boosting in the scorer
-            max_results (int, optional): Alias for ``limit`` — provided as a keyword-only
-                                        argument so callers using the documented name also work.
-                                        When both are given, ``max_results`` takes precedence.
 
         Returns:
             List[Dict[str, Any]]: Sorted search results, each including a ``score`` field
         """
-        # max_results alias (GAP021): docs use 'max_results', runtime used 'limit'
-        effective_limit = max_results if max_results is not None else limit
-
         if context is None:
             context = ContextWeight()
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
-        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
         _recall_context: List[Dict[str, Any]] = []
         if self._enforce_on_read:
-            with self._guard as depth:
-                em = self._get_enforcement_manager()
-                if em is not None:
-                    try:
-                        _recall_result = em.enforce(query)
-                        _recall_context = getattr(_recall_result, 'recall_context', [])
-                    except Exception:
-                        pass  # degrade gracefully — base search continues
+            with self._enforcement_lock:
+                if not self._in_enforcement_recall:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        try:
+                            self._in_enforcement_recall = True
+                            _recall_result = em.enforce(query)
+                            _recall_context = getattr(_recall_result, 'recall_context', [])
+                        except Exception:
+                            pass  # degrade gracefully — base search continues
+                        finally:
+                            self._in_enforcement_recall = False
 
         # Inject domain-level weightings before scoring
         all_results = []
-        remaining_fetch_budget = effective_limit  # cap on raw results collected from sources
+        remaining_fetch_budget = limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
-            if not _check_source_available(source) or not self.is_source_enabled(source_name):
+            if not source or not getattr(source, 'is_available', True) or not self.is_source_enabled(source_name):
                 continue
             try:
-                results = source.search(query, effective_limit)
+                results = source.search(query, limit)
                 if not results:
                     continue
                 
@@ -1024,7 +895,7 @@ class MemoryOrchestrator:
                 "preview": MemoryOrchestrator._synthesize_preview(r.content),
                 **r.meta,
             }
-            for r in ranked[:effective_limit]
+            for r in ranked[:limit]
         ]
 
         if dupes_removed:
@@ -1103,152 +974,15 @@ class MemoryOrchestrator:
             t = str(content)[:200] + "..." if content and len(str(content)) > 200 else (str(content) if content else "")
             return t
 
-    # ---------------------------------------------------------------------------
-    # GAP023: Missing orchestrator facades for ABC methods on MemorySource
-    # ---------------------------------------------------------------------------
-
-    def delete(self, key: str) -> Dict[str, bool]:
-        """Delete a memory entry from all registered sources.
-
-        Calls ``source.delete(key)`` on every available, enabled source and
-        collects per-source success status. Useful for removing stale or
-        duplicated data across the entire chorus.
-
-        Args:
-            key (str): The unique identifier of the memory to remove.
-
-        Returns:
-            Dict mapping source names to boolean delete-success flags.
-            Only sources that attempted deletion appear in the result;
-            unavailable or disabled sources are silently skipped.
-        """
-        results: Dict[str, bool] = {}
-        for name, source in self.memory_sources.items():
-            if not _check_source_available(source) or not self.is_source_enabled(name):
-                continue
-            try:
-                results[name] = bool(source.delete(key))
-            except Exception as exc:
-                logger.warning(
-                    "delete('%s') on '%s' failed: %s", key, name, exc
-                )
-                results[name] = False
-
-        # GAP008: purge cache entry for this key so stale data is not served
-        if key in self._retrieve_cache:
-            del self._retrieve_cache[key]
-
-        return results
-
-    def get_source_info(self, source_name: Optional[str] = None) -> Dict[str, Any]:
-        """Retrieve metadata about one or all registered memory sources.
-
-        Wraps each source's ``get_source_info()`` ABC method so callers can
-        inspect individual backends without knowing their internal types.
-
-        Args:
-            source_name: If provided, return info for that single source only.
-                         If omitted, return a dict mapping every source name
-                         to its info payload (same shape as ``get_orchestrator_info``).
-
-        Returns:
-            Dict of source metadata. Keys are source names; values are the
-            per-source dicts returned by each backend's ``get_source_info()``.
-            On lookup failure for a specific *source_name* returns an empty dict.
-        """
-        if source_name is not None:
-            src = self.memory_sources.get(source_name)
-            if src is not None:
-                try:
-                    info = src.get_source_info()
-                    return info
-                except Exception as exc:
-                    logger.warning(
-                        "get_source_info('%s') failed: %s", source_name, exc
-                    )
-            return {}
-
-        # Return aggregated info for all sources
-        all_info: Dict[str, Any] = {}
-        for name, src in self.memory_sources.items():
-            try:
-                all_info[name] = src.get_source_info()
-            except Exception as exc:
-                logger.warning("get_source_info on '%s' failed: %s", name, exc)
-                all_info[name] = {"error": str(exc)}
-        return all_info
-
-    def proactive_check(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Ask every registered source for proactively relevant memories.
-
-        Calls ``source.proactive_check(context)`` on each available, enabled
-        backend and aggregates the results into a single envelope dict keyed
-        by source name. Downstream consumers use this before making decisions
-        so contextually relevant memories surface without explicit queries.
-
-        Args:
-            context: Optional dictionary describing the pending decision or
-                     action (e.g., agent goal, task description). Passed as-is
-                     to each source's ``proactive_check()`` implementation.
-
-        Returns:
-            Dict mapping source names to their individual
-            ``proactive_check()`` result dicts.  Keys that appear depend on
-            which sources responded successfully.
-        """
-        results: Dict[str, Any] = {}
-        for name, source in self.memory_sources.items():
-            if not _check_source_available(source) or not self.is_source_enabled(name):
-                continue
-            try:
-                results[name] = source.proactive_check(context)
-            except Exception as exc:
-                logger.warning(
-                    "proactive_check on '%s' failed: %s", name, exc
-                )
-        return results
-
-    def proactive_save(
-        self, key: str, value: Any, context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, bool]:
-        """Proactively distribute a memory after an action or decision.
-
-        Calls ``source.proactive_save(key, value, context)`` on each available,
-        enabled backend so the chorus collectively decides how and whether to
-        persist the data independently of standard smart-placement routing.
-
-        Args:
-            key: The identifier for this memory entry.
-            value: The content to store.
-            context: Optional metadata about the triggering action (e.g.,
-                     decision rationale, outcome score). Passed verbatim to
-                     each source's ``proactive_save()`` implementation.
-
-        Returns:
-            Dict mapping source names to boolean save-success flags.  Only
-            sources that attempted the write appear in the result.
-        """
-        results: Dict[str, bool] = {}
-        for name, source in self.memory_sources.items():
-            if not _check_source_available(source) or not self.is_source_enabled(name):
-                continue
-            try:
-                results[name] = bool(source.proactive_save(key, value, context))
-            except Exception as exc:
-                logger.warning(
-                    "proactive_save('%s') on '%s' failed: %s", key, name, exc
-                )
-        return results
-
     def is_available(self) -> bool:
         """
         Check if the memory orchestrator and any sources are available.
-
+        
         Returns:
             bool: True if at least one source is available, False otherwise
         """
         for source in self.memory_sources.values():
-            if _check_source_available(source):
+            if getattr(source, 'is_available', True):
                 return True
         return False
     
@@ -1264,7 +998,7 @@ class MemoryOrchestrator:
                 'name': 'memchorus_orchestrator',
                 'version': __import__('memchorus').__version__,
                 'default_source': self._default_source_name,
-                'available_sources': len([s for s in self.memory_sources.values() if _check_source_available(s)]),
+                'available_sources': len([s for s in self.memory_sources.values() if getattr(s, 'is_available', True)]),
                 'total_sources': len(self.memory_sources)
             },
             'sources': {}
@@ -1301,8 +1035,12 @@ class MemoryOrchestrator:
             if not self.is_source_enabled(name):
                 continue
 
-            # availability guard (GAP014)
-            available = _check_source_available(src)
+            # availability guard
+            try:
+                available = getattr(src, 'is_available', True)
+            except (TypeError, AttributeError):
+                # is_available may be unbound if it's a dataclass method stub or missing entirely
+                available = True
             if not available:
                 continue
 
