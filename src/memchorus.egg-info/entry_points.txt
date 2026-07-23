@@ -1,0 +1,2 @@
+[hermes_agent.plugins]
+memchorus = memchorus.hooks
