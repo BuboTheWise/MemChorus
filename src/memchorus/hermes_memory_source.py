@@ -43,8 +43,15 @@ class HermesDefaultMemorySource(MemorySource):
         self._initialize_memory_directory()
 
     def _initialize_memory_directory(self):
-        """Initialize the memory storage directory."""
-        self.memory_dir = self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories'))
+        """Initialize the memory storage directory.
+
+        Accepts 'data_dir' (set by orchestrator auto_bootstrap via hermes_default_config)
+        or 'memory_dir' (direct construction fallback). Defaults to ~/.hermes/memories.
+        """
+        self.memory_dir = self.config.get(
+            'data_dir',
+            self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories')),
+        )
         os.makedirs(self.memory_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
