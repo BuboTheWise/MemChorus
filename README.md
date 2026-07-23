@@ -38,7 +38,7 @@ The system must stay functional even if every enhancement source disappears. The
     │  │ Profile       │  │   │  │   FeedbackLoopDetector  │  │
     │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
     │  └───────────────┘  │   │  └─────────────────────────┘  │
-    └────┬──────────┬─────────────┬─────┘   └───────────────────────────────┘
+    └────┬──────────┬─────────────┬───────────────────────────┘
          │          │             │
     ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
     │  Hermes  │  │   MemPalace  │  │   Custom Sources│
