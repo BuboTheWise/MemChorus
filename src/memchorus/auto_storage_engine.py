@@ -21,8 +21,10 @@ import time as _time_mod
 from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
+if TYPE_CHECKING:
+    from memchorus.tool_capture_buffer import ToolCaptureBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +403,7 @@ class AutoStorageEngine:
         dedup_window_seconds: float = 30.0,
         dedup_similarity_threshold: float = 0.6,
         min_content_length: int = 30,
+        buffer: Optional["ToolCaptureBuffer"] = None,
     ) -> None:
         self.orchestrator = orchestrator
         self.dedup_window_seconds = dedup_window_seconds
@@ -413,6 +416,10 @@ class AutoStorageEngine:
 
         # Internal dedup store: list of (text, key, timestamp)
         self._dedup_cache: List[Tuple[str, str, float]] = []
+
+        # Batch buffer — when set, payloads go into the buffer instead of
+        # being written immediately; the buffer flushes by count/time.
+        self._buffer = buffer
 
     def capture_outcome(
         self, text: str, outcome_type: str = "automatic"
@@ -555,36 +562,48 @@ class AutoStorageEngine:
             "provenance": "auto_stored",
         }
 
+        # --- Step 9b: write via batch buffer OR direct save -------------
         try:
-            write_type = {
-                "LEARNING":     "memory",
-                "MISTAKE":      "memory",
-                "MEMORY":       "memory",
-                "DECISION":     "decision",
-                "RESULT":       "general",
-                "RELATIONSHIP": "graph",
-            }.get(category_str.upper(), "general")
+            if self._buffer is not None:
+                # Queue the payload for batch write. The buffer handles
+                # flush by count/time; we assume success since the buffer
+                # re-queues on callback failure.
+                buffered_payload = {
+                    **payload,
+                    "_ac_key": key,
+                }
+                self._buffer.add(buffered_payload)
+                success = True
+            else:
+                write_type = {
+                    "LEARNING":     "memory",
+                    "MISTAKE":      "memory",
+                    "MEMORY":       "memory",
+                    "DECISION":     "decision",
+                    "RESULT":       "general",
+                    "RELATIONSHIP": "graph",
+                }.get(category_str.upper(), "general")
 
-            candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
+                candidate_sources = self.orchestrator.recommended_sources(write_type=write_type)  # type: ignore[union-attr]
 
-            write_both = category_str.upper() in ("LEARNING", "MISTAKE", "DECISION")
+                write_both = category_str.upper() in ("LEARNING", "MISTAKE", "DECISION")
 
-            success = False
-            saved_to: set[str] = set()
+                success = False
+                saved_to: set[str] = set()
 
-            for src_name in candidate_sources:
-                result = self.orchestrator.save(key, payload, source_name=src_name)  # type: ignore[union-attr]
-                if result:
-                    saved_to.add(src_name)
-                    success = True
-                    if not write_both:
-                        break
+                for src_name in candidate_sources:
+                    result = self.orchestrator.save(key, payload, source_name=src_name)  # type: ignore[union-attr]
+                    if result:
+                        saved_to.add(src_name)
+                        success = True
+                        if not write_both:
+                            break
 
-            # Dual-write: ensure hermes_default also got the record
-            if write_both and "hermes_default" not in saved_to:
-                result = self.orchestrator.save(key, payload, source_name="hermes_default")  # type: ignore[union-attr]
-                if result:
-                    success = True
+                # Dual-write: ensure hermes_default also got the record
+                if write_both and "hermes_default" not in saved_to:
+                    result = self.orchestrator.save(key, payload, source_name="hermes_default")  # type: ignore[union-attr]
+                    if result:
+                        success = True
 
         except Exception as exc:
             logger.warning("AutoStorageEngine: orchestrator save failed: %s", exc)
