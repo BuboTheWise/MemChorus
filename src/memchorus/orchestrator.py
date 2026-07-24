@@ -750,7 +750,91 @@ class MemoryOrchestrator:
                     return result
 
         return None
-    
+
+    def retrieve_with_source(self, key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a memory entry along with source attribution metadata.
+
+        Wraps the same retrieval logic as :meth:`retrieve` but returns both the
+        content *and* which registered memory source actually held the data.
+        Useful for audit trails and verifying where specific memories live.
+
+        Args:
+            key (str): Unique identifier for the memory entry.
+
+        Returns:
+            Dict with ``key``, ``content`` and ``source_name`` if found, ``None``
+            otherwise.  When a cache hit occurs, the cached source provenance is
+            reused without querying the underlying backend again.
+        """
+        # --- GAP008: check LRU cache first (extended to prove source) --
+        if key in self._retrieve_cache:
+            cached_value, cached_ts = self._retrieve_cache[key]
+            if time.monotonic() - cached_ts < self._cache_ttl:
+                return self._retrieve_with_source_from_cache(key, cached_value)
+
+        # --- Pre-decision recall (behavioral enforcement hook) -------
+        _recall_context: List[Dict[str, Any]] = []
+        if self._enforce_on_read:
+            with self._enforcement_lock:
+                if not self._in_enforcement_recall:
+                    em = self._get_enforcement_manager()
+                    if em is not None:
+                        try:
+                            self._in_enforcement_recall = True
+                            _recall_result = em.enforce(key)
+                            _recall_context = getattr(_recall_result, 'recall_context', [])
+                        except Exception:
+                            pass  # degrade gracefully
+                        finally:
+                            self._in_enforcement_recall = False
+
+        if _recall_context:
+            for rec in _recall_context:
+                if rec.get("key") == key:
+                    hit = {"key": key, "content": rec.get("content", rec)}
+                    self._retrieve_cache[key] = (hit, time.monotonic())
+                    self._evict_oldest_if_needed()
+                    return hit
+
+        # --- Source iteration ----------------------------------------
+        if self._priority_order:
+            candidate_sources = list(self._priority_order)
+        else:
+            candidate_sources = self._scorer.rank_sources(
+                list(self.memory_sources.keys()),
+            )
+
+        for src_name in candidate_sources:
+            source = self.memory_sources.get(src_name)
+            if _check_source_available(source) and self.is_source_enabled(src_name):
+                result = source.retrieve(key)
+                if result is not None:
+                    hit = {
+                        "key": key,
+                        "content": result,
+                        "source_name": src_name,
+                    }
+                    self._retrieve_cache[key] = (hit, time.monotonic())
+                    self._evict_oldest_if_needed()
+                    return hit
+
+        return None
+
+    def _retrieve_with_source_from_cache(
+        self, key: str, cached_hit: Any
+    ) -> Optional[Dict[str, Any]]:
+        """Reconstruct a provenance dict from a cache value."""
+        # If the cache already stores the full dict (from a prior retrieve_with_source call), return it
+        if isinstance(cached_hit, dict) and "content" in cached_hit:
+            cached_hit["key"] = key
+            return cached_hit
+        # Fallback for plain content from retrieve() — wrap it with source unknown marker
+        return {
+            "key": key,
+            "content": cached_hit,
+            "source_name": "<cached>",
+        }
+
     def clear_cache(self) -> None:
         """Clear the retrieval LRU cache (GAP008)."""
         self._retrieve_cache.clear()
@@ -769,7 +853,15 @@ class MemoryOrchestrator:
             )
             del self._retrieve_cache[oldest_key]
 
-    def search(self, query: str, limit: int = 10, context: Optional[ContextWeight] = None, domain: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        context: Optional[ContextWeight] = None,
+        domain: Optional[str] = None,
+        *,
+        max_results: int | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         Search for memories matching a query across all sources.
 
@@ -786,10 +878,16 @@ class MemoryOrchestrator:
             context: Optional ContextWeight for custom scoring preferences
             domain: Optional domain hint (e.g. 'memory', 'graph') that influences
                     source-type boosting in the scorer
+            max_results (int, optional): Alias for ``limit`` — provided as a keyword-only
+                                        argument so callers using the documented name also work.
+                                        When both are given, ``max_results`` takes precedence.
 
         Returns:
             List[Dict[str, Any]]: Sorted search results, each including a ``score`` field
         """
+        # max_results alias (GAP021): docs use 'max_results', runtime used 'limit'
+        effective_limit = max_results if max_results is not None else limit
+
         if context is None:
             context = ContextWeight()
 
@@ -811,12 +909,12 @@ class MemoryOrchestrator:
 
         # Inject domain-level weightings before scoring
         all_results = []
-        remaining_fetch_budget = limit  # cap on raw results collected from sources
+        remaining_fetch_budget = effective_limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
             if not _check_source_available(source) or not self.is_source_enabled(source_name):
                 continue
             try:
-                results = source.search(query, limit)
+                results = source.search(query, effective_limit)
                 if not results:
                     continue
                 
@@ -960,7 +1058,7 @@ class MemoryOrchestrator:
                 "preview": MemoryOrchestrator._synthesize_preview(r.content),
                 **r.meta,
             }
-            for r in ranked[:limit]
+            for r in ranked[:effective_limit]
         ]
 
         if dupes_removed:
