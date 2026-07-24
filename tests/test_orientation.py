@@ -89,6 +89,13 @@ class TestCacheRegistry(unittest.TestCase):
         got = self.registry.get(key)
         self.assertEqual(got, results)
 
+    def test_put_empty_results_not_cached(self):
+        """Empty result lists must NOT be cached (poison-entry guard)."""
+        key = _CacheKey(project="A", query_types=("kg",))
+        self.registry.put(key, [], ttl_seconds=60.0)
+        # A put of empty list is a no-op — get must return None (miss)
+        self.assertIsNone(self.registry.get(key))
+
     def test_get_miss_returns_none(self):
         key = _CacheKey(project="missing", query_types=("kg",))
         self.assertIsNone(self.registry.get(key))
@@ -129,6 +136,32 @@ class TestCacheRegistry(unittest.TestCase):
         self.registry.put(k, [{"key": "r1"}], ttl_seconds=60.0)
         self.registry.clear()
         self.assertEqual(len(self.registry._cache), 0)
+
+    def test_clear_project_invalidates_matching_keys_only(self):
+        """clear_project(project) removes entries for that project, keeps others."""
+        kA = _CacheKey(project="A", query_types=("kg",))
+        kB1 = _CacheKey(project="B", query_types=("kg",))
+        kB2 = _CacheKey(project="B", query_types=("semantic",))
+
+        self.registry.put(kA, [{"key": "a"}], ttl_seconds=60.0)
+        self.registry.put(kB1, [{"key": "b1"}], ttl_seconds=60.0)
+        self.registry.put(kB2, [{"key": "b2"}], ttl_seconds=60.0)
+
+        # Invalidate project B only
+        self.registry.clear_project("B")
+
+        # Project A still cached
+        self.assertIsNotNone(self.registry.get(kA))
+        # Project B keys gone
+        self.assertIsNone(self.registry.get(kB1))
+        self.assertIsNone(self.registry.get(kB2))
+
+    def test_clear_project_no_match_is_noop(self):
+        """clear_project with unknown project name does nothing."""
+        k = _CacheKey(project="X", query_types=("kg",))
+        self.registry.put(k, [{"key": "x"}], ttl_seconds=60.0)
+        self.registry.clear_project("Z")
+        self.assertIsNotNone(self.registry.get(k))
 
     def test_default_maxsize_is_256(self):
         default_registry = _CacheRegistry()

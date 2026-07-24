@@ -24,7 +24,9 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # Tunables — set at import time or overridden during bootstrap (by auto_bootstrap).
-DEFAULT_CACHE_TTL_SECONDS: float = 60.0
+# Reduced from 60s to 15s so that project context changes propagate quickly.
+# Empty results are never cached (see _CacheRegistry.put) regardless of TTL.
+DEFAULT_CACHE_TTL_SECONDS: float = 15.0
 
 
 # --------------------------------------------------------------------------- #
@@ -50,7 +52,14 @@ class _CacheEntry:
 # --------------------------------------------------------------------------- #
 
 class _CacheRegistry:
-    """Simple LRU-like cache keyed by ``_CacheKey`` with TTL eviction."""
+    """Simple LRU-like cache keyed by ``_CacheKey`` with TTL eviction.
+
+    Key behaviours:
+    - Empty result lists are NEVER cached (prevents poison entries after
+      project switches or when orchestrator is unavailable).
+    - ``clear_project(project)`` invalidates all entries for a specific
+      project context without touching unrelated keys.
+    """
 
     def __init__(self, *, maxsize: int = 256) -> None:
         self._cache: Dict[_CacheKey, _CacheEntry] = {}
@@ -68,10 +77,26 @@ class _CacheRegistry:
         return entry.results
 
     def put(self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float) -> None:
+        # Do NOT cache empty lists — they indicate orchestrator unavailable or
+        # genuinely no data and would poison subsequent calls for the same
+        # project context until TTL expiry.
+        if not results:
+            return
+
         if len(self._cache) >= self._maxsize:
             oldest = min(self._cache, key=lambda k: self._cache[k].timestamp)
             del self._cache[oldest]
         self._cache[key] = _CacheEntry(results=results, timestamp=time.monotonic(), ttl=int(ttl_seconds))
+
+    def clear_project(self, project: str) -> None:
+        """Invalidate all entries whose cache key matches *project*.
+
+        Call this when the project context changes so that stale data
+        doesn't persist after a project switch.
+        """
+        stale_keys = [k for k in self._cache if k.project == project]
+        for k in stale_keys:
+            del self._cache[k]
 
     def clear(self) -> None:
         self._cache.clear()
