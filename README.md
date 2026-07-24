@@ -287,7 +287,7 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `context_sensitive_pref`, `long_lived_knowledge`, `large_data_block`, `user_preference`, `relationship_graph`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `enabled`, `sweep_interval_hours`, `retention_days`, `eviction.importance_min`, and `archive.grace_days`. Lifecycle is opt-in (`enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+MemChorus v1.5.09 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `context_sensitive_pref`, `long_lived_knowledge`, `large_data_block`, `user_preference`, `relationship_graph`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `enabled`, `sweep_interval_hours`, `retention_days`, `eviction.importance_min`, and `archive.grace_days`. Lifecycle is opt-in (`enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 **Example YAML configuration** (copy-paste into `~/.hermes/memchorus_config.yaml`):
 
@@ -536,7 +536,7 @@ orchestrate.save(
 )
 \`\`\`
 
-Other v1.5.0 features:
+Other v1.5.09 features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
@@ -572,4 +572,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.5.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.5.09 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
