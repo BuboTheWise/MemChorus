@@ -49,12 +49,15 @@ tests/test_echo_prevention.py
 tests/test_enforcement_manager.py
 tests/test_escalation.py
 tests/test_exceptiongroup_handling.py
+tests/test_feedback_correction_injection.py
 tests/test_feedback_loop.py
 tests/test_feedback_loop_detector.py
 tests/test_feedback_loop_engine.py
 tests/test_feedback_loop_escalation.py
 tests/test_feedback_loop_loader.py
 tests/test_gap018_sweep_scheduler_wiring.py
+tests/test_gap021_search_max_results_and_retrieve_with_source.py
+tests/test_gap023_orchestrator_facade_methods.py
 tests/test_gap_features.py
 tests/test_hermes_source_integration.py
 tests/test_hook_keyword_contract.py
