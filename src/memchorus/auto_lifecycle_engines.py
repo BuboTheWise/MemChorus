@@ -157,13 +157,13 @@ def auto_init_lifecycle(
         resolved = resolve_cfg(config_override or {"enabled": True})
         state = dc_replace(
             state,
-            sweep_interval_hours=resolved.get("sweep_interval_seconds", 0) / 3600.0,
+            sweep_interval_hours=resolved.get("sweep_interval_hours", 8),
         )
 
         manager_result = LM(config=resolved, orchestrator=orchestrator)
         state = dc_replace(state, manager_active=True)
 
-        if resolved.get("sweep_interval_seconds", 0):
+        if resolved.get("sweep_interval_hours", 8):
             try:
                 _ = SS(manager=manager_result)
                 state = dc_replace(state, scheduler_active=True)
@@ -249,7 +249,7 @@ def get_lifecycle_state(orchestrator: Any) -> AutoLifecycleState:
         state = dc_replace(
             state,
             manager_active=True,
-            sweep_interval_hours=cfg.get("sweep_interval_seconds", 0) / 3600.0,
+            sweep_interval_hours=cfg.get("sweep_interval_hours", 8),
         )
         try:
             _ = manager._get_retention_engine()
