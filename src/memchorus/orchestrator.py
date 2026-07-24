@@ -1137,10 +1137,147 @@ class MemoryOrchestrator:
             t = str(content)[:200] + "..." if content and len(str(content)) > 200 else (str(content) if content else "")
             return t
 
+    # ---------------------------------------------------------------------------
+    # GAP023: Missing orchestrator facades for ABC methods on MemorySource
+    # ---------------------------------------------------------------------------
+
+    def delete(self, key: str) -> Dict[str, bool]:
+        """Delete a memory entry from all registered sources.
+
+        Calls ``source.delete(key)`` on every available, enabled source and
+        collects per-source success status. Useful for removing stale or
+        duplicated data across the entire chorus.
+
+        Args:
+            key (str): The unique identifier of the memory to remove.
+
+        Returns:
+            Dict mapping source names to boolean delete-success flags.
+            Only sources that attempted deletion appear in the result;
+            unavailable or disabled sources are silently skipped.
+        """
+        results: Dict[str, bool] = {}
+        for name, source in self.memory_sources.items():
+            if not _check_source_available(source) or not self.is_source_enabled(name):
+                continue
+            try:
+                results[name] = bool(source.delete(key))
+            except Exception as exc:
+                logger.warning(
+                    "delete('%s') on '%s' failed: %s", key, name, exc
+                )
+                results[name] = False
+
+        # GAP008: purge cache entry for this key so stale data is not served
+        if key in self._retrieve_cache:
+            del self._retrieve_cache[key]
+
+        return results
+
+    def get_source_info(self, source_name: Optional[str] = None) -> Dict[str, Any]:
+        """Retrieve metadata about one or all registered memory sources.
+
+        Wraps each source's ``get_source_info()`` ABC method so callers can
+        inspect individual backends without knowing their internal types.
+
+        Args:
+            source_name: If provided, return info for that single source only.
+                         If omitted, return a dict mapping every source name
+                         to its info payload (same shape as ``get_orchestrator_info``).
+
+        Returns:
+            Dict of source metadata. Keys are source names; values are the
+            per-source dicts returned by each backend's ``get_source_info()``.
+            On lookup failure for a specific *source_name* returns an empty dict.
+        """
+        if source_name is not None:
+            src = self.memory_sources.get(source_name)
+            if src is not None:
+                try:
+                    info = src.get_source_info()
+                    return info
+                except Exception as exc:
+                    logger.warning(
+                        "get_source_info('%s') failed: %s", source_name, exc
+                    )
+            return {}
+
+        # Return aggregated info for all sources
+        all_info: Dict[str, Any] = {}
+        for name, src in self.memory_sources.items():
+            try:
+                all_info[name] = src.get_source_info()
+            except Exception as exc:
+                logger.warning("get_source_info on '%s' failed: %s", name, exc)
+                all_info[name] = {"error": str(exc)}
+        return all_info
+
+    def proactive_check(self, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Ask every registered source for proactively relevant memories.
+
+        Calls ``source.proactive_check(context)`` on each available, enabled
+        backend and aggregates the results into a single envelope dict keyed
+        by source name. Downstream consumers use this before making decisions
+        so contextually relevant memories surface without explicit queries.
+
+        Args:
+            context: Optional dictionary describing the pending decision or
+                     action (e.g., agent goal, task description). Passed as-is
+                     to each source's ``proactive_check()`` implementation.
+
+        Returns:
+            Dict mapping source names to their individual
+            ``proactive_check()`` result dicts.  Keys that appear depend on
+            which sources responded successfully.
+        """
+        results: Dict[str, Any] = {}
+        for name, source in self.memory_sources.items():
+            if not _check_source_available(source) or not self.is_source_enabled(name):
+                continue
+            try:
+                results[name] = source.proactive_check(context)
+            except Exception as exc:
+                logger.warning(
+                    "proactive_check on '%s' failed: %s", name, exc
+                )
+        return results
+
+    def proactive_save(
+        self, key: str, value: Any, context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, bool]:
+        """Proactively distribute a memory after an action or decision.
+
+        Calls ``source.proactive_save(key, value, context)`` on each available,
+        enabled backend so the chorus collectively decides how and whether to
+        persist the data independently of standard smart-placement routing.
+
+        Args:
+            key: The identifier for this memory entry.
+            value: The content to store.
+            context: Optional metadata about the triggering action (e.g.,
+                     decision rationale, outcome score). Passed verbatim to
+                     each source's ``proactive_save()`` implementation.
+
+        Returns:
+            Dict mapping source names to boolean save-success flags.  Only
+            sources that attempted the write appear in the result.
+        """
+        results: Dict[str, bool] = {}
+        for name, source in self.memory_sources.items():
+            if not _check_source_available(source) or not self.is_source_enabled(name):
+                continue
+            try:
+                results[name] = bool(source.proactive_save(key, value, context))
+            except Exception as exc:
+                logger.warning(
+                    "proactive_save('%s') on '%s' failed: %s", key, name, exc
+                )
+        return results
+
     def is_available(self) -> bool:
         """
         Check if the memory orchestrator and any sources are available.
-        
+
         Returns:
             bool: True if at least one source is available, False otherwise
         """
