@@ -154,6 +154,21 @@ class TestRetentionEngineProfiles(unittest.TestCase):
         self.assertEqual(result.flagged, 1)
 
 
+class TestQueryMapCoverage(unittest.TestCase):
+    """Ensure _QUERY_MAP covers every DecisionPoint enum value."""
+
+    def test_query_map_covers_all_decision_points(self):
+        from memchorus.auto_recall_engine import _QUERY_MAP
+        from memchorus.behavioral_trigger import DecisionPoint
+
+        self.assertEqual(
+            len(_QUERY_MAP),
+            len(DecisionPoint),
+            "_QUERY_MAP is missing entries for: "
+            f"{set(dp.name for dp in DecisionPoint) - set(d.name for d in _QUERY_MAP)}",
+        )
+
+
 class TestRetentionScoreHistory(unittest.TestCase):
     """Consecutive-sweep tracking for archive recommendation."""
 

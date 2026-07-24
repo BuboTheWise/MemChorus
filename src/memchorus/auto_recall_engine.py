@@ -27,20 +27,12 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Dict, List, Optional
 
-try:
-    from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint  # type: ignore[import-not-found]
-except ImportError:
-    # behavioral_trigger may be missing in minimal installs or during tests
-    _AUTO_RECALL_AVAILABLE = False
-else:
-    _AUTO_RECALL_AVAILABLE = True
+from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint  # type: ignore[import-not-found]
 
-try:
-    from memchorus.recursion_guard import RecursionGuard  # type: ignore[import-not-found]
-except ImportError:
-    RecursionGuard = None  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
+
+
 # ---------------------------------------------------------------------------
 # Query templates per decision point type
 # ---------------------------------------------------------------------------
@@ -48,32 +40,29 @@ logger = logging.getLogger(__name__)
 # GAP P0-3 FIX (2026-07-19): Expanded query templates to cover real-world recall needs.
 # The original templates were engineering-focused, missing key terms from actual stored
 # memories like user preferences, project conventions, debug notes, etc.
-if _AUTO_RECALL_AVAILABLE:
-    _QUERY_MAP: Dict[DecisionPoint, str] = {  # type: ignore[name-defined]
-        DecisionPoint.PLANNING_START: (  # type: ignore[name-defined]
-            "past planning patterns architecture decisions strategy notes "
-            "project organization conventions documentation standards workflow"
-        ),
-        DecisionPoint.TOOL_CALL_INTENT: (  # type: ignore[name-defined]
-            "tool usage history command conventions domain-specific guidance "
-            "preferences user context setup configuration environment "
-            "debug findings verification testing procedures scripts"
-        ),
-        DecisionPoint.POST_ACTION_COMPLETE: (  # type: ignore[name-defined]
-            "post-action learnings outcomes results decisions made changes "
-            "completed tasks progress milestones reviews improvements"
-        ),
-        DecisionPoint.ERROR_STATE: (  # type: ignore[name-defined]
-            "errors recovery patterns failure modes known issues bugs fixes "
-            "troubleshooting diagnostic root cause debugging steps workarounds"
-        ),
-        DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION: (  # type: ignore[name-defined]
-            "synthesis analysis findings insights patterns understanding conclusions "
-            "research outcomes knowledge distillation key takeaways learnings"
-        ),
-    }
-else:
-    _QUERY_MAP = {}
+_QUERY_MAP: Dict[DecisionPoint, str] = {
+    DecisionPoint.PLANNING_START: (
+        "past planning patterns architecture decisions strategy notes "
+        "project organization conventions documentation standards workflow"
+    ),
+    DecisionPoint.TOOL_CALL_INTENT: (
+        "tool usage history command conventions domain-specific guidance "
+        "preferences user context setup configuration environment "
+        "debug findings verification testing procedures scripts"
+    ),
+    DecisionPoint.POST_ACTION_COMPLETE: (
+        "post-action learnings outcomes results decisions made changes "
+        "completed tasks progress milestones reviews improvements"
+    ),
+    DecisionPoint.ERROR_STATE: (
+        "errors recovery patterns failure modes known issues bugs fixes "
+        "troubleshooting diagnostic root cause debugging steps workarounds"
+    ),
+    DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION: (
+        "synthesis analysis findings key insight understanding learned important "
+        "patterns review summary conclusions takeaways documentation research"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +103,6 @@ class AutoRecallEngine:
         # Per-type cache: maps DecisionPoint value (int) -> _CacheEntry
         self._cache: Dict[int, _CacheEntry] = {}
 
-        # Recursion guard: prevents re-entrant recall during enforcement chains.
-        # Uses the shared RecursionGuard depth counter instead of boolean sentinels.
-        self._guard = RecursionGuard(max_depth=2) if RecursionGuard is not None else None  # type: ignore[has-type]
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -133,28 +118,11 @@ class AutoRecallEngine:
         """
         dp_type = decision_point.type
 
-        # Early-termination cache check (runs outside guard — read-only)
+        # Early-termination cache check
         cached = self._get_cached(dp_type)
         if cached is not None:
             return cached
 
-        # Try to enter the depth guard; bail on recursion limit.
-        # When RecursionGuard unavailable, just run the recall directly.
-        if self._guard is not None:
-            try:
-                with self._guard.enter():
-                    return self._execute_recognize(dp_type)
-            except RecursionError:
-                logger.debug(  # noqa: SLF001
-                    "AutoRecallEngine: recursion guard blocked re-entry for %s",
-                    decision_point.type.name,  # type: ignore[union-attr]
-                )
-                return []
-
-        return self._execute_recognize(dp_type)
-
-    def _execute_recognize(self, dp_type: DecisionPoint) -> List[Dict[str, Any]]:
-        """Core recall logic wrapped by RecursionGuard.enter()."""
         query = self._extract_query(dp_type)
         results = self._do_search(query)
 
@@ -162,11 +130,9 @@ class AutoRecallEngine:
         results = results[:3]
 
         # Stash in cache
-        self._cache[dp_type.value] = _CacheEntry(
-            result=list(results), timestamp=time.time()
-        )
+        self._cache[dp_type.value] = _CacheEntry(result=list(results), timestamp=time.time())
 
-        return list(results)
+        return results
 
     def fire_for_text(self, text: str) -> Dict[str, List[Dict[str, Any]]]:
         """Convenience wrapper: call BehavioralTrigger on *text*, then retrieve
@@ -232,9 +198,15 @@ class AutoRecallEngine:
         self._cache.clear()
 
 
-# Graceful degradation: the behavioral_trigger import is now guarded with try/except
-# ImportError at the module level (lines 30-37). When missing, _AUTO_RECALL_AVAILABLE is
-# False and _QUERY_MAP stays empty so no stale NameError fires. The AutoRecallEngine class
-# still instantiates — it just returns empty results since there are no queries to run.
-# This avoids crashing the entire orchestrator bootstrap when behavioral_trigger.py fails
-# to import while keeping the enforcement pipeline structurally intact.
+# NOTE: No stub/try-except fallback around the top-level import on line 30.
+# The unguarded ``from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint``
+# either succeeds (putting DecisionPoint into globals, so this block is dead code) or raises
+# ImportError immediately and aborts module loading — the if-statement below never executes
+# because Python never reaches it when the import fails.  A stub here would give false
+# confidence: the module would appear to load but all decision-point logic would silently use
+# locally-defined enums with no real BehavioralTrigger wiring, defeating enforcement.
+# The correct fix for missing behavior_trigger is: ensure behavioral_trigger.py ships
+# correctly alongside this module; don't silently degrade enforcement to stub classes in-use.
+# If a packaging scenario ever requires graceful degradation (e.g., wheels that omit optional
+# dependencies), replace the top-level import with ``try … except ImportError`` and gate the
+# entire class behind an availability check, not a stub enum.
