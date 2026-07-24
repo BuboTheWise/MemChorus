@@ -435,42 +435,92 @@ def _resolve_char_limit() -> int:
         pass
     return _MAX_BLOCK_CHARS
 
+def _has_feedback_priority(item: Dict[str, Any]) -> bool:
+    """Check if an item carries feedback-correction priority.
+
+    Feedback corrections are more actionable than raw recall and should be
+    preserved first when the context budget is tight.
+    """
+    key = str(item.get("key") or "").lower()
+    return ("feedback" in key or "correction" in key or
+            item.get("_is_feedback", False))
+
+
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
-    
+
     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
-    Truncated entries get '...' appended; excess items are silently dropped.
+    Truncation respects line boundaries — partial lines are dropped rather than cut,
+    ensuring markdown formatting stays intact. When budget is tight, feedback-correction
+    items take priority over raw recall results (higher-priority items kept last).
     """
     if not items:
         return ""
 
+    # --- Priority sort: feedback corrections before raw recall ---------------
+    # So that when the block ceiling forces item removal (below), lower-value
+    # recall entries are dropped first.
+    priority_items = [i for i in items if _has_feedback_priority(i)]
+    normal_items   = [i for i in items if not _has_feedback_priority(i)]
+    ordered        = priority_items + normal_items
+
     lines: List[str] = []
-    seen_keys = set()
-    block_char_budget = _MAX_BLOCK_CHARS
-    
-    for item in items[:5]:
+    seen_keys: set = set()
+
+    for item in ordered[:5]:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        content_raw = item.get('content') or ''
+        seen_keys.add(key)
+        content_raw = item.get("content") or ""
         # Defensive: some memory sources return nested dicts instead of strings
         if not isinstance(content_raw, str):
             content_raw = str(content_raw)
         raw_content = content_raw.rstrip()
 
-        # Per-entry budget enforcement
+        # --- Per-entry budget enforcement (line-boundary aware) --------------
         if len(raw_content) > _MAX_CONTENT_CHARS:
-            raw_content = raw_content[:_MAX_CONTENT_CHARS].rsplit(' ', 1)[0] + "..."  
-        
+            content_lines = raw_content.split("\n")
+            if len(content_lines) == 1:
+                # Single-line content — safe to cut at any point
+                raw_content = raw_content[:_MAX_CONTENT_CHARS] + "..."
+            else:
+                # Multi-line — only keep complete lines up to budget
+                kept: List[str] = []
+                running = 0
+                for line in content_lines:
+                    if running + len(line) + 1 > _MAX_CONTENT_CHARS:
+                        break
+                    kept.append(line)
+                    running += len(line) + 1
+                if kept:
+                    raw_content = "\n".join(kept) + "..."
+                else:
+                    # First line alone exceeds budget — partial cut as fallback
+                    raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
+
         line = f"- **{key}** — {raw_content}"
         lines.append(line)
-    
+
     joined = "\n".join(lines)
-    
-    # Hard total block ceiling (fallback safety net)
-    if len(joined) > _MAX_BLOCK_CHARS:
-        joined = joined[:_MAX_BLOCK_CHARS].rsplit('\n', 1)[0] + "\n... (truncated, budget exceeded)"
-    
+    truncated = False
+
+    # --- Hard total block ceiling (drops complete entries, not partial lines)-
+    # Constants that appear in every output regardless of truncation
+    _header_len  = len("[MemChorus injected context]\n")
+    _footer_len  = len("\n[/MemChorus injected block]")
+
+    while len(joined) + _header_len + _footer_len > _MAX_BLOCK_CHARS:
+        if not lines:
+            break
+        lines.pop()
+        joined = "\n".join(lines)
+        truncated = True
+
+    # Append trailer only if we actually dropped entries
+    if truncated:
+        joined += "\n... (truncated, budget exceeded)"
+
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
 
