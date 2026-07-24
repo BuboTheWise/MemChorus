@@ -104,12 +104,13 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            # Hermes turn_context.invoke_hook() passes user_message + conversation_history
-            input_text = kwargs.get("user_message") or kwargs.get("conversation_history", "")
+            # Use _build_search_terms() for progressive fallback — even when
+            # user_message and conversation_history are empty, we can still
+            # recall from task context (task_id, model, platform, session_id).
+            input_text = _build_search_terms(kwargs)
             if not input_text:
                 return None
 
-            # Detect behavioral decision points to shape the search strategy.
             detected_points = []
             if self._btrigger is not None:
                 input_str = str(input_text)[:4096]  # cap for performance
@@ -347,6 +348,76 @@ class MemChorusHooks:
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
 _MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
 _MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat (t_32e7877a)
+
+def _extract_text_from_message(message: Any) -> str:
+    """Extract text content from a Message dict/object for search purposes."""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict):
+        return message.get("content", "") or message.get("text", "") or ""
+    # Fallback for object with .content or .text attributes
+    try:
+        content = getattr(message, "content", None) or getattr(message, "text", None)
+        if isinstance(content, str):
+            return content
+    except Exception:
+        pass
+    return ""
+
+
+def _build_search_terms(kwargs: Dict[str, Any]) -> str:
+    """Build search query from kwargs with progressive fallbacks.
+
+    Even when user_message and conversation_history are empty/missing,
+    we can construct a meaningful recall query from task context, model,
+    platform, etc. This prevents pre-LLM recall from silently returning
+    None simply because the primary text sources are falsy.
+
+    Priority chain:
+        1. user_message (primary input)
+        2. conversation_history (last messages as fallback)
+        3. task_id / model / platform context for project-aligned recall
+        4. Empty string — caller should return None to skip
+    """
+    # Primary: user message
+    user_msg = kwargs.get("user_message")
+    if isinstance(user_msg, str) and user_msg.strip():
+        return user_msg
+    if isinstance(user_msg, dict):
+        text = _extract_text_from_message(user_msg)
+        if text:
+            return text
+    # Catch-all for object-style messages with .content / .text attributes
+    if not isinstance(user_msg, (str, dict, type(None))):
+        text = _extract_text_from_message(user_msg)
+        if text:
+            return text
+
+    # Fallback 1: conversation history (use last message content)
+    history = kwargs.get("conversation_history") or []
+    if isinstance(history, list) and history:
+        messages = [_extract_text_from_message(m) for m in history]
+        available = [m for m in messages if m]
+        if available:
+            return " ".join(available)[-4096:]  # cap length
+
+    # Fallback 2: Build context-based query from metadata
+    parts: List[str] = []
+    task_id = kwargs.get("task_id")
+    if task_id:
+        parts.append(str(task_id))
+    model = kwargs.get("model")
+    if model:
+        parts.append(str(model))
+    platform = kwargs.get("platform")
+    if platform and str(platform).strip():
+        parts.append(str(platform))
+    session_id = kwargs.get("session_id")
+    if session_id:
+        parts.append(str(session_id)[:16])
+
+    return " ".join(parts)
+
 
 # Per-profile override: reads config.yaml memchorus.hook_char_limit before global default
 def _resolve_char_limit() -> int:
