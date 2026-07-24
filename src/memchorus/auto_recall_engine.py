@@ -58,6 +58,10 @@ _QUERY_MAP: Dict[DecisionPoint, str] = {
         "errors recovery patterns failure modes known issues bugs fixes "
         "troubleshooting diagnostic root cause debugging steps workarounds"
     ),
+    DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION: (
+        "synthesis analysis findings insights patterns understanding conclusions "
+        "research outcomes knowledge distillation key takeaways learnings"
+    ),
 }
 
 
