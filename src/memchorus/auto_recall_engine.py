@@ -35,10 +35,7 @@ except ImportError:
 else:
     _AUTO_RECALL_AVAILABLE = True
 
-
 logger = logging.getLogger(__name__)
-
-
 # ---------------------------------------------------------------------------
 # MC-001 recursion guard sentinel (module-level)
 # ---------------------------------------------------------------------------
