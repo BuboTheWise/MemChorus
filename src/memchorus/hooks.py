@@ -2,7 +2,7 @@
 MemChorus lifecycle hooks for Hermes plugin integration.
 
 This module provides the MemChorusHooks class that Hermes Gateway discovers via
-setup.cfg entry_points and calls at key moments in the agent execution loop:
+setup.py entry_points ("hermes_agent.plugins" group) and calls at key moments
 pre_llm_call, post_tool_call, on_session_start.
 
 On import of memchorus package, global bootstrap fires if enabled.
