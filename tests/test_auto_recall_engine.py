@@ -173,7 +173,7 @@ class TestDeterministicQueryExtraction(unittest.TestCase):
         self.assertIn("recovery pattern", mock_orch.call_log[0])
 
     def test_each_dp_type_gets_different_query(self) -> None:
-        """Verify all four DP types produce distinct queries."""
+        """Verify all DP types produce distinct queries."""
         mock_orch = _MockOrchestrator()
         trigger = BehavioralTrigger()  # type: ignore[operator]
         engine = AutoRecallEngine(mock_orch, trigger)
@@ -182,8 +182,8 @@ class TestDeterministicQueryExtraction(unittest.TestCase):
             engine.on_decision_point(_make_decision_point(dp_type))
 
         queries = mock_orch.call_log
-        assert len(queries) == 4, f"Expected 4 queries, got {len(queries)}"
-        self.assertEqual(len(set(queries)), 4, "All queries should be distinct")
+        assert len(queries) == 5, f"Expected 5 queries, got {len(queries)}"
+        self.assertEqual(len(set(queries)), 5, "All queries should be distinct")
 
 
 # ---------------------------------------------------------------------------
