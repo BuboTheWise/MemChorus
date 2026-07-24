@@ -15,7 +15,6 @@ def orchestrator():
 <<<<<<< HEAD
     """In-memory orchestrator (hermes_default only, mempalace disabled) for unit testing."""
     orch = MemoryOrchestrator(config={})
-    # Disable mempalace to prevent contamination from stale live data in tests
     if 'mempalace' in orch.memory_sources:
         orch.disable_source('mempalace')
 =======
