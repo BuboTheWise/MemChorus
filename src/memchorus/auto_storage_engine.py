@@ -221,6 +221,7 @@ _KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
     "tool usage history command conventions domain-specific guidance preferences user context setup configuration environment debug findings verification testing procedures scripts",
     "post-action learnings outcomes results decisions made changes completed tasks progress milestones reviews improvements",
     "errors recovery patterns failure modes known issues bugs fixes troubleshooting diagnostic root cause debugging steps workarounds",
+    "synthesis analysis findings insights patterns understanding conclusions research outcomes knowledge distillation key takeaways learnings",
     # Truncated templates (pre-v1.5 legacy — still block echoes from older recall cycles)
     "past planning patterns architecture decisions strategy notes",
     "tool usage history command conventions domain-specific guidance",
