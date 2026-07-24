@@ -149,8 +149,8 @@ class TestCaptureOutcomeEchoPrevention(unittest.TestCase):
         self.assertEqual(result["reason"], "query_echo_artifact")
         self.assertEqual(len(orch.saved_calls), 0)
 
-    def test_all_four_templates_blocked(self) -> None:
-        """All 4 templates from _QUERY_MAP are rejected."""
+    def test_all_query_templates_blocked(self) -> None:
+        """All query templates from _QUERY_MAP are rejected (currently 5)."""
         from memchorus.auto_recall_engine import _QUERY_MAP  # type: ignore[import-not-found]
 
         orch = _MockOrchestrator()
