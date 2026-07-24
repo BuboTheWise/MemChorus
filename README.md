@@ -300,8 +300,8 @@ lifecycle:
     context_sensitive_pref: 30
     long_lived_knowledge: 180
     large_data_block: 30
-    user_preference: null
-    relationship_graph: null
+    user_preference: null                   # null = no expiry (permanent)
+    relationship_graph: null                # null = no expiry (permanent)
   eviction:                                 # soft-delete thresholds
     importance_min: 0.15                    # delete if relevance score drops below this
     duplicate_cluster_max: 3                # merge clusters larger than this count
