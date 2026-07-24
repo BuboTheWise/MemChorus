@@ -287,7 +287,7 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `operational`, `long_lived`, `knowledge_permanent`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `enabled`, `sweep_interval_hours`, `retention_days`, `eviction.importance_min`, and `archive.grace_days`. Lifecycle is opt-in (`enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `context_sensitive_pref`, `long_lived_knowledge`, `large_data_block`, `user_preference`, `relationship_graph`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `enabled`, `sweep_interval_hours`, `retention_days`, `eviction.importance_min`, and `archive.grace_days`. Lifecycle is opt-in (`enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 **Example YAML configuration** (copy-paste into `~/.hermes/memchorus_config.yaml`):
 
@@ -295,12 +295,13 @@ MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware
 lifecycle:
   enabled: true                             # opt-in — disabled by default
   sweep_interval_hours: 8                   # background sweep every N hours
-  half_life_days: 30                        # recency decay half-life for RelevanceScorer
   retention_days:                           # per-profile expiry (set to null to disable)
     ephemeral: 7
-    operational: 60
-    long_lived: 180
-    knowledge_permanent: null
+    context_sensitive_pref: 30
+    long_lived_knowledge: 180
+    large_data_block: 30
+    user_preference: null
+    relationship_graph: null
   eviction:                                 # soft-delete thresholds
     importance_min: 0.15                    # delete if relevance score drops below this
     duplicate_cluster_max: 3                # merge clusters larger than this count
@@ -316,7 +317,7 @@ lifecycle:
     max_entries: 10000
 ```
 
-**Default values:** `enabled: false`, `sweep_interval_hours: 8`, `half_life_days: 30.0`, `retention_days` per profile as shown above, `eviction.importance_min: 0.15`, `eviction.duplicate_cluster_max: 3`, `eviction.similarity_min: 0.75`, `archive.grace_days: 30`, `merge_at_write.enabled: true`, audit logging enabled with a 10,000-entry limit at `~/.hermes/memchorus_audit.jsonl`.
+**Default values:** `enabled: false`, `sweep_interval_hours: 8`, `retention_days` per profile as shown above (`ephemeral: 7`, `context_sensitive_pref: 30`, `long_lived_knowledge: 180`, `large_data_block: 30`, `user_preference: null`, `relationship_graph: null`), `eviction.importance_min: 0.15`, `eviction.duplicate_cluster_max: 3`, `eviction.similarity_min: 0.75`, `archive.grace_days: 30`, `merge_at_write.enabled: true`, audit logging enabled with a 10,000-entry limit at `~/.hermes/memchorus_audit.jsonl`.
 
 ## Installation
 
