@@ -104,12 +104,13 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            # Hermes turn_context.invoke_hook() passes user_message + conversation_history
-            input_text = kwargs.get("user_message") or kwargs.get("conversation_history", "")
+            # Use _build_search_terms() for progressive fallback — even when
+            # user_message and conversation_history are empty, we can still
+            # recall from task context (task_id, model, platform, session_id).
+            input_text = _build_search_terms(kwargs)
             if not input_text:
                 return None
 
-            # Detect behavioral decision points to shape the search strategy.
             detected_points = []
             if self._btrigger is not None:
                 input_str = str(input_text)[:4096]  # cap for performance
@@ -347,13 +348,80 @@ class MemChorusHooks:
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
 _MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
 _MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat (t_32e7877a)
-_HERMES_MEMCHORUS_CHAR_LIMIT = None
+
+def _extract_text_from_message(message: Any) -> str:
+    """Extract text content from a Message dict/object for search purposes."""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict):
+        return message.get("content", "") or message.get("text", "") or ""
+    # Fallback for object with .content or .text attributes
+    try:
+        content = getattr(message, "content", None) or getattr(message, "text", None)
+        if isinstance(content, str):
+            return content
+    except Exception:
+        pass
+    return ""
+
+
+def _build_search_terms(kwargs: Dict[str, Any]) -> str:
+    """Build search query from kwargs with progressive fallbacks.
+
+    Even when user_message and conversation_history are empty/missing,
+    we can construct a meaningful recall query from task context, model,
+    platform, etc. This prevents pre-LLM recall from silently returning
+    None simply because the primary text sources are falsy.
+
+    Priority chain:
+        1. user_message (primary input)
+        2. conversation_history (last messages as fallback)
+        3. task_id / model / platform context for project-aligned recall
+        4. Empty string — caller should return None to skip
+    """
+    # Primary: user message
+    user_msg = kwargs.get("user_message")
+    if isinstance(user_msg, str) and user_msg.strip():
+        return user_msg
+    if isinstance(user_msg, dict):
+        text = _extract_text_from_message(user_msg)
+        if text:
+            return text
+    # Catch-all for object-style messages with .content / .text attributes
+    if not isinstance(user_msg, (str, dict, type(None))):
+        text = _extract_text_from_message(user_msg)
+        if text:
+            return text
+
+    # Fallback 1: conversation history (use last message content)
+    history = kwargs.get("conversation_history") or []
+    if isinstance(history, list) and history:
+        messages = [_extract_text_from_message(m) for m in history]
+        available = [m for m in messages if m]
+        if available:
+            return " ".join(available)[-4096:]  # cap length
+
+    # Fallback 2: Build context-based query from metadata
+    parts: List[str] = []
+    task_id = kwargs.get("task_id")
+    if task_id:
+        parts.append(str(task_id))
+    model = kwargs.get("model")
+    if model:
+        parts.append(str(model))
+    platform = kwargs.get("platform")
+    if platform and str(platform).strip():
+        parts.append(str(platform))
+    session_id = kwargs.get("session_id")
+    if session_id:
+        parts.append(str(session_id)[:16])
+
+    return " ".join(parts)
+
 
 # Per-profile override: reads config.yaml memchorus.hook_char_limit before global default
 def _resolve_char_limit() -> int:
     """Return per-profile char budget if set, else global default."""
-    if _HERMES_MEMCHORUS_CHAR_LIMIT is not None:
-        return _HERMES_MEMCHORUS_CHAR_LIMIT
     try:
         profile = os.environ.get("HERMES_PROFILE", "default")
         cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")
@@ -367,42 +435,92 @@ def _resolve_char_limit() -> int:
         pass
     return _MAX_BLOCK_CHARS
 
+def _has_feedback_priority(item: Dict[str, Any]) -> bool:
+    """Check if an item carries feedback-correction priority.
+
+    Feedback corrections are more actionable than raw recall and should be
+    preserved first when the context budget is tight.
+    """
+    key = str(item.get("key") or "").lower()
+    return ("feedback" in key or "correction" in key or
+            item.get("_is_feedback", False))
+
+
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
-    
+
     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
-    Truncated entries get '...' appended; excess items are silently dropped.
+    Truncation respects line boundaries — partial lines are dropped rather than cut,
+    ensuring markdown formatting stays intact. When budget is tight, feedback-correction
+    items take priority over raw recall results (higher-priority items kept last).
     """
     if not items:
         return ""
 
+    # --- Priority sort: feedback corrections before raw recall ---------------
+    # So that when the block ceiling forces item removal (below), lower-value
+    # recall entries are dropped first.
+    priority_items = [i for i in items if _has_feedback_priority(i)]
+    normal_items   = [i for i in items if not _has_feedback_priority(i)]
+    ordered        = priority_items + normal_items
+
     lines: List[str] = []
-    seen_keys = set()
-    block_char_budget = _MAX_BLOCK_CHARS
-    
-    for item in items[:5]:
+    seen_keys: set = set()
+
+    for item in ordered[:5]:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        content_raw = item.get('content') or ''
+        seen_keys.add(key)
+        content_raw = item.get("content") or ""
         # Defensive: some memory sources return nested dicts instead of strings
         if not isinstance(content_raw, str):
             content_raw = str(content_raw)
         raw_content = content_raw.rstrip()
 
-        # Per-entry budget enforcement
+        # --- Per-entry budget enforcement (line-boundary aware) --------------
         if len(raw_content) > _MAX_CONTENT_CHARS:
-            raw_content = raw_content[:_MAX_CONTENT_CHARS].rsplit(' ', 1)[0] + "..."  
-        
+            content_lines = raw_content.split("\n")
+            if len(content_lines) == 1:
+                # Single-line content — safe to cut at any point
+                raw_content = raw_content[:_MAX_CONTENT_CHARS] + "..."
+            else:
+                # Multi-line — only keep complete lines up to budget
+                kept: List[str] = []
+                running = 0
+                for line in content_lines:
+                    if running + len(line) + 1 > _MAX_CONTENT_CHARS:
+                        break
+                    kept.append(line)
+                    running += len(line) + 1
+                if kept:
+                    raw_content = "\n".join(kept) + "..."
+                else:
+                    # First line alone exceeds budget — partial cut as fallback
+                    raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
+
         line = f"- **{key}** — {raw_content}"
         lines.append(line)
-    
+
     joined = "\n".join(lines)
-    
-    # Hard total block ceiling (fallback safety net)
-    if len(joined) > _MAX_BLOCK_CHARS:
-        joined = joined[:_MAX_BLOCK_CHARS].rsplit('\n', 1)[0] + "\n... (truncated, budget exceeded)"
-    
+    truncated = False
+
+    # --- Hard total block ceiling (drops complete entries, not partial lines)-
+    # Constants that appear in every output regardless of truncation
+    _header_len  = len("[MemChorus injected context]\n")
+    _footer_len  = len("\n[/MemChorus injected block]")
+
+    while len(joined) + _header_len + _footer_len > _MAX_BLOCK_CHARS:
+        if not lines:
+            break
+        lines.pop()
+        joined = "\n".join(lines)
+        truncated = True
+
+    # Append trailer only if we actually dropped entries
+    if truncated:
+        joined += "\n... (truncated, budget exceeded)"
+
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
 
