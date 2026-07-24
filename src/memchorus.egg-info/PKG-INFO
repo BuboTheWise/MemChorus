@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: memchorus
-Version: 1.5.12
+Version: 1.5.9
 Summary: Memory orchestration system for Hermes agents
 Home-page: https://github.com/BuboTheWise/MemChorus
 Author: BuboTheWise
@@ -11,26 +11,20 @@ Classifier: Operating System :: OS Independent
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: pydantic<3.0,>=2.0
+Requires-Dist: pydantic>=2.0
 Requires-Dist: pyyaml>=5.4
-Provides-Extra: mcp
-Requires-Dist: mcp<2.0,>=1.0; extra == "mcp"
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: mcp>=1.0
 Dynamic: author
 Dynamic: classifier
 Dynamic: description
 Dynamic: description-content-type
 Dynamic: home-page
 Dynamic: license-file
-Dynamic: provides-extra
 Dynamic: requires-dist
 Dynamic: requires-python
 Dynamic: summary
 
 # MemChorus
-
-Current version: 1.5.12
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -319,37 +313,50 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.5.09 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `context_sensitive_pref`, `long_lived_knowledge`, `large_data_block`, `user_preference`, `relationship_graph`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `enabled`, `sweep_interval_hours`, `retention_days`, `eviction.importance_min`, and `archive.grace_days`. Lifecycle is opt-in (`enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+The lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. It provides per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps. Lifecycle is opt-in — disabled by default (`enabled: false`), so existing write-only behaviour is fully preserved when you do not activate it.
 
-**Example YAML configuration** (copy-paste into `~/.hermes/memchorus_config.yaml`):
+### Configuration
+
+Drop a `lifecycle` block into `~/.hermes/memchorus_config.yaml`. The nesting below reflects the exact dict structure the orchestrator expects (resolved by `_resolve_lifecycle_config`). Any omitted sub-keys fall back to their defaults:
 
 ```yaml
+# ~/.hermes/memchorus_config.yaml
 lifecycle:
-  enabled: true                             # opt-in — disabled by default
-  sweep_interval_hours: 8                   # background sweep every N hours
-  retention_days:                           # per-profile expiry (set to null to disable)
-    ephemeral: 7
-    context_sensitive_pref: 30
-    long_lived_knowledge: 180
-    large_data_block: 30
-    user_preference: null                   # null = no expiry (permanent)
-    relationship_graph: null                # null = no expiry (permanent)
-  eviction:                                 # soft-delete thresholds
-    importance_min: 0.15                    # delete if relevance score drops below this
-    duplicate_cluster_max: 3                # merge clusters larger than this count
-    similarity_min: 0.75                    # treat entries as duplicates above this similarity
-  archive:                                  # phase-one soft-delete policy
-    grace_days: 30                          # keep archived items for N days before purge
-    score_penalty: -0.7                     # reduce relevance score of archived items by this amount
-  merge_at_write:                           # deduplication hooks during save()
-    enabled: true
-  audit:                                    # structured lifecycle change log
-    enabled: true
-    log_path: ~/.hermes/memchorus_audit.jsonl
-    max_entries: 10000
+  enabled: true                      # master toggle (default: false)
+  sweep_interval_hours: 8            # how often sweeps run (default: 8)
+
+  retention_days:                    # per-profile TTL mapping (§3.1)
+    ephemeral: 7                     # short-lived scratch data       (default: 7)
+    context_sensitive_pref: 30        # contextual preferences       (default: 30)
+    long_lived_knowledge: 180         # persistent knowledge base    (default: 180)
+    large_data_block: 30             # bulk data payloads           (default: 30)
+    user_preference: null            # never expire                 (default: null)
+    relationship_graph: null         # never expire                 (default: null)
+
+  eviction:                          # thresholds for removal (§4.1)
+    importance_min: 0.15             # drop memories scoring below  (default: 0.15)
+    duplicate_cluster_max: 3        # max identical copies allowed  (default: 3)
+    similarity_min: 0.75            # similarity floor for merge   (default: 0.75)
+
+  archive:                           # soft-delete policy (§4.2)
+    grace_days: 30                   # days before archival         (default: 30)
+    score_penalty: -0.7              # relevance penalty on archive (default: -0.7)
+
+  merge_at_write:                    # pre-save dedup (§5.1)
+    enabled: true                    # deduplicate at write time    (default: true)
+
+  audit:                             # structured audit log (§6.4)
+    enabled: true                    # emit NDJSON audit entries    (default: true)
+    log_path: ~/.hermes/memchorus_audit.jsonl  # output file       (default shown)
+    max_entries: 10000               # rotation threshold           (default: 10000)
 ```
 
-**Default values:** `enabled: false`, `sweep_interval_hours: 8`, `retention_days` per profile as shown above (`ephemeral: 7`, `context_sensitive_pref: 30`, `long_lived_knowledge: 180`, `large_data_block: 30`, `user_preference: null`, `relationship_graph: null`), `eviction.importance_min: 0.15`, `eviction.duplicate_cluster_max: 3`, `eviction.similarity_min: 0.75`, `archive.grace_days: 30`, `merge_at_write.enabled: true`, audit logging enabled with a 10,000-entry limit at `~/.hermes/memchorus_audit.jsonl`.
+Key behaviour:
+- **`enabled: false`** (the default) means zero lifecycle activity — sweeps never fire and memory is purely write-only. Set to `true` only when you want automated sweep/eviction/merge cycles.
+- The `retention_days` sub-dict uses profile names that match the `MemoryProfile` enum. Setting a value to `null` means "never expire this category."
+- All other keys are optional. Omitted sub-keys silently merge with safe defaults (see `_resolve_lifecycle_config` in `lifecycle_manager.py`).
+
+See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 ## Installation
 
@@ -372,24 +379,6 @@ Verify the import works before using it:
 ```bash
 python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
-
-#### Optional Dependencies
-
-MemChorus splits its runtime dependencies into a lean core plus optional extras so that installation plays nicely alongside other packages (especially Hermes base environments with their own Pydantic version).
-
-| Extra | Command | What it adds |
-|---|---|---|
-| **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
-| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
-| **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
-
-You can combine extras: `"memchorus[mcp,dev]"` for full development.
-
-#### Version Compatibility Notes
-
-- **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
-- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
-- If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
 
 ### MemPalace backend
 
@@ -553,10 +542,9 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.10 (current — on `master`)
+### v1.5.09 (current — on `master`)
 
-**- RecursionGuard unified depth counter:** Replaced fragile boolean recursion sentinels (`_REC_GUARD` module-level bool + instance-level `_in_enforcement_save`, `_in_enforcement_recall` flags) with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. All 4 enforcement hooks in orchestrator.py (save, retrieve, retrieve_with_source, search) and auto_recall_engine.py now use the shared guard. Thread-safe under Python GIL. 26 deep-nesting tests added covering save → enforce → hook → save chains at 1–3 levels with full exception path coverage.
-- **GAP026-C batched flush:** ToolCaptureBuffer caps saves, preventing excessive individual writes per session (50+ saved actions).
+**- GAP016 fix (PR #43):** The `CONTEXTUAL_SYNTHESIS_COMPLETION` query template added in GAP015 was not reflected in the echo-prevention guard set `_KNOWN_QUERY_TEMPLATES`. Added missing template string to the frozenset. All 5 `_QUERY_MAP` entries now verified as exact-match against guards (programmatic check). 14 tests pass, 1 expected skip, no regressions.
 - **GAP015 fix (PR #42):** `DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION` added to `_QUERY_MAP` in `auto_recall_engine.py`, fixing silent drops when behavioral triggers fire at contextual synthesis decision points.
 
 ### v1.5.08
@@ -587,7 +575,7 @@ orchestrate.save(
 )
 \`\`\`
 
-Other v1.5.09 features:
+Other v1.5.0 features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
@@ -623,4 +611,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.5.09 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.5.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

@@ -2,18 +2,22 @@
 """
 test_orientation.py -- Unit tests for memchorus.orientation module.
 
-Covers every public function/method in orientation.py that previously had
-zero dedicated test coverage:
+Covers every public function/method in orientation.py:
 
-1. _CacheRegistry.__init__() — cache construction with cap/TTL params
-2. _CacheRegistry.put() — add entries, verify LRU eviction at self._cap
-3. _CacheRegistry.get() — hit/miss, TTL expiry
-4. _CacheKey class — hashability, equality
-5. _build_orientation_query() — query string construction logic
-6. _resolve_project() — env_task to project name resolution (None handling)
-7. orientation_search() — full search orchestration with orchestrator param
-8. _execute_query() — orchestrator call with limit/dedup
-9. clear_orientation_cache() — global registry clearing
+1. _CacheKey class — hashability, equality
+2. _CacheRegistry.__init__() — cache construction with cap/TTL params
+3. _CacheRegistry.put() — add entries, verify LRU eviction at self._cap
+4. _CacheRegistry.get() — hit/miss, TTL expiry
+5. _is_hermez_project_name() — hex Kanban ID detection / skip logic
+6. _resolve_project() — env_task to project name resolution (hex skip + fallback chain)
+7. _build_orientation_query() — query string construction logic
+8. orientation_search() — full search orchestration with orchestrator param
+9. _execute_query() — orchestrator call with limit/dedup
+10. clear_orientation_cache() — global registry clearing
+
+New additions for GAP026:
+- t_0388776d: Hex Kanban ID detection + fallback chain priority order tests
+- Cache stale empty result prevention after project context switch
 
 Use live imports, no unittest.mock for MemChorus internals.
 """
@@ -30,6 +34,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from memchorus.orientation import (
     _CacheKey,
     _CacheRegistry,
+    _KANBAN_HEX_RE,
+    _is_hermez_project_name,
     _build_orientation_query,
     _resolve_project,
     clear_orientation_cache,
@@ -39,7 +45,7 @@ from memchorus.orientation import (
 
 
 class TestCacheKey(unittest.TestCase):
-    """_CacheKey — hashability, equality, frozen dataclass."""
+    """_CacheKey -- hashability, equality, frozen dataclass."""
 
     def test_equality_same_values(self):
         k1 = _CacheKey(project="MemChorus", query_types=("kg", "semantic"))
@@ -73,7 +79,7 @@ class TestCacheKey(unittest.TestCase):
 
 
 class TestCacheRegistry(unittest.TestCase):
-    """_CacheRegistry — LRU cache with TTL eviction."""
+    """_CacheRegistry -- LRU cache with TTL eviction."""
 
     def setUp(self):
         self.registry = _CacheRegistry(maxsize=3)
@@ -93,7 +99,7 @@ class TestCacheRegistry(unittest.TestCase):
         """Empty result lists must NOT be cached (poison-entry guard)."""
         key = _CacheKey(project="A", query_types=("kg",))
         self.registry.put(key, [], ttl_seconds=60.0)
-        # A put of empty list is a no-op — get must return None (miss)
+        # A put of empty list is a no-op -- get must return None (miss)
         self.assertIsNone(self.registry.get(key))
 
     def test_get_miss_returns_none(self):
@@ -110,7 +116,7 @@ class TestCacheRegistry(unittest.TestCase):
         key = _CacheKey(project="A", query_types=("kg",))
         # Store with long TTL
         self.registry.put(key, [{"key": "r1"}], ttl_seconds=60.0)
-        # Override with short TTL — should expire immediately
+        # Override with short TTL -- should expire immediately
         got = self.registry.get(key, ttl_override=0.001)
         time.sleep(0.01)
         self.assertIsNone(self.registry.get(key, ttl_override=0.001))
@@ -122,7 +128,7 @@ class TestCacheRegistry(unittest.TestCase):
             self.registry.put(k, [{"key": f"r{i}"}], ttl_seconds=60.0)
             time.sleep(0.01)
 
-        # Add 4th entry — should evict oldest (P0)
+        # Add 4th entry -- should evict oldest (P0)
         k_new = _CacheKey(project="P3", query_types=("kg",))
         self.registry.put(k_new, [{"key": "r3"}], ttl_seconds=60.0)
 
@@ -168,11 +174,158 @@ class TestCacheRegistry(unittest.TestCase):
         self.assertEqual(default_registry._maxsize, 256)
 
 
+class TestIsHermezProjectName(unittest.TestCase):
+    """GAP026: _is_hermez_project_name -- hex Kanban ID detection."""
+
+    def test_lowercase_hex_8_char_skipped(self):
+        """t_[0-9a-f]{8} pattern should NOT be treated as project name."""
+        self.assertFalse(_is_hermez_project_name("t_a1b2c3d4"))
+
+    def test_uppercase_hex_8_char_skipped(self):
+        """Hex detection is case-insensitive."""
+        self.assertFalse(_is_hermez_project_name("t_A1B2C3D4"))
+
+    def test_mixed_case_hex_8_char_skipped(self):
+        self.assertFalse(_is_hermez_project_name("t_aF3Eb9d2"))
+
+    def test_non_hex_task_id_accepted(self):
+        """Task IDs with non-hex chars are treated as project names."""
+        self.assertTrue(_is_hermez_project_name("t_xyz123ab"))
+        self.assertTrue(_is_hermez_project_name("MyProject"))
+
+    def test_meaningful_project_names_accepted(self):
+        self.assertTrue(_is_hermez_project_name("MemChorus"))
+        self.assertTrue(_is_hermez_project_name("Void-Scanner"))
+        self.assertTrue(_is_hermez_project_name("project_v2"))
+
+    def test_empty_string_rejected(self):
+        self.assertFalse(_is_hermez_project_name(""))
+
+    def test_short_hex_not_skipped(self):
+        """Only exactly 8 hex chars after t_ are skipped."""
+        self.assertTrue(_is_hermez_project_name("t_a1b2c3"))       # 6 chars
+        self.assertTrue(_is_hermez_project_name("t_a1b2c3d4e5"))   # 10 chars
+
+    def test_no_t_prefix_not_skipped(self):
+        """Plain hex strings without t_ prefix are treated as project names."""
+        self.assertTrue(_is_hermez_project_name("a1b2c3d4"))
+
+
+class TestResolveProjectHexSkip(unittest.TestCase):
+    """GAP026: _resolve_project -- hex Kanban ID detection + fallback chain priority."""
+
+    def _save_workspace(self):
+        return os.environ.pop("HERMES_WORKSPACE", None)
+
+    def _restore_workspace(self, value):
+        if value is not None:
+            os.environ["HERMES_WORKSPACE"] = value
+        elif "HERMES_WORKSPACE" in os.environ:
+            del os.environ["HERMES_WORKSPACE"]
+
+    # --- Hex Kanban IDs are skipped, falling to deeper fallbacks ---
+
+    def test_hex_kanban_id_falls_to_workspace(self):
+        """When env_task is a hex Kanban ID and HERMES_WORKSPACE is set, use workspace."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/some/project/dir"
+        try:
+            result = _resolve_project("t_a1b2c3d4")
+            self.assertEqual(result, "dir")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_hex_kanban_id_uppercase_falls_to_workspace(self):
+        """Uppercase hex Kanban IDs are also skipped."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/some/project/dir"
+        try:
+            result = _resolve_project("t_A1B2C3D4")
+            self.assertEqual(result, "dir")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_hex_kanban_id_falls_to_cwd(self):
+        """When env_task is hex Kanban ID and no HERMES_WORKSPACE, fall to cwd."""
+        orig = self._save_workspace()
+        try:
+            # Without workspace set, hex ID falls all the way to cwd
+            result = _resolve_project("t_beeeeef0")
+            self.assertEqual(result, os.path.basename(os.getcwd()))
+        finally:
+            self._restore_workspace(orig)
+
+    def test_meaningful_project_name_not_skipped(self):
+        """Non-hex project names returned as-is without falling through."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/different/path"
+        try:
+            result = _resolve_project("MemChorus")
+            self.assertEqual(result, "MemChorus")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_non_hex_task_id_not_skipped(self):
+        """Task IDs that don't match the hex pattern are returned."""
+        result = _resolve_project("t_xyz12345")  # 'x' is non-hex
+        self.assertEqual(result, "t_xyz12345")
+
+    # --- Full fallback chain priority order ---
+
+    def test_fallback_chain_env_task_wins(self):
+        """Priority 1: env_task takes precedence over everything."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/other/path"
+        try:
+            result = _resolve_project("RealProject")
+            self.assertEqual(result, "RealProject")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_fallback_chain_hex_skips_to_workspace(self):
+        """Priority 1→2: hex Kanban ID skipped, workspace used next."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/work/project/path"
+        try:
+            result = _resolve_project("t_12345678")
+            self.assertEqual(result, "path")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_fallback_chain_workspace_used_when_env_task_none(self):
+        """Priority 2: HERMES_WORKSPACE used when env_task is None."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/ws/dir"
+        try:
+            result = _resolve_project(None)
+            self.assertEqual(result, "dir")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
+
+    def test_fallback_chain_cwd_used_when_no_env(self):
+        """Priority 3: cwd basename used when env_task is None and no HERMES_WORKSPACE."""
+        orig = self._save_workspace()
+        try:
+            result = _resolve_project(None)
+            self.assertEqual(result, os.path.basename(os.getcwd()))
+        finally:
+            self._restore_workspace(orig)
+
+    def test_fallback_chain_empty_env_task_same_as_none(self):
+        """Empty/whitespace env_task behaves like None -- falls to workspace or cwd."""
+        orig = self._save_workspace()
+        try:
+            # Empty string → skip step 1 → fall through
+            result = _resolve_project("")
+            self.assertEqual(result, os.path.basename(os.getcwd()))
+        finally:
+            self._restore_workspace(orig)
+
+    def test_stripped_value_returned(self):
+        """env_task is stripped before return."""
+        result = _resolve_project("  MyProject  ")
+        self.assertEqual(result, "MyProject")
+
+
 class TestBuildOrientationQuery(unittest.TestCase):
-    """_build_orientation_query — query string construction logic."""
+    """_build_orientation_query -- query string construction logic."""
 
     def test_returns_list_for_valid_task(self):
-        queries = _build_orientation_query(env_task="t_12345")
+        queries = _build_orientation_query(env_task="t_custom123")
         self.assertIsInstance(queries, list)
         self.assertTrue(len(queries) >= 1)
 
@@ -196,7 +349,6 @@ class TestBuildOrientationQuery(unittest.TestCase):
 
     def test_returns_empty_when_no_project(self):
         """When env_task is None and no HERMES_WORKSPACE/cwd hints, returns []."""
-        # Save and clear environment for this test
         orig_workspace = os.environ.pop("HERMES_WORKSPACE", None)
         try:
             # _resolve_project falls through to os.getcwd() as last resort,
@@ -219,58 +371,21 @@ class TestBuildOrientationQuery(unittest.TestCase):
             if orig_workspace is not None:
                 os.environ["HERMES_WORKSPACE"] = orig_workspace
 
-
-class TestResolveProject(unittest.TestCase):
-    """_resolve_project — env_task to project name resolution."""
-
-    def test_env_task_returns_stripped_value(self):
-        result = _resolve_project("  t_be1e596c  ")
-        self.assertEqual(result, "t_be1e596c")
-
-    def test_empty_string_falls_through_priority_chain(self):
-        """Empty string should not match first condition."""
-        orig_workspace = os.environ.pop("HERMES_WORKSPACE", None)
+    def test_hex_kanban_id_uses_workspace_not_raw_id(self):
+        """When env_task is hex Kanban ID, queries should use workspace basename, not the raw ID."""
+        os.environ["HERMES_WORKSPACE"] = "/tmp/my/test/project"
         try:
-            # Should fall through to HERMES_WORKSPACE or cwd fallback
-            result = _resolve_project("")
-            self.assertIsInstance(result, str)  # at least cwd basename
-        finally:
-            if orig_workspace is not None:
-                os.environ["HERMES_WORKSPACE"] = orig_workspace
-
-    def test_none_env_falls_to_cwd(self):
-        """When env_task is None and no HERMES_WORKSPACE, fall to cwd."""
-        orig_workspace = os.environ.pop("HERMES_WORKSPACE", None)
-        try:
-            result = _resolve_project(None)
-            self.assertIsInstance(result, str)
-            # Should be basename of cwd
-            self.assertEqual(result, os.path.basename(os.getcwd()))
-        finally:
-            if orig_workspace is not None:
-                os.environ["HERMES_WORKSPACE"] = orig_workspace
-
-    def test_hermes_workspace_env_fallback(self):
-        """HERMES_WORKSPACE provides fallback when env_task is absent."""
-        os.environ["HERMES_WORKSPACE"] = "/tmp/some/project/dir"
-        try:
-            result = _resolve_project(None)
-            self.assertEqual(result, "dir")
-        finally:
-            del os.environ["HERMES_WORKSPACE"]
-
-    def test_env_task_highest_priority(self):
-        """env_task overrides HERMES_WORKSPACE."""
-        os.environ["HERMES_WORKSPACE"] = "/tmp/other/path"
-        try:
-            result = _resolve_project("MyKanbanTask")
-            self.assertEqual(result, "MyKanbanTask")
+            queries = _build_orientation_query(env_task="t_aabbccdd")
+            # The project should be "project" (workspace basename), NOT "t_aabbccdd"
+            for q in queries:
+                self.assertNotIn("t_aabbccdd", q["query"])
+                self.assertIn("project", q["query"])
         finally:
             del os.environ["HERMES_WORKSPACE"]
 
 
 class TestOrientationSearch(unittest.TestCase):
-    """orientation_search — full search orchestration."""
+    """orientation_search -- full search orchestration."""
 
     def setUp(self):
         clear_orientation_cache()
@@ -279,7 +394,7 @@ class TestOrientationSearch(unittest.TestCase):
         clear_orientation_cache()
 
     def test_returns_list(self):
-        result = orientation_search(env_task="t_test")
+        result = orientation_search(env_task="t_custom")
         self.assertIsInstance(result, list)
 
     def test_no_orchestrator_returns_empty(self):
@@ -299,7 +414,7 @@ class TestOrientationSearch(unittest.TestCase):
     def test_empty_env_returns_silently(self):
         """Silent skip when no project context detectable (orchestrator=None)."""
         result = orientation_search(env_task=None, orchestrator=None)
-        # May return [] or some results depending on cwd — just verify it's a list
+        # May return [] or some results depending on cwd -- just verify it's a list
         self.assertIsInstance(result, list)
 
     def test_caching_returns_same_results(self):
@@ -309,8 +424,87 @@ class TestOrientationSearch(unittest.TestCase):
         self.assertEqual(result1, result2)
 
 
+class TestCacheStaleResultOnProjectSwitch(unittest.TestCase):
+    """GAP026: Verify cache does not serve stale empty results after project context switch.
+
+    Scenario:
+    1. Query for Project A -- returns empty (no memories)
+    2. Switch to Project B
+    3. Project B should NOT receive cached empty results from step 1
+    """
+
+    def setUp(self):
+        clear_orientation_cache()
+
+    def tearDown(self):
+        clear_orientation_cache()
+
+    def test_new_project_not_affected_by_previous_empty_query(self):
+        """Switching projects after an empty result does not reuse stale cache."""
+        # First query for project A -- no orchestrator means empty results
+        import memchorus.orientation as _mod
+
+        result_a = orientation_search(env_task="ProjectA", orchestrator=None)
+        self.assertEqual(result_a, [])  # no orchestrator → empty
+
+        # Verify nothing was cached for ProjectA (empty results aren't cached)
+        cache_len_before = len(_mod._cache._cache)
+
+        # Now query for project B -- should run fresh, not hit stale data
+        result_b = orientation_search(env_task="ProjectB", orchestrator=None)
+        self.assertEqual(result_b, [])  # still no orchestrator
+        # Cache state should be the same (neither got cached since both were empty)
+        cache_len_after = len(_mod._cache._cache)
+        self.assertEqual(cache_len_before, cache_len_after)
+
+    def test_project_switch_invalidates_old_entries(self):
+        """When project changes, clear_project removes old entries."""
+        import memchorus.orientation as _mod
+
+        # Manually populate cache for ProjectA
+        key = _CacheKey(project="ProjectA", query_types=("kg", "semantic"))
+        _mod._cache.put(key, [{"key": "a1", "content": "old data"}], ttl_seconds=300.0)
+        self.assertEqual(len(_mod._cache._cache), 1)
+
+        # Clear ProjectA via targeted invalidation
+        _mod._cache.clear_project("ProjectA")
+        self.assertEqual(len(_mod._cache._cache), 0)
+
+    def test_empty_results_never_cached(self):
+        """Confirm empty result lists are never written to cache."""
+        import memchorus.orientation as _mod
+
+        _mod._cache.put(
+            _CacheKey(project="Empty", query_types=("kg",)),
+            [],
+            ttl_seconds=60.0,
+        )
+        self.assertEqual(len(_mod._cache._cache), 0)
+
+    def test_project_switch_clears_old_populates_new(self):
+        """With an orchestrator: after switching projects, only new project data is in cache."""
+        class CountingOrch:
+            """Tracks how many searches were called and with what query."""
+            calls = []
+            def search(self, query_str, limit=5):
+                self.calls.append(query_str)
+                return [{"key": f"hit_{len(self.calls)}", "content": query_str}]
+
+        orch = CountingOrch()
+        # Query for ProjectX first
+        result_x = orientation_search(env_task="ProjectX", orchestrator=orch, limit=5)
+        self.assertTrue(len(result_x) > 0)
+
+        # Then switch to ProjectY
+        result_y = orientation_search(env_task="ProjectY", orchestrator=orch, limit=5)
+        self.assertTrue(len(result_y) > 0)
+
+        # Both projects were queried (no stale data served from cache)
+        self.assertEqual(len(orch.calls), 4)  # 2 queries × 0 previously cached
+
+
 class TestExecuteQuery(unittest.TestCase):
-    """_execute_query — single query execution."""
+    """_execute_query -- single query execution."""
 
     def test_returns_list_when_no_orchestrator(self):
         qdef = {"type": "kg", "query": "test project relationship"}
@@ -357,7 +551,7 @@ class TestExecuteQuery(unittest.TestCase):
 
 
 class TestClearOrientationCache(unittest.TestCase):
-    """clear_orientation_cache — global cache purge."""
+    """clear_orientation_cache -- global cache purge."""
 
     def test_clearing_removes_all_entries(self):
         import memchorus.orientation as _ori_mod
@@ -368,7 +562,7 @@ class TestClearOrientationCache(unittest.TestCase):
 
         clear_orientation_cache()
 
-        # Verify via len() on _cache._cache dict — immune to stale-ref issues
+        # Verify via len() on _cache._cache dict -- immune to stale-ref issues
         self.assertEqual(len(_ori_mod._cache._cache), 0)
 
 

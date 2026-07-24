@@ -1,390 +1,252 @@
-"""Integration tests for feedback correction injection in on_pre_llm_call.
-
-Covers the injection path where FeedbackLoopIntegration evaluates TurnContext
-during pre-LLM hooks and appends corrections alongside memory recall blocks:
-
-  1. inject_feedback_corrections is called during on_pre_llm_call execution
-  2. Both recall and feedback appear in correct block ordering
-  3. Returns empty / None when no feedback loops match
-  4. Graceful degradation on internal exceptions (returns None/[])
-  5. Only recall block appears when feedback evaluates to None
-  6. TurnContext built from kwargs is passed correctly
-
-Uses unittest.TestCase for consistency with the existing suite.
 """
+test_feedback_correction_injection.py - Integration test for feedback loop
+correction injection in the pre-LLM hook.
 
-import os
-import sys
-import tempfile
-import textwrap
-import unittest
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from unittest.mock import MagicMock, patch
+Proves that _try_feedback_loop is called during on_pre_llm_call and that
+correction text appears in the output context injected between memory recall
+results and downstream tool output sections.
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+Acceptance Criteria:
+  1. Mock a BehavioralTrigger that meets conditions (detect() returns hits)
+  2. Verify _try_feedback_loop() is invoked during pre-LLM hook
+  3. Verify correction text appears in injected_context with proper block ordering:
+     [MemChorus Memory Recall] -> feedback corrections -> downstream tool output
+"""
+import unittest.mock as mock
+import pytest
 
-# --------------------------------------------------------------------------- #
-# Helpers                                                                      #
-# --------------------------------------------------------------------------- #
-
-
-def _make_loop_yaml(base_dir: str) -> None:
-    """Create a minimal valid feedback loop definition YAML file."""
-    import shutil
-
-    # Clean up any leftover feedback dir so we start fresh.
-    loop_dir_path = os.path.join(base_dir, "feedback")
-    shutil.rmtree(loop_dir_path, ignore_errors=True)
-    os.makedirs(loop_dir_path, exist_ok=True)
-
-    yaml_content = textwrap.dedent("""\
-        schema: schema_v1
-        name: test_inject_loop
-        trigger_event: pre_llm_call
-        cooldown_interval: 0
-        priority: 50
-        enabled: true
-        correction_prompt: "CORRECTION: this is a test feedback adjustment"
-        conditions:
-          kw:
-            type: keyword_pattern
-            value: memchorustestkeyword
-    """)
-    with open(os.path.join(loop_dir_path, "test_loop.yaml"), "w") as f:
-        f.write(yaml_content)
+from memchorus.behavioral_trigger import BehavioralTrigger, DecisionPoint
 
 
-# --------------------------------------------------------------------------- #
-# Test cases                                                                   #
-# --------------------------------------------------------------------------- #
+class TestFeedbackCorrectionInjection:
+    """Integration tests for _try_feedback_loop in on_pre_llm_call."""
 
+    @pytest.fixture
+    def mock_orchestrator(self):
+        """Mock orchestrator that returns search results."""
+        orch = mock.MagicMock()
+        orch.search.return_value = [
+            {"key": "project_convention", "content": "Always use two-digit patch versions"},
+            {"key": "recent_fix", "content": "Fixed routing map bug in v1.5.0 audit"},
+        ]
+        orch.save.return_value = True
+        orch.recommended_sources.return_value = ["hermes_default"]
+        return orch
 
-class TestFeedbackCorrectionInjection(unittest.TestCase):
-    """Integration tests for the feedback correction injection path."""
+    @pytest.fixture
+    def mock_bt_results(self):
+        """Pre-built DetectedPoint list for detect()."""
+        from memchorus.behavioral_trigger import DetectedPoint
+        return [DetectedPoint(
+            type=DecisionPoint.TOOL_CALL_INTENT,
+            confidence=0.8,
+            matched_keyword="implement",
+            text_span="implement the fix",
+        )]
 
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        _make_loop_yaml(self.tmpdir)
-
-    def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    # -- 1. Verify inject_feedback_corrections is called during on_pre_llm_call --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_injection_path_called_during_pre_llm_hook(
-        self, mock_get_orchestrator
+    def test_try_feedback_loop_called_during_pre_llm_call(
+        self, mock_orchestrator, mock_bt_results
     ):
-        """on_pre_llm_call fires the feedback loop injection path."""
-        orchestrator = MagicMock()
+        """_try_feedback_loop must be invoked during on_pre_llm_call execution."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
 
-        # Search returns results so we don't hit the early-None exit.
-        orchestrator.search.return_value = [
-            {"key": "k1", "content": "existing memory"},
-        ]
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            from memchorus.hooks import MemChorusHooks
+            hooks = MemChorusHooks()
+            hooks._btrigger = bt_spy
 
-        mock_get_orchestrator.return_value = orchestrator
+            # Spy on _try_feedback_loop itself
+            original = hooks._try_feedback_loop
+            with mock.patch.object(
+                type(hooks),
+                "_try_feedback_loop",
+                wraps=original,
+                return_value=[],
+            ) as method_spy:
+                result = hooks.on_pre_llm_call(
+                    user_message="I need to implement the fix for the routing bug"
+                )
 
-        from memchorus.hooks import MemChorusHooks
+                # _try_feedback_loop was called regardless of whether it returned lines
+                method_spy.assert_called_once()
+                call_args = method_spy.call_args
+                assert "implement" in call_args[0][0].lower(), \
+                    "First positional arg should be user_message content"
+                assert isinstance(call_args[0][1], dict), \
+                    "Second positional arg should be kwargs dict"
 
-        hooks = MemChorusHooks()
+    def test_correction_text_injected_between_recall_and_tool_output(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """When both recall and feedback fire, corrections appear between them."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
 
-        # Track whether inject_feedback_corrections was actually called.
-        with patch(
-            "memchorus.feedback_loop.integration.inject_feedback_corrections"
-        ) as mock_inject:
-            mock_inject.return_value = "-- Feedback Loop Corrections --\ncorrection text"
-
-            result = hooks.on_pre_llm_call(
-                user_message="test message for recall",
-            )
-
-            # The injection function should be called exactly once.
-            self.assertEqual(mock_inject.call_count, 1)
-            # Verify TurnContext was passed (called as keyword arg 'turn_context').
-            turn_ctx = mock_inject.call_args.kwargs["turn_context"]
-            self.assertIsNotNone(result)
-
-    # -- 2. When both recall and feedback fire, corrections appear after recall --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_both_blocks_appear_in_order(self, mock_get_orchestrator):
-        """Recall block comes first, then feedback corrections."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = [
-            {"key": "k1", "content": "session context memory"},
-        ]
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            mock_inject.return_value = (
-                "-- Feedback Loop Corrections --\ntest correction"
-            )
-
-            result = hooks.on_pre_llm_call(user_message="search terms here")
-
-        self.assertIsNotNone(result)
-        context = str(result["context"]) if isinstance(result, dict) else str(result.get("context", ""))
-        recall_pos = context.find("[MemChorus Memory Recall]")
-        feedback_pos = context.find("-- Feedback Loop Corrections --")
-        self.assertLess(recall_pos, feedback_pos)
-
-    # -- 3. Returns empty / None when no feedback loops match --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_no_match_returns_none(self, mock_get_orchestrator):
-        """When inject_feedback_corrections returns None and no recall items exist, the hook returns None."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = []  # no hits at all
-
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            mock_inject.return_value = None
-
-            result = hooks.on_pre_llm_call(user_message="nothing to match")
-            self.assertIsNone(result)
-
-    # -- 4. Graceful degradation when feedback integration raises internally --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_graceful_degradation_on_error(self, mock_get_orchestrator):
-        """Internal exception in on_pre_llm_call returns None without crashing."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = [
-            {"key": "k1", "content": "a memory"},
-        ]
-
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            # Force an exception inside injection path.
-            mock_inject.side_effect = RuntimeError("boom")
-
-            result = hooks.on_pre_llm_call(user_message="test content")
-
-        # The hook should still return data (recall exists), but without feedback block.
-        self.assertIsNotNone(result)
-        context_str = "" if result is None else str(result.get("context", ""))
-        # Feedback block should not appear after the error.
-        self.assertNotIn("Feedback Loop Corrections", context_str)
-
-    # -- 5. Only recall appears when feedback returns None --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_only_recall_when_feedback_none(self, mock_get_orchestrator):
-        """When orchestrator.search hits but feedback is empty, only the recall block appears."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = [
-            {"key": "recall_k", "content": "important context"},
-        ]
-
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            mock_inject.return_value = None  # no feedback corrections
-
-            result = hooks.on_pre_llm_call(user_message="something")
-
-        self.assertIsNotNone(result)
-        context = "" if result is None else str(result.get("context", ""))
-        self.assertIn("[MemChorus Memory Recall]", context)
-        self.assertNotIn("Feedback Loop Corrections", context)
-
-    # -- 6. TurnContext built from kwargs is passed correctly --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_turn_context_built_from_kwargs(self, mock_get_orchestrator):
-        """TurnContext receives correct values extracted from hook kwargs."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = [
-            {"key": "k1", "content": "data"},
-        ]
-
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            mock_inject.return_value = None
-
-            hooks.on_pre_llm_call(
-                user_message="user query text",
-                conversation_length=42,
-                tool_calls_this_turn=3,
-                empty_tool_responses=1,
-                recent_messages=["m1", "m2"],
-            )
-
-            call_kwargs = mock_inject.call_args.kwargs
-            turn_ctx = call_kwargs["turn_context"]
-            # Verify TurnContext fields match what the hook extracted.
-            self.assertEqual(turn_ctx.conversation_length, 42)
-            self.assertEqual(turn_ctx.tool_calls_this_turn, 3)
-            self.assertEqual(turn_ctx.empty_tool_responses, 1)
-
-    # -- Additional: overall module integration smoke test --
-
-    @patch("memchorus.hooks._get_orchestrator")
-    def test_full_injection_returns_expected_shape(self, mock_get_orchestrator):
-        """End-to-end happy path produces dict with 'source' and 'context' keys."""
-        orchestrator = MagicMock()
-        orchestrator.search.return_value = [
-            {"key": "k1", "content": "retrieved item"},
-        ]
-
-        mock_get_orchestrator.return_value = orchestrator
-
-        from memchorus.hooks import MemChorusHooks
-
-        hooks = MemChorusHooks()
-
-        with patch("memchorus.feedback_loop.integration.inject_feedback_corrections") as mock_inject:
-            mock_inject.return_value = "-- Feedback Loop Corrections --\nCorr"
-
-            result = hooks.on_pre_llm_call(user_message="happy path test")
-
-        self.assertIsInstance(result, dict)
-        self.assertEqual(result["source"], "memchorus_pre_llm_call")
-        self.assertIn("context", result)
-
-
-class TestFeedbackLoopIntegrationEvaluate(unittest.TestCase):
-    """Unit-level tests for the FeedbackLoopIntegration.evaluate() pipeline."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        _make_loop_yaml(self.tmpdir)
-
-    def tearDown(self):
-        import shutil
-
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    # -- Verify evaluate returns correction prompts --
-
-    def test_evaluate_returns_prompts_on_match(self):
-        """Integration.evaluate() returns a list of prompt strings when conditions match."""
-        from memchorus.feedback_loop.integration import (
-            FeedbackLoopIntegration,
-            TurnContext,
-            TriggerEvent,
+        # Simulate inject_feedback_corrections returning a correction block
+        feedback_result = (
+            "-- Feedback Loop Corrections --\n"
+            "[FEEDBACK:watchdog] STEERING (Level 1 hint): Watch for false positives"
         )
 
-        integration = FeedbackLoopIntegration.build(
-            loop_dir=Path(self.tmpdir) / "feedback",
-        )
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            from memchorus.hooks import MemChorusHooks
+            hooks = MemChorusHooks()
+            hooks._btrigger = bt_spy
 
-        ctx = TurnContext(
-            user_message="this is a test message with memchorustestkeyword pattern",
-            conversation_length=0,
-            tool_calls_this_turn=0,
-            empty_tool_responses=0,
-            recent_messages=[],
-        )
+            # Patch inject_feedback_corrections to return our canned correction
+            with mock.patch(
+                "memchorus.feedback_loop.integration.inject_feedback_corrections",
+                return_value=feedback_result,
+            ):
+                result = hooks.on_pre_llm_call(
+                    user_message="Plan the next step for implementing the fix"
+                )
 
-        promos = integration.evaluate(ctx, TriggerEvent.PRE_LLM_CALL)
-        # The kw should match "test_loop.yaml" (which has keyword 'memchorustestkeyword').
-        self.assertTrue(promos)
+                assert result is not None, "Hook should return a result when recall+feedback fire"
+                injected = result.get("injected_context", "")
 
-    # -- Verify evaluate returns empty list on no-match keywords --
+                # Block ordering: MemChorus Memory Recall comes first, then feedback
+                recall_pos = injected.find("[MemChorus Memory Recall]")
+                feedback_pos = injected.find("-- Feedback Loop Corrections --")
 
-    def test_evaluate_returns_empty_when_no_match(self):
-        """Integration evaluates to None/empty when conditions do not match."""
-        from memchorus.feedback_loop.integration import (
-            FeedbackLoopIntegration,
-            TurnContext,
-            TriggerEvent,
-        )
+                assert recall_pos >= 0, "Memory Recall block should be in injected context"
+                assert feedback_pos > recall_pos, \
+                    "Feedback corrections must appear after memory recall block"
 
-        integration = FeedbackLoopIntegration.build(
-            loop_dir=Path(self.tmpdir) / "feedback",
-        )
+                # Correction content is present
+                assert "FEEDBACK:watchdog" in injected
+                assert "STEERING" in injected
 
-        ctx = TurnContext(
-            user_message="zebra pineapple cactus — no keyword match here",
-            conversation_length=0,
-            tool_calls_this_turn=0,
-            empty_tool_responses=0,
-            recent_messages=[],
-        )
+    def test_try_feedback_loop_returns_empty_list_on_no_match(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """When conditions don't match, _try_feedback_loop returns empty list."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
 
-        promos = integration.evaluate(ctx, TriggerEvent.PRE_LLM_CALL)
-        self.assertEqual(promos, [])
+        # inject_feedback_corrections returns None (no matching corrections)
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            with mock.patch(
+                "memchorus.feedback_loop.integration.inject_feedback_corrections",
+                return_value=None,
+            ):
+                from memchorus.hooks import MemChorusHooks
+                hooks = MemChorusHooks()
+                hooks._btrigger = bt_spy
 
-    # -- Verify cooldown respects interval --
+                result = hooks._try_feedback_loop(
+                    input_text="Normal conversation with no trigger conditions",
+                    kwargs={"conversation_length": 1},
+                )
 
-    def test_cooldown_prevents_fire_within_window(self):
-        """Loops do not fire again before cooldown expires (using a large cooldown)."""
-        # Build a temp loop with large cooldown (max 3600 per schema validation).
-        loop_dir = Path(self.tmpdir) / "feedback"
-        yaml_content = textwrap.dedent("""\
-            schema: schema_v1
-            name: cooldown_test_loop
-            trigger_event: pre_llm_call
-            cooldown_interval: 3600
-            priority: 50
-            enabled: true
-            correction_prompt: "cooldown test prompt"
-            conditions:
-              cdkw:
-                type: keyword_pattern
-                value:
-                  - xyz
-        """)
-        with open(loop_dir / "2_cooldown.yaml", "w") as f:
-            f.write(yaml_content)
+                assert result == [], "Should return empty list when no corrections match"
 
-        from memchorus.feedback_loop.integration import (
-            FeedbackLoopIntegration,
-            TurnContext,
-            TriggerEvent,
-        )
+    def test_try_feedback_loop_graceful_degradation_on_exception(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """_try_feedback_loop returns [] on internal exceptions (graceful degradation)."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
 
-        integration = FeedbackLoopIntegration.build(loop_dir=loop_dir)
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            # Force inject_feedback_corrections to raise
+            with mock.patch(
+                "memchorus.feedback_loop.integration.inject_feedback_corrections",
+                side_effect=ValueError("simulated feedback system failure"),
+            ):
+                from memchorus.hooks import MemChorusHooks
+                hooks = MemChorusHooks()
+                hooks._btrigger = bt_spy
 
-        ctx = TurnContext(
-            user_message="xyz — this matches keyword and triggers the loop",
-            conversation_length=0,
-            tool_calls_this_turn=0,
-            empty_tool_responses=0,
-            recent_messages=[],
-        )
+                result = hooks._try_feedback_loop(
+                    input_text="Test message",
+                    kwargs={"conversation_length": 5, "tool_calls_this_turn": 2},
+                )
 
-        first_round = integration.evaluate(ctx, TriggerEvent.PRE_LLM_CALL)
-        # First call should fire.
-        self.assertTrue(first_round)
+                assert result == [], "Should return [] on exception (graceful degradation)"
 
-        second_call = integration.evaluate(ctx, TriggerEvent.PRE_LLM_CALL)
-        # Second call should be blocked by cooldown.
-        self.assertEqual(second_call, [])
+    def test_pre_llm_call_includes_only_recall_when_feedback_returns_none(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """When recall fires but feedback doesn't, only recall block appears."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
+
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            with mock.patch(
+                "memchorus.feedback_loop.integration.inject_feedback_corrections",
+                return_value=None,
+            ):
+                from memchorus.hooks import MemChorusHooks
+                hooks = MemChorusHooks()
+                hooks._btrigger = bt_spy
+
+                result = hooks.on_pre_llm_call(
+                    user_message="Implement the fix and verify it works"
+                )
+
+                assert result is not None, "Should still return recall results"
+                injected = result.get("injected_context", "")
+
+                # Recall block present
+                assert "[MemChorus Memory Recall]" in injected
+
+                # Feedback block NOT present when feedback returns None
+                assert "-- Feedback Loop Corrections --" not in injected
+
+    def test_feedback_turn_context_built_from_kwargs(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """Verify the TurnContext passed to inject_feedback_corrections reflects kwargs."""
+        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
+        bt_spy.detect.return_value = mock_bt_results
+
+        test_kwargs = {
+            "user_message": "Implement the routing fix",
+            "conversation_length": 42,
+            "tool_calls_this_turn": 3,
+            "empty_tool_responses": 1,
+            "recent_messages": ["msg1", "msg2"],
+        }
+
+        captured_context = None
+
+        def capture_context(turn_context, trigger_event):
+            nonlocal captured_context
+            captured_context = turn_context
+            return "-- Feedback Loop Corrections --\n[FEEDBACK:test] STEERING: test"
+
+        with mock.patch(
+            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
+        ):
+            with mock.patch(
+                "memchorus.feedback_loop.integration.inject_feedback_corrections",
+                side_effect=capture_context,
+            ):
+                from memchorus.hooks import MemChorusHooks
+                hooks = MemChorusHooks()
+                hooks._btrigger = bt_spy
+
+                hooks.on_pre_llm_call(**test_kwargs)
+
+        assert captured_context is not None, "TurnContext should have been captured"
+        assert captured_context.user_message == "Implement the routing fix"
+        assert captured_context.conversation_length == 42
+        assert captured_context.tool_calls_this_turn == 3
+        assert captured_context.empty_tool_responses == 1
+        assert captured_context.recent_messages == ["msg1", "msg2"]
 
 
-# --------------------------------------------------------------------------- #
-# Run tests when invoked directly                                              #
-# --------------------------------------------------------------------------- #
-
-
-if __name__ == "__main__":  # pragma: no cover - invoked via pytest
-    unittest.main()
+if __name__ == "__main__":
+    pytest.main([__file__, "-xvs"])

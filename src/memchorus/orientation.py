@@ -17,6 +17,7 @@ Query construction priority chain:
 import functools
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -132,13 +133,34 @@ def _build_orientation_query(
     ]
 
 
+_KANBAN_HEX_RE = re.compile(r"^t_[0-9a-f]{8}$", flags=re.IGNORECASE)
+
+
+def _is_hermez_project_name(name: str) -> bool:
+    """Return True if *name* looks like a real project name rather than a skip value.
+
+    Hex Kanban task IDs (e.g. ``t_a1b2c3d4``) are NOT useful as query terms, so they
+    return False and cause the caller to fall through the priority chain.
+    """
+    if not name:
+        return False
+    if _KANBAN_HEX_RE.match(name):
+        return False
+    return True
+
+
 def _resolve_project(env_task: Optional[str]) -> Optional[str]:
-    """Return the project identifier or None (silent skip)."""
-    # 1. Kanban task ID (highest priority)
-    if env_task and env_task.strip():
-        # Strip common UUID suffixes so query is readable: "ee8c3626" not "t_ee8c3626"
-        task_id = env_task.strip()
-        return task_id
+    """Return the project identifier or None (silent skip).
+
+    Priority chain:
+        1. HERMES_KANBAN_TASK (skipped when it matches a hex Kanban ID pattern)
+        2. HERMES_WORKSPACE env var (workspace directory basename)
+        3. Current working directory (basename)
+        4. ``None`` -- silent skip
+    """
+    # 1. Kanban task ID (highest priority — but skip hex IDs)
+    if env_task and env_task.strip() and _is_hermez_project_name(env_task.strip()):
+        return env_task.strip()
 
     # 2. HERMES_WORKSPACE env var (workspace directory basename)
     workspace = os.environ.get("HERMES_WORKSPACE")
