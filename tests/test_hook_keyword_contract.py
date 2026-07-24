@@ -58,7 +58,8 @@ class TestPreLlmCallKwargContract:
         old_kwargs = {
             "input_text": "wrong key",
             "messages": "also wrong",
-            "session_id": "test",
+            # No user_message, conversation_history, task_id, model, or platform
+            # → _build_search_terms has nothing to extract → returns None
         }
         result = hook.on_pre_llm_call(**old_kwargs)
         assert result is None, "Hook still accepts old keys — kwarg contract not fixed"

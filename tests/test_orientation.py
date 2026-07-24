@@ -190,9 +190,30 @@ class TestBuildOrientationQuery(unittest.TestCase):
 class TestResolveProject(unittest.TestCase):
     """_resolve_project — env_task to project name resolution."""
 
-    def test_env_task_returns_stripped_value(self):
-        result = _resolve_project("  t_be1e596c  ")
-        self.assertEqual(result, "t_be1e596c")
+    def test_hermes_tenant_highest_priority(self):
+        """HERMES_TENANT overrides everything."""
+        os.environ["HERMES_TENANT"] = "TenantProj"
+        try:
+            result = _resolve_project("OverriddenTask")
+            self.assertEqual(result, "TenantProj")
+        finally:
+            del os.environ["HERMES_TENANT"]
+
+    def test_env_task_returns_meaningful_name(self):
+        """Meaningful task names are returned as-is."""
+        os.environ.pop("HERMES_TENANT", None)
+        result = _resolve_project("  MemChorus  ")
+        self.assertEqual(result, "MemChorus")
+
+    def test_hex_task_id_skipped_for_fallback(self):
+        """t_xxxxxxxx Kanban IDs are skipped to deeper fallbacks."""
+        os.environ.pop("HERMES_TENANT", None)
+        os.environ["HERMES_WORKSPACE"] = "/some/path/MyProject"
+        try:
+            result = _resolve_project("  t_be1e596c  ")
+            self.assertEqual(result, "MyProject")
+        finally:
+            del os.environ["HERMES_WORKSPACE"]
 
     def test_empty_string_falls_through_priority_chain(self):
         """Empty string should not match first condition."""
@@ -206,8 +227,9 @@ class TestResolveProject(unittest.TestCase):
                 os.environ["HERMES_WORKSPACE"] = orig_workspace
 
     def test_none_env_falls_to_cwd(self):
-        """When env_task is None and no HERMES_WORKSPACE, fall to cwd."""
+        """When env_task is None and no workspace hints, fall to cwd."""
         orig_workspace = os.environ.pop("HERMES_WORKSPACE", None)
+        orig_kanban_ws = os.environ.pop("HERMES_KANBAN_WORKSPACE", None)
         try:
             result = _resolve_project(None)
             self.assertIsInstance(result, str)
@@ -216,6 +238,8 @@ class TestResolveProject(unittest.TestCase):
         finally:
             if orig_workspace is not None:
                 os.environ["HERMES_WORKSPACE"] = orig_workspace
+            if orig_kanban_ws is not None:
+                os.environ["HERMES_KANBAN_WORKSPACE"] = orig_kanban_ws
 
     def test_hermes_workspace_env_fallback(self):
         """HERMES_WORKSPACE provides fallback when env_task is absent."""
