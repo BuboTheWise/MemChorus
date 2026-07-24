@@ -26,16 +26,13 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 @pytest.fixture
 def real_orchestrator(tmp_path):
-    """A real MemoryOrchestrator backed by a temporary hermes_default source (mempalace disabled for isolation)."""
+    """A real MemoryOrchestrator backed by a temporary hermes_default source."""
     orch_config = {
         "hermes_default_config": {"memory_dir": str(tmp_path / "test_mem.json")},
         "enforce_on_read": False,
         "enforce_on_write": False,
     }
     orch = MemoryOrchestrator(config=orch_config)
-    # Disable mempalace to prevent contamination from live/stale memory data
-    if 'mempalace' in orch.memory_sources:
-        orch.disable_source('mempalace')
     return orch
 
 
