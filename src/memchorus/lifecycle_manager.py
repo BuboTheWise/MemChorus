@@ -249,6 +249,7 @@ class LifecycleManager:
         # --- Phase 2: engine instances (lazy to avoid import cycles) ---
         self._retention_engine = None
         self._eviction_engine = None
+        self._scheduler: Optional["SweepScheduler"] = None
         self._score_history: Dict[str, List[float]] = {}
 
         # §6.3 — per-backend failure tracking for cooldown logic
