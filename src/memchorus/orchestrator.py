@@ -860,7 +860,6 @@ class MemoryOrchestrator:
         # max_results alias (GAP021): docs use 'max_results', runtime used 'limit'
         effective_limit = max_results if max_results is not None else limit
 
-<<<<<<< HEAD
         # GAP040 FIX: Normalise query to str — callers sometimes pass a list of terms.
         # Without this, source._content_matches(query.lower(), ...) crashes with
         # AttributeError (list has no .lower()), the try/except at L924 catches it,
@@ -868,8 +867,6 @@ class MemoryOrchestrator:
         if isinstance(query, list):
             query = " ".join(str(q) for q in query)
 
-=======
->>>>>>> 8b13c12 (fix(GAP021): Add max_results alias to search() + retrieve_with_source provenance API)
         if context is None:
             context = ContextWeight()
 
