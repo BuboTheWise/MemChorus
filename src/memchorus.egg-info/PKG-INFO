@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: memchorus
-Version: 1.5.8
+Version: 1.5.9
 Summary: Memory orchestration system for Hermes agents
 Home-page: https://github.com/BuboTheWise/MemChorus
 Author: BuboTheWise
@@ -499,7 +499,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.08 (current — on `master`)
+### v1.5.09 (current — on `master`)
+
+**- GAP016 fix (PR #43):** The `CONTEXTUAL_SYNTHESIS_COMPLETION` query template added in GAP015 was not reflected in the echo-prevention guard set `_KNOWN_QUERY_TEMPLATES`. Added missing template string to the frozenset. All 5 `_QUERY_MAP` entries now verified as exact-match against guards (programmatic check). 14 tests pass, 1 expected skip, no regressions.
+- **GAP015 fix (PR #42):** `DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION` added to `_QUERY_MAP` in `auto_recall_engine.py`, fixing silent drops when behavioral triggers fire at contextual synthesis decision points.
+
+### v1.5.08
 
 **Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
 
