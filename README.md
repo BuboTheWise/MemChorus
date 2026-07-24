@@ -287,7 +287,50 @@ Key guarantees from this pipeline:
 
 ## Lifecycle Management
 
-MemChorus v1.5.0 includes multi-wing MemPalace routing (§1-§6): category-aware wing selection replaces hardcoded wing mapping, semantic room slugs replace key-hash rooms, and recall paths resolve wings dynamically from cached payload metadata. The existing lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. The layer provides: per-profile retention periods (`ephemeral`, `operational`, `long_lived`, `knowledge_permanent`), content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps via the `SweepScheduler`. Configured through the orchestrator config dictionary or `~/.hermes/memchorus_config.yaml`. Key knobs include `half_life_days`, `lifecycle.retention_days` per profile, `lifecycle.eviction.importance_min`, and `lifecycle.archive.grace_days`. Lifecycle is opt-in (`lifecycle.enabled: false` default) — existing write-only behaviour is preserved when disabled. See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
+The lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. It provides per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps. Lifecycle is opt-in — disabled by default (`enabled: false`), so existing write-only behaviour is fully preserved when you do not activate it.
+
+### Configuration
+
+Drop a `lifecycle` block into `~/.hermes/memchorus_config.yaml`. The nesting below reflects the exact dict structure the orchestrator expects (resolved by `_resolve_lifecycle_config`). Any omitted sub-keys fall back to their defaults:
+
+```yaml
+# ~/.hermes/memchorus_config.yaml
+lifecycle:
+  enabled: true                      # master toggle (default: false)
+  sweep_interval_hours: 8            # how often sweeps run (default: 8)
+
+  retention_days:                    # per-profile TTL mapping (§3.1)
+    ephemeral: 7                     # short-lived scratch data       (default: 7)
+    context_sensitive_pref: 30        # contextual preferences       (default: 30)
+    long_lived_knowledge: 180         # persistent knowledge base    (default: 180)
+    large_data_block: 30             # bulk data payloads           (default: 30)
+    user_preference: null            # never expire                 (default: null)
+    relationship_graph: null         # never expire                 (default: null)
+
+  eviction:                          # thresholds for removal (§4.1)
+    importance_min: 0.15             # drop memories scoring below  (default: 0.15)
+    duplicate_cluster_max: 3        # max identical copies allowed  (default: 3)
+    similarity_min: 0.75            # similarity floor for merge   (default: 0.75)
+
+  archive:                           # soft-delete policy (§4.2)
+    grace_days: 30                   # days before archival         (default: 30)
+    score_penalty: -0.7              # relevance penalty on archive (default: -0.7)
+
+  merge_at_write:                    # pre-save dedup (§5.1)
+    enabled: true                    # deduplicate at write time    (default: true)
+
+  audit:                             # structured audit log (§6.4)
+    enabled: true                    # emit NDJSON audit entries    (default: true)
+    log_path: ~/.hermes/memchorus_audit.jsonl  # output file       (default shown)
+    max_entries: 10000               # rotation threshold           (default: 10000)
+```
+
+Key behaviour:
+- **`enabled: false`** (the default) means zero lifecycle activity — sweeps never fire and memory is purely write-only. Set to `true` only when you want automated sweep/eviction/merge cycles.
+- The `retention_days` sub-dict uses profile names that match the `MemoryProfile` enum. Setting a value to `null` means "never expire this category."
+- All other keys are optional. Omitted sub-keys silently merge with safe defaults (see `_resolve_lifecycle_config` in `lifecycle_manager.py`).
+
+See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
 ## Installation
 
