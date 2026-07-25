@@ -17,6 +17,7 @@ import hashlib
 import importlib  # for dynamic entry_point discovery
 import json
 import logging
+import re
 import os
 from typing import Any, Dict, List, Optional
 
@@ -60,6 +61,104 @@ def _get_orchestrator() -> Optional[Any]:
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.debug("_get_orchestrator failed (no auto_bootstrap yet): %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# GAP026-C/D: Batched tool-capture with flush + structured ImportError logging
+# ---------------------------------------------------------------------------
+
+# Module-level batcher instance shared across all hook invocations.
+# Initialized lazily on first use to avoid startup cost when hooks are disabled.
+_CAPTURE_BATCHER: Any = None
+
+
+def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
+    """Lazily create and return the global ToolCaptureBatcher singleton.
+
+    Returns None if imports fail — caller should fall back to direct save.
+    Logs a structured ImportError on first failure (GAP026-D).
+    """
+    global _CAPTURE_BATCHER
+    if _CAPTURE_BATCHER is not None:
+        return _CAPTURE_BATCHER
+
+    try:
+        from memchorus.tool_capture_buffer import ToolCaptureBuffer  # noqa: F811
+        from memchorus.auto_storage_engine import AutoStorageEngine
+
+        engine = AutoStorageEngine(orchestrator=orchestrator)
+
+        def _batch_flush(payloads: List[Dict[str, Any]]) -> None:
+            """Flush a batch of payloads through AutoStorageEngine."""
+            for payload in payloads:
+                try:
+                    text = payload.get("text", "")
+                    res = engine.capture_outcome(text, outcome_type="automatic")
+                    if res.get("saved"):
+                        logger.info(
+                            "hooks: batch-saved content (%s, importance %.2f)",
+                            res.get("significance", ""),
+                            res.get("importance_score", 0.0),
+                        )
+                    else:
+                        logger.debug("hooks: capture_outcome rejected: %s", res.get("reason", ""))
+                except Exception as fe:
+                    logger.warning("hooks: batch flush item failed — skipping. %s", fe)
+
+        _CAPTURE_BATCHER = ToolCaptureBuffer(
+            max_items=10,
+            flush_interval=5.0,
+            callback=_batch_flush,
+        )
+        return _CAPTURE_BATCHER
+
+    except ImportError as ie:
+        logger.error(
+            "hooks: AutoStorageEngine/ToolCaptureBatcher import failed — %s\n"
+            "All post-tool captures will fall back to direct orchestrator.save until restart.\n"
+            "This usually means a broken package install; try:\n"
+            "  pip install --no-deps 'git+https://github.com/BuboTheWise/MemChorus.git@master'",
+            ie,
+        )
+        return None
+
+
+def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
+    """Queue a tool-capture payload in the batch buffer (GAP026-C).
+
+    If batching is unavailable, falls back to an immediate orchestrator.save()
+    so no data is lost — just written individually instead of batched.
+    """
+    try:
+        batcher = _get_capture_batcher(orchestrator)
+        if batcher is not None:
+            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
+            payload = {
+                "text": output_str,
+                "categories": ["AUTO", "RESULT"],
+                "outcome_type": "automatic",
+                "importance_score": 0.0,
+                "_auto_provenance": True,
+            }
+            batcher.add(payload)
+            return
+
+        # Batch unavailable — immediate fallback save (GAP026-D structured logging)
+    except Exception as e:
+        logger.warning("hooks: batch path failed — falling back to direct save. %s", e)
+
+    content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
+    auto_key = f"result_{content_hash}"
+    payload = {
+        "text": output_str,
+        "categories": ["AUTO", "RESULT"],
+        "outcome_type": "automatic",
+        "importance_score": 0.0,
+        "_auto_provenance": True,
+    }
+    saved = orchestrator.save(auto_key, payload)
+    if not saved:
+        logger.debug("hooks: direct fallback save rejected key=%s", auto_key)
 
 
 # ---------------------------------------------------------------------------
@@ -249,48 +348,10 @@ class MemChorusHooks:
 
             # Route through AutoStorageEngine's capture_outcome pipeline for
             # proper significance detection, scoring, provenance markers, and
-            # dedup — not a bare orchestrator.save().
-            auto_storage = None
-            try:
-                from memchorus.auto_storage_engine import AutoStorageEngine
-                if auto_storage is None:
-                    auto_storage = AutoStorageEngine(orchestrator=orchestrator)
-                storage_result = auto_storage.capture_outcome(output_str, outcome_type="automatic")
-                if not storage_result.get("saved"):
-                    reason = storage_result.get("reason", "unknown")
-                    logger.debug("hooks: capture_outcome rejected: %s", reason)
-                    return None
-
-                result: Dict[str, Any] = {
-                    "source": "memchorus_auto_storage",
-                    "saved_ids": [storage_result.get("key", "")],
-                    "significance": storage_result.get("significance", ""),
-                    "importance_score": storage_result.get("importance_score", 0.0),
-                }
-                logger.info("hooks: auto-saved content (%s, importance %.2f)", result["significance"], result["importance_score"])
-                return result
-            except Exception as sexc:
-                logger.warning("hooks: capture_outcome/Engine failed — falling back to direct save. %s", sexc)
-
-            # Fallback to direct orchestrator.save if engine fails
-            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
-            auto_key = f"result_{content_hash}"
-            payload = {
-                "text": output_str,
-                "categories": ["AUTO", "RESULT"],
-                "outcome_type": "automatic",
-                "importance_score": 0.0,
-                "_auto_provenance": True,
-            }
-            saved = orchestrator.save(auto_key, payload)
-            if not saved:
-                return None
-
-            result = {
-                "source": "memchorus_auto_storage_fallback",
-                "saved_ids": [auto_key],
-            }
-            return result
+            # dedup — results are buffered via ToolCaptureBatcher to avoid
+            # hammering storage on every tool call (GAP026-C / GAP026-D).
+            _try_save_with_batch(orchestrator, output_str)
+            return None
 
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_post_tool_call failed — returning None. %s", exc)
@@ -365,6 +426,121 @@ def _extract_text_from_message(message: Any) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Search term quality helpers — stop-word filtering, stemming, TF scoring
+# Added for t_9848871a: mitigate score dilution from noise in raw messages
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = frozenset([
+    # Core English stopwords
+    "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you",
+    "your", "yours", "yourself", "yourselves", "he", "him", "his",
+    "himself", "she", "her", "hers", "herself", "it", "its", "itself",
+    "they", "them", "their", "theirs", "themselves", "what", "which",
+    "who", "whom", "this", "that", "these", "those", "am", "is", "are",
+    "was", "were", "be", "been", "being", "have", "has", "had", "having",
+    "do", "does", "did", "doing", "a", "an", "the", "and", "but", "if",
+    "or", "because", "as", "until", "while", "of", "at", "by", "for",
+    "with", "about", "against", "between", "through", "during", "before",
+    "after", "above", "below", "to", "from", "up", "down", "in", "out",
+    "on", "off", "over", "under", "again", "further", "then", "once",
+    "here", "there", "when", "where", "why", "how", "all", "both",
+    "each", "every", "either", "neither", "nor", "not", "only", "own",
+    "same", "so", "than", "too", "very", "s", "t", "can", "will",
+    "just", "don", "should", "now", "d", "ll", "m", "o", "re", "ve",
+    "y", "ain", "aren", "couldn", "didn", "doesn", "hadn", "hasn",
+    "haven", "isn", "ma", "mightn", "mustn", "needn", "shan", "shouldn",
+    "wasn", "weren", "won", "wouldn",
+    # Common conversational filler and low-signal words
+    "said", "get", "got", "go", "going", "like", "make", "made", "may",
+    "might", "much", "many", "well", "want", "went", "will", "would",
+    "could", "shall", "also", "into", "one", "two", "first", "really",
+    "already", "something", "nothing", "everything", "anything",
+    "however", "therefore", "meanwhile", "furthermore", "consequently",
+    "additionally", "generally", "probably", "certainly", "actually",
+    "definitely", "basically", "literally", "exactly", "quite",
+    "rather", "perhaps", "obviously", "clearly", "simply",
+    # Developer/conversational noise
+    "hey", "hi", "hello", "thanks", "please", "ok", "okay", "sure",
+    "right", "yes", "no", "yeah", "yep", "hmm", "ugh", "wow",
+    "cool", "great", "nice", "awesome", "sorry", "oops", "err",
+    "errr", "ok", "lol", "btw", "fyi", "imo", "imho", "tbh", "idk",
+    "smh", "lmao", "rofl", "brb", "gtg", "ttfn", "np",
+    # Pseudo-code markers and formatting
+    "note", "edit", "update", "ps", "pp",
+])
+
+_MAX_TERMS = 40  # cap on how many terms to return
+
+
+def _simple_stem(word: str) -> str:
+    """Very conservative suffix stemming that avoids breaking root words.
+
+    Only strips productive English suffixes when the remaining base is
+    at least 5 characters long, preventing destruction of short roots.
+    """
+    w = word.lower()
+    if len(w) < 6:
+        return w
+
+    # -tion / -sion -> empty (implementa**tion** -> implementa ~implement)
+    for suff in ("tion", "sion"):
+        if w.endswith(suff):
+            base = w[:-len(suff)]
+            return base if len(base) >= 5 else w
+
+    # -ing -> remove (running -> run, fixing -> fix, building -> build)
+    if w.endswith("ing"):
+        base = w[:-3]
+        if len(base) >= 5:
+            # handle "fixing" -> "fix" double-consonant drop
+            if len(base[-1]) == len(base[-2]):
+                return base
+            return base
+    elif w.endswith("ed"):
+        base = w[:-2]
+        if len(base) >= 5:
+            # same double-consonant convention
+            if len(base[-1]) == len(base[-2]):
+                return base
+            return base
+    elif w.endswith("ing"):
+        base = w[:-3]
+        if len(base) >= 5:
+            return base
+
+    return w
+
+
+def _filter_and_score_terms(text: str) -> List[str]:
+    """Remove stopwords, apply stemming, rank by term frequency.
+
+    Prevents low-signal tokens from diluting match scores in
+    _content_matches(). Returns a list of high-signal terms sorted by
+    frequency (descending), capped at _MAX_TERMS.
+    """
+    # Tokenize on whitespace + common delimiters preserving alphanumerics
+    raw = re.findall(r"[a-zA-Z0-9]+(?:[._-][a-zA-Z0-9]+)*", text.lower())
+
+    # Stop-word filter
+    filtered = [w for w in raw if len(w) >= 2 and w not in _STOP_WORDS]
+
+    if not filtered:
+        return []
+
+    # Stem aggressively but conservatively — preserve root words < 6 chars
+    stemmed = [_simple_stem(w) for w in filtered]
+
+    # Count term frequency for ranking
+    tf: Dict[str, int] = {}
+    for word in stemmed:
+        tf[word] = tf.get(word, 0) + 1
+
+    # Sort by descending frequency then alphabetical tie-break
+    ranked = sorted(tf.keys(), key=lambda w: (-tf[w], w))
+    return ranked[:_MAX_TERMS]
+
+
 def _build_search_terms(kwargs: Dict[str, Any]) -> str:
     """Build search query from kwargs with progressive fallbacks.
 
@@ -382,24 +558,36 @@ def _build_search_terms(kwargs: Dict[str, Any]) -> str:
     # Primary: user message
     user_msg = kwargs.get("user_message")
     if isinstance(user_msg, str) and user_msg.strip():
+        terms = _filter_and_score_terms(user_msg)
+        if terms:
+            return " ".join(terms)
         return user_msg
     if isinstance(user_msg, dict):
         text = _extract_text_from_message(user_msg)
         if text:
+            terms = _filter_and_score_terms(text)
+            if terms:
+                return " ".join(terms)
             return text
     # Catch-all for object-style messages with .content / .text attributes
     if not isinstance(user_msg, (str, dict, type(None))):
         text = _extract_text_from_message(user_msg)
         if text:
+            terms = _filter_and_score_terms(text)
+            if terms:
+                return " ".join(terms)
             return text
 
     # Fallback 1: conversation history (use last message content)
     history = kwargs.get("conversation_history") or []
     if isinstance(history, list) and history:
         messages = [_extract_text_from_message(m) for m in history]
-        available = [m for m in messages if m]
+        available = " ".join([m for m in messages if m])[-4096:]  # cap length
         if available:
-            return " ".join(available)[-4096:]  # cap length
+            terms = _filter_and_score_terms(available)
+            if terms:
+                return " ".join(terms)
+            return available
 
     # Fallback 2: Build context-based query from metadata
     parts: List[str] = []
