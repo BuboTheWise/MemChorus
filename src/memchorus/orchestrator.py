@@ -32,6 +32,7 @@ from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
+from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
 from memchorus.recursion_guard import RecursionGuard
 
@@ -669,7 +670,7 @@ class MemoryOrchestrator:
                                     key, _storage_result.triggered_points, len(_storage_result.errors))
                     except Exception:
                         pass  # degrade gracefully — the save itself already succeeded
-        
+
         return saved
     
     def retrieve(self, key: str) -> Optional[Any]:
@@ -856,6 +857,13 @@ class MemoryOrchestrator:
         """
         # max_results alias (GAP021): docs use 'max_results', runtime used 'limit'
         effective_limit = max_results if max_results is not None else limit
+
+        # GAP040 FIX: Normalise query to str — callers sometimes pass a list of terms.
+        # Without this, source._content_matches(query.lower(), ...) crashes with
+        # AttributeError (list has no .lower()), the try/except at L924 catches it,
+        # and all_results stays empty -> zero results returned to the caller.
+        if isinstance(query, list):
+            query = " ".join(str(q) for q in query)
 
         if context is None:
             context = ContextWeight()
