@@ -410,18 +410,26 @@ class _McpClient:
                     read_timeout_seconds=timedelta(seconds=self.timeout),
                 ) as session:
                     await session.initialize()
+            return True
 
         try:
             result = _run_async(asyncio.wait_for(_do_init(), timeout=self.timeout))
-            # _run_async returns None when it catches ExceptionGroup during teardown.
-            # Treat that as a failed connect attempt — don't mark the connection alive.
-            if result is None:
+            # When _do_init completes without error it returns True explicitly.
+            # _run_async returns None only when it catches an internal
+            # BaseExceptionGroup (anyio TaskGroup teardown).  Distinguish the two:
+            if result is not True:
+                if result is None:
+                    logger.warning(
+                        "connect: MCP probe returned None — likely anyio "
+                        "BaseExceptionGroup during teardown; server may have "
+                        "started but cleaned up before initialise finished"
+                    )
                 self._connected = False
                 return False
+            logger.info("connect: MCP handshake successful (timeout=%ss)", self.timeout)
             self._connected = True
             return True
         except BaseExceptionGroup as exc:
-            # anyio TaskGroup (used inside stdio_client) raises this on cancel/timeout.
             logger.warning(
                 "connect: MCP init failed with BaseExceptionGroup (%d sub-exc(s)): %s",
                 len(exc.exceptions),
@@ -429,7 +437,12 @@ class _McpClient:
             )
             self._connected = False
             return False
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "connect: MCP init failed with %s: %s",
+                type(exc).__name__,
+                exc,
+            )
             self._connected = False
             return False
 
