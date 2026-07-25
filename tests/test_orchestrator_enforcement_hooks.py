@@ -28,16 +28,13 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 def _make_orch(config: dict | None = None):
     """Create an orchestrator with the given config (default sources will be stubbed)."""
-    orch = MemoryOrchestrator(config=config or {})
-    orch.disable_source('mempalace')  # isolate from live MCP
-    return orch
+    return MemoryOrchestrator(config=config or {})
 
 
 class TestRetrieveEnforcementHook:
     """BE-HOOK-1 & BE-HOOK-4 (read path)"""
 
-    @patch.object(MemoryOrchestrator, '_initialize_default_sources')
-    def test_retrieve_does_not_call_enforce_when_enabled(self, mock_init):
+    def test_retrieve_does_not_call_enforce_when_enabled(self):
         """GAP044: retrieve() must NOT call enforce() because enforce() as a side effect
         calls capture_outcome(key), which auto-stores the key string to MemPalace, so
         subsequent source iteration finds data that didn't exist before the read — mutating
@@ -52,8 +49,7 @@ class TestRetrieveEnforcementHook:
         # GAP044: retrieve should NOT call enforce — it only iterates registered sources
         mock_manager.enforce.assert_not_called()
 
-    @patch.object(MemoryOrchestrator, '_initialize_default_sources')
-    def test_retrieve_with_source_does_not_call_enforce_when_enabled(self, mock_init):
+    def test_retrieve_with_source_does_not_call_enforce_when_enabled(self):
         """GAP044: retrieve_with_source() must also avoid enforce() for the same reasons."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
         mock_manager = MagicMock()
@@ -65,8 +61,7 @@ class TestRetrieveEnforcementHook:
         assert result is None
         mock_manager.enforce.assert_not_called()
 
-    @patch.object(MemoryOrchestrator, '_initialize_default_sources')
-    def test_retrieve_unknown_key_returns_none_with_enforce_on_read_true(self, mock_init):
+    def test_retrieve_unknown_key_returns_none_with_enforce_on_read_true(self):
         """GAP044 regression: unknown keys must return None even when enforce_on_read=True
         and enforcement manager would populate _recall_context with placeholder data."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
