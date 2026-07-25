@@ -702,18 +702,13 @@ class MemoryOrchestrator:
             else:
                 del self._retrieve_cache[key]  # expired
 
-        # --- Pre-decision recall (behavioral enforcement hook) ---
-        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
-        _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
-            with self._guard as depth:
-                em = self._get_enforcement_manager()
-                if em is not None:
-                    try:
-                        _recall_result = em.enforce(key)
-                        _recall_context = getattr(_recall_result, 'recall_context', [])
-                    except Exception:
-                        pass  # degrade gracefully
+        # --- GAP044: skip pre-decision recall and em.enforce() on retrieve ---
+        # Exact-key retrieval is not a behavioral decision — it's an exact lookup.
+        # em.enforce(key) as side effect calls capture_outcome(key), which auto-stores
+        # the key string to MemPalace, so subsequent source iteration finds data that
+        # didn't exist before the "read" call — mutating state on a read path.
+        # Additionally, recall context comes from semantic search results unrelated to
+        # the exact key requested, so recall-context shortcuts return fabricated hits.
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -723,13 +718,15 @@ class MemoryOrchestrator:
                 list(self.memory_sources.keys()),
             )
 
-        # If recall fired and found exact-key hit, cache + return it early  ----------
-        if _recall_context:
-            for rec in _recall_context:
-                if rec.get("key") == key:
-                    self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
-                    self._evict_oldest_if_needed()
-                    return rec.get("content", rec)
+        # GAP044: Do NOT short-circuit retrieve based on _recall_context.
+        # Recall context comes from search results (AutoRecallEngine.on_decision_point),
+        # which are general query matches unrelated to exact-key retrieval. Returning
+        # data from recall context without verifying the named source actually stores
+        # that key causes fabricated hits for keys that were never saved.
+        # Furthermore, em.enforce(key) as a side-effect auto-stores *key* via
+        # capture_outcome, so any subsequent source iteration would find the just-
+        # stored data even for truly unknown keys — mutating state on a read path.
+        # Normal source iteration below (lines 734+) correctly checks each source.
 
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
@@ -763,26 +760,10 @@ class MemoryOrchestrator:
             if time.monotonic() - cached_ts < self._cache_ttl:
                 return self._retrieve_with_source_from_cache(key, cached_value)
 
-        # --- Pre-decision recall (behavioral enforcement hook) -------
-        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
-        _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
-            with self._guard as depth:
-                em = self._get_enforcement_manager()
-                if em is not None:
-                    try:
-                        _recall_result = em.enforce(key)
-                        _recall_context = getattr(_recall_result, 'recall_context', [])
-                    except Exception:
-                        pass  # degrade gracefully
-
-        if _recall_context:
-            for rec in _recall_context:
-                if rec.get("key") == key:
-                    hit = {"key": key, "content": rec.get("content", rec)}
-                    self._retrieve_cache[key] = (hit, time.monotonic())
-                    self._evict_oldest_if_needed()
-                    return hit
+        # --- GAP044: skip pre-decision recall and em.enforce() on retrieve_with_source ---
+        # Same reasoning as retrieve(): exact-key retrieval is not a behavioral decision,
+        # and enforce() auto-stores the queried key via capture_outcome mid-operation,
+        # mutating unknown keys into known entries before source iteration runs.
 
         # --- Source iteration ----------------------------------------
         if self._priority_order:

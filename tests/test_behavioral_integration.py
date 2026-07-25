@@ -34,6 +34,10 @@ import shutil
 import os
 import json
 
+from memchorus.behavioral_trigger import DecisionPoint as _DP  # unused directly but needed for test fixtures
+from memchorus.enforcement_manager import BehavioralEnforcementManager, EnforcementResult
+from memchorus.orchestrator import MemoryOrchestrator
+
 import pytest
 
 _CHILD = os.path.join(os.path.dirname(__file__), "_behavioral_child.py")
@@ -263,6 +267,70 @@ class TestBehavioralIntegrationRoundTrip:
 
         print(f"\n  AC-4: Cold start verified. Content survived subprocess boundary"
               f" (PYTHONPATH='') with all {matched} items recalled.")
+
+
+# ---------------------------------------------------------------------------
+# GAP043: Defensive type coercion in enforcement_manager.enforce()
+# ---------------------------------------------------------------------------
+
+class TestGAP043EnforcementListInput:
+    """Regression suite for GAP043 — enforce() must accept non-string input
+    without raising TypeError (Hermes passes tool output as structured data)."""
+
+    def _make_orch(self, tmp_path):
+        from memchorus.hermes_memory_source import HermesDefaultMemorySource
+        src = HermesDefaultMemorySource(
+            name="test", config={"memory_dir": str(tmp_path)}
+        )
+        orch = MemoryOrchestrator()
+        orch.register_source(src)
+        return orch
+
+    def test_enforce_accepts_list_input_without_crash(self, tmp_path):
+        """Passing a Python list to enforce() should coerce, not crash."""
+        orch = self._make_orch(tmp_path)
+        em = BehavioralEnforcementManager(orchestrator=orch)
+        result = em.enforce(["tool", "output", "items"])
+        assert isinstance(result, EnforcementResult)
+        assert not any("TypeError" in e for e in result.errors), \
+            f"List input should not produce TypeError: {result.errors}"
+
+    def test_enforce_accepts_dict_input_without_crash(self, tmp_path):
+        """Passing a dict to enforce() should JSON-serialize, not crash."""
+        orch = self._make_orch(tmp_path)
+        em = BehavioralEnforcementManager(orchestrator=orch)
+        result = em.enforce({"tool": "result", "status": "ok"})
+        assert isinstance(result, EnforcementResult)
+        assert not any("TypeError" in e for e in result.errors), \
+            f"Dict input should not produce TypeError: {result.errors}"
+
+    def test_enforce_accepts_none_without_crash(self, tmp_path):
+        """Passing None to enforce() should coerce to 'None', not crash."""
+        orch = self._make_orch(tmp_path)
+        em = BehavioralEnforcementManager(orchestrator=orch)
+        result = em.enforce(None)  # type: ignore[arg-type]
+        assert isinstance(result, EnforcementResult)
+        assert not any("TypeError" in e for e in result.errors), \
+            f"None input should not produce TypeError: {result.errors}"
+
+    def test_enforce_nested_structure(self, tmp_path):
+        """Nested dict/list structures serialize correctly via JSON."""
+        orch = self._make_orch(tmp_path)
+        em = BehavioralEnforcementManager(orchestrator=orch)
+        payload = {"results": [{"key": "a"}, {"key": "b"}], "meta": {"v": 42}}
+        result = em.enforce(payload)
+        assert isinstance(result, EnforcementResult)
+        assert not any("TypeError" in e for e in result.errors), \
+            f"Nested structure should not produce TypeError: {result.errors}"
+
+    def test_enforce_string_passthrough_unchanged(self, tmp_path):
+        """Normal str input passes through coercion guard without side effects."""
+        orch = self._make_orch(tmp_path)
+        em = BehavioralEnforcementManager(orchestrator=orch)
+        result = em.enforce("this is normal text with decision points")
+        assert isinstance(result, EnforcementResult)
+        # String input should still work normally — no errors at all
+        assert result.errors == []
 
 
 if __name__ == "__main__":

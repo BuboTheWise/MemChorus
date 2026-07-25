@@ -34,14 +34,47 @@ def _make_orch(config: dict | None = None):
 class TestRetrieveEnforcementHook:
     """BE-HOOK-1 & BE-HOOK-4 (read path)"""
 
-    def test_retrieve_calls_enforce_when_enabled(self):
+    def test_retrieve_does_not_call_enforce_when_enabled(self):
+        """GAP044: retrieve() must NOT call enforce() because enforce() as a side effect
+        calls capture_outcome(key), which auto-stores the key string to MemPalace, so
+        subsequent source iteration finds data that didn't exist before the read — mutating
+        state on a read path. Additionally, recall context from enforce() returns fabricated
+        hits for keys that were never saved."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
         mock_manager = MagicMock()
         mock_manager.enforce.return_value.recall_context = []
         orch._enforcement_manager = mock_manager
 
         orch.retrieve("some_key")
-        mock_manager.enforce.assert_called_once_with("some_key")
+        # GAP044: retrieve should NOT call enforce — it only iterates registered sources
+        mock_manager.enforce.assert_not_called()
+
+    def test_retrieve_with_source_does_not_call_enforce_when_enabled(self):
+        """GAP044: retrieve_with_source() must also avoid enforce() for the same reasons."""
+        orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
+        mock_manager = MagicMock()
+        mock_manager.enforce.return_value.recall_context = []
+        orch._enforcement_manager = mock_manager
+
+        result = orch.retrieve_with_source("some_key")
+        # Must return None (unknown key), NOT a fabricated hit from recall context
+        assert result is None
+        mock_manager.enforce.assert_not_called()
+
+    def test_retrieve_unknown_key_returns_none_with_enforce_on_read_true(self):
+        """GAP044 regression: unknown keys must return None even when enforce_on_read=True
+        and enforcement manager would populate _recall_context with placeholder data."""
+        orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
+        # Mock a manager that would populate recall_context with fake data
+        mock_manager = MagicMock()
+        mock_manager.enforce.return_value.recall_context = [
+            {"key": "nonexistent_key_xyz123", "text": "ctx_val"}
+        ]
+        orch._enforcement_manager = mock_manager
+
+        # Both retrieve and retrieve_with_source must return None, not the fabricated data
+        assert orch.retrieve("nonexistent_key_xyz123") is None
+        assert orch.retrieve_with_source("nonexistent_key_xyz123") is None
 
     def test_retrieve_skips_enforce_when_disabled(self):
         orch = _make_orch({'enforce_on_read': False, 'enforce_on_write': False})
