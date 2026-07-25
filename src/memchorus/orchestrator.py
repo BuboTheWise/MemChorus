@@ -34,7 +34,6 @@ from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWei
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
-from memchorus.recursion_guard import RecursionGuard
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +171,9 @@ class MemoryOrchestrator:
         # Built-in sources default to 0; dynamically registered sources get 10+ so
         # they actually compete rather than losing to the built-in fallback order.
         self._source_priority: Dict[str, int] = {}
+
+        # Instrumentation: save-call counter for runtime verification (t_c5080e0f D2)
+        self._save_call_count = 0
 
         # Lifecycle management (§6.2 / Phase 1 — opt-in)
         self._lifecycle_manager: Optional['LifecycleManager'] = None
@@ -594,6 +596,7 @@ class MemoryOrchestrator:
             bool: True if successful storage occurred at any registered target, False otherwise
         """
         # --- explicit source override takes precedence ------------------
+        self._save_call_count += 1
         saved = False
         if source_name:
             if source_name in self.memory_sources:
