@@ -11,8 +11,11 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 @pytest.fixture
 def orchestrator():
-    """Fresh orchestrator with default sources for facade method tests."""
-    return MemoryOrchestrator(config={})
+    """Fresh orchestrator (hermes_default only, mempalace disabled) for facade tests."""
+    orch = MemoryOrchestrator(config={})
+    if 'mempalace' in orch.memory_sources:
+        orch.disable_source('mempalace')
+    return orch
 
 
 class TestGAP023DeleteFacade:

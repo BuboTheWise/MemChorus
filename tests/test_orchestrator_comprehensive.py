@@ -240,9 +240,14 @@ def test_save_with_mempalace_name_routes_to_mem_palace():
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
         }
         orch = MemoryOrchestrator(config)
+
+        # Use a temp mempalace source to avoid stale data contamination from live MCP
+        if 'mempalace' in orch.memory_sources:
+            orch.unregister_source('mempalace')
+        custom_mp = TempMemPalaceSource(name='mempalace', config={}, cache_dir=mempalace_dir)
+        orch.register_source(custom_mp)
 
         key = 'mempalace_explicit_key'
         value = {'routed_to': 'mempalace_only'}
