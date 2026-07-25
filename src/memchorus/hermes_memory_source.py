@@ -28,18 +28,36 @@ class HermesDefaultMemorySource(MemorySource):
     # legitimate signal memories score 0.4–0.7 against real query maps. The old floor was
     MIN_RECALL_SCORE = 0.3
 
-    def __init__(self, name: str = "hermes_default", config: Optional[Dict[str, Any]] = None):
+    def __init__(self, name: str = "hermes_default", data_dir: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         """
         Initialize the Hermes default memory source.
 
         Args:
-            name (str): Unique identifier for this memory source
+            name (str): Unique identifier for this memory source. If a path-like
+                string is passed positionally (e.g. ``HermesDefaultMemorySource(tmpdir)``),
+                it is detected as a data directory override instead — useful for test
+                fixtures that need isolation from the global cache.
+            data_dir (str, optional): Override the storage directory path.
             config (Dict[str, Any], optional): Configuration parameters for this source.
-              Overrides:\n                min_recall_score – override MIN_RECALL_SCORE at runtime
+
+        Notes:
+            When ``name`` looks like a filesystem path (contains '/' or starts with
+            './'), it is treated as ``data_dir`` and the name defaults to
+            ``"hermes_default"``. This preserves backward compatibility with test
+            fixtures that pass a temp directory positionally.
         """
+        # Detect positional tmp_dir usage: if 'name' looks like a filesystem path,
+        # treat it as data_dir instead of the source identifier.
+        # See GAP046 — HermesDefaultMemorySource(tmpdir) is the fixture pattern.
+        if name != "hermes_default" and ('/' in str(name) or name.startswith('./')):
+            data_dir = name
+            name = "hermes_default"
+
         super().__init__(name, config)
-        self._name = name  # Store as private attribute to avoid access issues
+        self._name = name
         self.config = config or {}
+        if data_dir is not None:
+            self.config['data_dir'] = data_dir
         self._initialize_memory_directory()
 
     def _initialize_memory_directory(self):
