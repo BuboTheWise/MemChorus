@@ -26,26 +26,23 @@ def test_retrieve_uses_hermes_default_priority_over_mempalace():
     """retrieve() should return from hermes_default first when both sources have the same key."""
     tmpdir = tempfile.mkdtemp(prefix='memchorus_test_')
     hermes_dir = os.path.join(tmpdir, 'hermes_mem')
-    mempalace_dir = os.path.join(tmpdir, 'mempalace_cache')
 
     try:
-        # Create a custom orchestrator where both sources are available and have the same key
+        # Create a custom orchestrator with skip_mcp to avoid live MCP in tests
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
+            'mempalace_config': {'skip_mcp': True},
         }
         orch = MemoryOrchestrator(config)
-
-        # Create mempalace cache dir so it's available
-        os.makedirs(mempalace_dir, exist_ok=True)
 
         # Save to each source explicitly with different values
         key = 'priority_test_key'
         hermes_source = orch.memory_sources['hermes_default']
-        mp_source = orch.memory_sources['mempalace']
 
         hermes_value = {'source': 'hermes', 'data': 'from hermes default'}
+        mp_source = orch.memory_sources['mempalace']
+
         mp_value = {'source': 'mempalace', 'data': 'from mempalace'}
 
         assert hermes_source.save(key, hermes_value) is True
@@ -70,12 +67,9 @@ def test_search_deduplicates_overlapping_results():
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
+            'mempalace_config': {'skip_mcp': True},
         }
         orch = MemoryOrchestrator(config)
-
-        # Create both dirs as available
-        os.makedirs(mempalace_dir, exist_ok=True)
 
         # orchestrator.save() writes to only the first matching target.
         # To test dedup when a key lives in both sources, we save explicitly
@@ -113,7 +107,7 @@ def test_when_mempalace_unavailable_retrieve_falls_through_correctly():
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
+            'mempalace_config': {'skip_mcp': True},
         }
         orch = MemoryOrchestrator(config)
 
@@ -142,12 +136,10 @@ def test_hermes_default_takes_precedence_in_overlap_when_both_available():
     mempalace_dir = os.path.join(tmpdir, 'mempalace_cache')
 
     try:
-        os.makedirs(mempalace_dir, exist_ok=True)
-
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
+            'mempalace_config': {'skip_mcp': True},
         }
         orch = MemoryOrchestrator(config)
 
@@ -173,12 +165,10 @@ def test_both_sources_populated_via_orchestrator_default_save():
     mempalace_dir = os.path.join(tmpdir, 'mempalace_cache')
 
     try:
-        os.makedirs(mempalace_dir, exist_ok=True)
-
         config = {
             'default_source': 'hermes_default',
             'hermes_default_config': {'memory_dir': hermes_dir},
-            'mempalace_config': {},
+            'mempalace_config': {'skip_mcp': True},
         }
         orch = MemoryOrchestrator(config)
 
