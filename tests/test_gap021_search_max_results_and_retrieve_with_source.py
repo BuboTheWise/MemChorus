@@ -12,8 +12,11 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 @pytest.fixture
 def orchestrator():
-    """In-memory orchestrator (no MCP sources) for unit testing."""
+    """In-memory orchestrator (hermes_default only, mempalace disabled) for unit testing."""
     orch = MemoryOrchestrator(config={})
+    # Disable mempalace to prevent contamination from stale live data in tests
+    if 'mempalace' in orch.memory_sources:
+        orch.disable_source('mempalace')
     return orch
 
 
