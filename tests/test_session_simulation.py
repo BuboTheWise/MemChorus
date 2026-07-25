@@ -25,8 +25,10 @@ _CHILD = os.path.join(os.path.dirname(__file__), "_session_simulation_child.py")
 def _spawn(env_vars: dict) -> dict:
     """Run a child Python subprocess with fresh module cache and return JSON."""
     env = os.environ.copy()
-    # Force cold start — no cached .pyc modules, shared sys.modules
-    env["PYTHONPATH"] = ""
+    # Force cold start — point PYTHONPATH at src/ so memchorus is importable,
+    # but clear __pycache__ references so modules load fresh each time.
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    env["PYTHONPATH"] = os.path.join(project_root, "src")
     for k, v in env_vars.items():
         env[k] = str(v)
     result = subprocess.run(
