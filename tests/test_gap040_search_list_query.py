@@ -31,7 +31,7 @@ from memchorus.orchestrator import MemoryOrchestrator
 @pytest.fixture
 def fresh_orch():
     """Return a MemoryOrchestrator backed by HermesDefaultMemorySource in
-    a throwaway temp directory.  Cleans up on teardown."""
+    a throwaway temp directory. Cleans up on teardown."""
     tmp_dir = tempfile.mkdtemp()
     orch = MemoryOrchestrator()
 
@@ -42,6 +42,10 @@ def fresh_orch():
         orch.memory_sources["hermes_default"] = HermesDefaultMemorySource(tmp_dir)
     else:
         orch.memory_sources["hermes_default"] = HermesDefaultMemorySource(tmp_dir)
+
+    # Isolate from live MemPalace MCP database (same fix as GAP045)
+    if "mempalace" in orch.memory_sources:
+        orch.disable_source("mempalace")
 
     yield orch
 
