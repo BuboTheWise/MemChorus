@@ -13,6 +13,7 @@ calling agent to do anything beyond `import memchorus`.
 Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 """
 
+import atexit
 import hashlib
 import importlib  # for dynamic entry_point discovery
 import json
@@ -70,6 +71,20 @@ def _get_orchestrator() -> Optional[Any]:
 # Module-level batcher instance shared across all hook invocations.
 # Initialized lazily on first use to avoid startup cost when hooks are disabled.
 _CAPTURE_BATCHER: Any = None
+
+def _atexit_flush() -> None:
+    """Fallback flush safety net — ensures buffered captures are written even if
+    on_session_end doesn't fire (e.g., unhandled exception or SIGTERM).
+
+    Registered via atexit to guarantee remaining items in the batch buffer reach
+    storage before the process exits. No-op when _CAPTURE_BATCHER is None.
+    """
+    if _CAPTURE_BATCHER is not None:
+        try:
+            _CAPTURE_BATCHER.close()
+            logger.info("hooks: atexit flushed capture buffer")
+        except Exception as exc:
+            logger.warning("hooks: atexit flush failed: %s", exc)
 
 
 def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
@@ -169,9 +184,10 @@ class MemChorusHooks:
     """Lifecycle hooks that fire at key decision points in the agent loop.
 
     Methods are called by Hermes Gateway at runtime:
-      - on_pre_llm_call(context)   before every LLM API call
-      - on_post_tool_call(tool_data)   after every tool execution
-      - on_session_start(session_id)   once per new Hermes session start)
+      - on_pre_llm_call(context)        before every LLM API call
+      - on_post_tool_call(tool_data)    after every tool execution
+      - on_session_start(session_id)    once per new Hermes session start
+      - on_session_end(session_id)      once per Hermes session end / teardown
 
     Each method queries the global orchestrator and injects relevant context or
     saves newly significant outcomes automatically. BehavioralTrigger.detect() is
@@ -400,6 +416,43 @@ class MemChorusHooks:
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_session_start orientation failed. %s", exc)
             return None
+
+    def on_session_end(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """Fire when a Hermes session ends to flush pending captures and clean up resources.
+
+        Ensures the ToolCaptureBatcher drains any remaining items to storage before
+        the process exits. Also deregisters the atexit handler so we don't double-flush
+        if both on_session_end and atexit fire.
+
+        Returns dict with flush confirmation or None if nothing to flush.
+        """
+        global _CAPTURE_BATCHER
+        try:
+            batcher = _CAPTURE_BATCHER
+            if batcher is not None:
+                count_before = len(getattr(batcher, '_queue', []) or getattr(batcher, 'pending', []))
+                batcher.close()
+                logger.info(
+                    "hooks: on_session_end flush complete (pending=%d)",
+                    count_before,
+                )
+            else:
+                logger.debug("hooks: on_session_end — no capture batcher to flush")
+            _CAPTURE_BATCHER = None
+            # Remove atexit handler since we're flushing explicitly here
+            try:
+                atexit.unregister(_atexit_flush)
+            except Exception:
+                pass  # best-effort unregister; harmless if it fails
+
+        except Exception as exc:  # pragma: no cover - graceful degradation
+            logger.warning("on_session_end failed — atexit safety net still active. %s", exc)
+            return None
+
+        return {
+            "source": "memchorus_session_end",
+            "teardown": "complete",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -768,10 +821,19 @@ def register(ctx: Any) -> None:
     hooks = MemChorusHooks()
     _instance_holder[0] = hooks  # keep a reference so GC doesn't collect
 
-    # Register all three lifecycle hooks
+    # Register all four lifecycle hooks
     ctx.register_hook("pre_llm_call", hooks.on_pre_llm_call)
     ctx.register_hook("post_tool_call", hooks.on_post_tool_call)
     ctx.register_hook("on_session_start", hooks.on_session_start)
+    ctx.register_hook("on_session_end", hooks.on_session_end)
 
-    logger.info("MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start",
-                __import__('memchorus').__version__)
+    # Register atexit fallback safety net — flushes buffer if on_session_end doesn't fire
+    try:
+        atexit.register(_atexit_flush)
+    except Exception:
+        logger.warning("hooks: failed to register atexit fallback")
+
+    logger.info(
+        "MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start, on_session_end",
+        __import__('memchorus').__version__,
+    )
