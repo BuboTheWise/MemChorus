@@ -283,6 +283,7 @@ class TestGAP043EnforcementListInput:
             name="test", config={"memory_dir": str(tmp_path)}
         )
         orch = MemoryOrchestrator()
+        orch.disable_source('mempalace')  # isolate tests from live MCP
         orch.register_source(src)
         return orch
 

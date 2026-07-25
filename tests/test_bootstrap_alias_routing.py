@@ -38,6 +38,9 @@ os.environ["MEMCHORUS_CONFIG"] = json.dumps({
 from memchorus.auto_bootstrap import _bootstrap
 orchestrator = _bootstrap()
 
+# Isolate test from live mempalace MCP calls
+orchestrator.disable_source('mempalace')
+
 if orchestrator is None:
     print("FAIL: _bootstrap returned None", file=sys.stderr)
     sys.exit(1)

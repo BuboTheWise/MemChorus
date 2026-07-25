@@ -73,6 +73,7 @@ def live_orchestrator():
         pass
 
     orchestrator, tmp_dir = boot_orchestrator_with_test_config()
+    orchestrator.disable_source('mempalace')  # isolate from live MCP
     yield orchestrator, tmp_dir
     # Cleanup temp dir
     shutil.rmtree(tmp_dir, ignore_errors=True)

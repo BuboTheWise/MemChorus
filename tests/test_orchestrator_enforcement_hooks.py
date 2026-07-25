@@ -28,7 +28,9 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 def _make_orch(config: dict | None = None):
     """Create an orchestrator with the given config (default sources will be stubbed)."""
-    return MemoryOrchestrator(config=config or {})
+    orch = MemoryOrchestrator(config=config or {})
+    orch.disable_source('mempalace')  # isolate from live MCP
+    return orch
 
 
 class TestRetrieveEnforcementHook:
