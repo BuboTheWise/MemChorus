@@ -16,7 +16,6 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
-import threading
 import hashlib
 import json
 import logging
@@ -34,6 +33,7 @@ from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
+from memchorus.recursion_guard import RecursionGuard
 
 logger = logging.getLogger(__name__)
 
@@ -147,16 +147,14 @@ class MemoryOrchestrator:
         self._enforce_on_read = bool(self.config.get('enforce_on_read', True))
         self._enforce_on_write = bool(self.config.get('enforce_on_write', True))
         self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
-        # Guard against recursive enforcement when capture_outcome calls back into save()
-        self._in_enforcement_save = False
-        # Read-side recursion guard (MC-001 / t_7d26af26): prevents orchestrator.search()
-        # and orchestrator.retrieve() from recursively triggering enforcement when the recall
-        # engine's nested search/recall fires an inner enforce().  Without this flag, pre-decision
-        # recall -> AutoRecallEngine._do_search() -> orchestrator.search() -> enforce() recurses
-        # indefinitely until RecursionError.
-        self._in_enforcement_recall = False
-        # Thread-safe access to the recursion guards (MC-003)
-        self._enforcement_lock = threading.RLock()
+        # Gap027/Gap059: RecursionGuard replaces per-method booleans + RLock that only
+        # blocked at depth==1 and broke when different call paths (save vs retrieve)
+        # shared the same boolean flag.  Uses a depth counter so nested calls
+        # at depth < max_depth still trigger, preventing legitimate multi-layer
+        # recall chains from being silently skipped.
+        self._guard: RecursionGuard = RecursionGuard(
+            max_depth=int(self.config.get('enforcement_max_depth', 5))
+        )
 
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
@@ -659,22 +657,18 @@ class MemoryOrchestrator:
             del self._retrieve_cache[key]
 
         # --- Post-action storage capture (behavioral enforcement hook) ---
-        # Guard against recursive enforcement when capture_outcome calls back into save()
+        # GAP027: RecursionGuard replaces _in_enforcement_save + RLock
         if saved and self._enforce_on_write:
-            with self._enforcement_lock:
-                if not self._in_enforcement_save:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        self._in_enforcement_save = True
-                        try:
-                            outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
-                            _storage_result = em.enforce(outcome_text)
-                            logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
-                                        key, _storage_result.triggered_points, len(_storage_result.errors))
-                        except Exception:
-                            pass  # degrade gracefully — the save itself already succeeded
-                        finally:
-                            self._in_enforcement_save = False
+            with self._guard as depth:
+                em = self._get_enforcement_manager()
+                if em is not None:
+                    try:
+                        outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                        _storage_result = em.enforce(outcome_text)
+                        logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
+                                    key, _storage_result.triggered_points, len(_storage_result.errors))
+                    except Exception:
+                        pass  # degrade gracefully — the save itself already succeeded
         
         return saved
     
@@ -709,20 +703,17 @@ class MemoryOrchestrator:
                 del self._retrieve_cache[key]  # expired
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
+        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
         _recall_context: List[Dict[str, Any]] = []
         if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(key)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully
-                        finally:
-                            self._in_enforcement_recall = False
+            with self._guard as depth:
+                em = self._get_enforcement_manager()
+                if em is not None:
+                    try:
+                        _recall_result = em.enforce(key)
+                        _recall_context = getattr(_recall_result, 'recall_context', [])
+                    except Exception:
+                        pass  # degrade gracefully
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -773,20 +764,17 @@ class MemoryOrchestrator:
                 return self._retrieve_with_source_from_cache(key, cached_value)
 
         # --- Pre-decision recall (behavioral enforcement hook) -------
+        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
         _recall_context: List[Dict[str, Any]] = []
         if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(key)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully
-                        finally:
-                            self._in_enforcement_recall = False
+            with self._guard as depth:
+                em = self._get_enforcement_manager()
+                if em is not None:
+                    try:
+                        _recall_result = em.enforce(key)
+                        _recall_context = getattr(_recall_result, 'recall_context', [])
+                    except Exception:
+                        pass  # degrade gracefully
 
         if _recall_context:
             for rec in _recall_context:
@@ -892,20 +880,17 @@ class MemoryOrchestrator:
             context = ContextWeight()
 
         # --- Pre-decision recall (behavioral enforcement hook) ---
+        # GAP027: RecursionGuard replaces _in_enforcement_recall + RLock
         _recall_context: List[Dict[str, Any]] = []
         if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(query)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully — base search continues
-                        finally:
-                            self._in_enforcement_recall = False
+            with self._guard as depth:
+                em = self._get_enforcement_manager()
+                if em is not None:
+                    try:
+                        _recall_result = em.enforce(query)
+                        _recall_context = getattr(_recall_result, 'recall_context', [])
+                    except Exception:
+                        pass  # degrade gracefully — base search continues
 
         # Inject domain-level weightings before scoring
         all_results = []
