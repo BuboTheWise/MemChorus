@@ -18,7 +18,9 @@ src/memchorus/memory_source.py
 src/memchorus/mempalace_memory_source.py
 src/memchorus/orchestrator.py
 src/memchorus/orientation.py
+src/memchorus/recursion_guard.py
 src/memchorus/relevance_engine.py
+src/memchorus/tool_capture_buffer.py
 src/memchorus.egg-info/PKG-INFO
 src/memchorus.egg-info/SOURCES.txt
 src/memchorus.egg-info/dependency_links.txt
@@ -54,6 +56,7 @@ tests/test_feedback_loop_detector.py
 tests/test_feedback_loop_engine.py
 tests/test_feedback_loop_escalation.py
 tests/test_feedback_loop_loader.py
+tests/test_format_context_block_line_boundary.py
 tests/test_gap018_sweep_scheduler_wiring.py
 tests/test_gap021_search_max_results_and_retrieve_with_source.py
 tests/test_gap023_orchestrator_facade_methods.py
@@ -61,6 +64,8 @@ tests/test_gap_features.py
 tests/test_hermes_source_integration.py
 tests/test_hook_keyword_contract.py
 tests/test_hooks_behavioral_integration.py
+tests/test_hooks_integration_search.py
+tests/test_hooks_search_fallback.py
 tests/test_init_instance.py
 tests/test_integration.py
 tests/test_lifecycle_engines.py
@@ -86,8 +91,10 @@ tests/test_profile_routing.py
 tests/test_rank_sources.py
 tests/test_recall_quality.py
 tests/test_recommended_sources.py
+tests/test_recursion_guard.py
 tests/test_relevance_engine.py
 tests/test_relevance_score_bounds.py
 tests/test_relevance_scoring.py
 tests/test_session_simulation.py
 tests/test_third_party_compat.py
+tests/test_tool_capture_buffer.py

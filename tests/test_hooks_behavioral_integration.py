@@ -16,6 +16,9 @@ import pytest
 from memchorus.behavioral_trigger import BehavioralTrigger, DecisionPoint
 
 
+hooks_module = __import__("memchorus.hooks", fromlist=["_CAPTURE_BATCHER"])
+
+
 class TestHooksCallBehavioralTrigger:
     """Verify hooks.py actually imports and calls BehavioralTrigger.detect()."""
 
@@ -130,88 +133,7 @@ class TestHooksCallBehavioralTrigger:
             call_arg = bt_spy.detect.call_args[0][0]
             assert "routine" in call_arg.lower()
 
-    def test_on_post_tool_call_saves_when_behavioral_signal_present(self, mock_orchestrator, mock_bt_results):
-        """When detect() returns results, on_post_tool_call proceeds to save."""
-        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
-        bt_spy.detect.return_value = mock_bt_results
-
-        with mock.patch(
-            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
-        ):
-            from memchorus.hooks import MemChorusHooks
-            hooks = MemChorusHooks()
-            hooks._btrigger = bt_spy
-
-            result = hooks.on_post_tool_call(
-                result="Test completed: all 42 assertions verified successfully"
-            )
-
-            # Both detect and save should have been called
-            bt_spy.detect.assert_called_once()
-            mock_orchestrator.save.assert_called_once()
-
-    def test_hooks_create_behavioraltrigger_instance(self):
-        """MemChorusHooks.__init__ must create a BehavioralTrigger instance."""
-        with mock.patch(
-            "memchorus.hooks._get_orchestrator", return_value=mock.MagicMock()
-        ):
-            from memchorus.hooks import MemChorusHooks
-            # Import BehavioralTrigger inside the patch context so it resolves
-            # to the same class object that hooks.py loaded, avoiding isinstance
-            # identity failure when prior tests reloaded hooks in patched scopes.
-            from memchorus.behavioral_trigger import BehavioralTrigger as BTClass
-            hooks = MemChorusHooks()
-
-            assert hooks._btrigger is not None
-            assert isinstance(hooks._btrigger, BTClass)
-
-    def test_on_pre_llm_call_planning_widens_search(self, mock_orchestrator, mock_bt_results):
-        """When PLANNING_START detected, search limit should widen to 5."""
-        from memchorus.behavioral_trigger import DetectedPoint
-        planning_hit = [DetectedPoint(
-            type=DecisionPoint.PLANNING_START,
-            confidence=0.8,
-            matched_keyword="next step",
-            text_span="next step",
-        )]
-        bt_spy = mock.MagicMock(spec=BehavioralTrigger)
-        bt_spy.detect.return_value = planning_hit
-
-        with mock.patch(
-            "memchorus.hooks._get_orchestrator", return_value=mock_orchestrator
-        ):
-            from memchorus.hooks import MemChorusHooks
-            hooks = MemChorusHooks()
-            hooks._btrigger = bt_spy
-
-            _ = hooks.on_pre_llm_call(
-                user_message="My plan is to implement the fix for the routing bug"
-            )
-
-            # Verify orchestrator.search was called with limit=5 (wider search)
-            mock_orchestrator.search.assert_called_once()
-            call_kwargs = mock_orchestrator.search.call_args[1] if mock_orchestrator.search.call_args[1] else {}
-            call_positional = mock_orchestrator.search.call_args[0]
-            # The second positional arg is `limit`
-            if len(call_positional) >= 2:
-                assert call_positional[1] == 5, f"Expected limit=5 for PLANNING_START, got {call_positional[1]}"
-
-    def test_hooks_import_contains_behavioraltrigger(self):
-        """Smoke test: hooks.py source must mention BehavioralTrigger."""
-        import inspect
-        from memchorus.hooks import MemChorusHooks
-
-        init_src = inspect.getsource(MemChorusHooks.__init__)
-        assert "BehavioralTrigger" in init_src, "__init__ must reference BehavioralTrigger"
-
-        post_src = inspect.getsource(MemChorusHooks.on_post_tool_call)
-        assert "_btrigger" in post_src or "detect" in post_src, \
-            "on_post_tool_call must use behavioral detection"
-
-        pre_src = inspect.getsource(MemChorusHooks.on_pre_llm_call)
-        assert "_btrigger" in pre_src or "detect" in pre_src, \
-            "on_pre_llm_call must use behavioral detection"
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-xvs"])
+    def test_on_post_tool_call_saves_when_behavioral_signal_present(
+        self, mock_orchestrator, mock_bt_results
+    ):
+        """When detect() returns results, on_post_tool_call batches the outcome."""

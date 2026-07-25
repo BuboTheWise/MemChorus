@@ -366,26 +366,35 @@ class TestPipelineIntegration(unittest.TestCase):
         self.assertEqual(result["reason"], "noise_pattern")
 
     def test_hooks_route_through_engine(self) -> None:
-        """hooks MemChorusHooks.on_post_tool_call routes through AutoStorageEngine."""
+        """hooks MemChorusHooks.on_post_tool_call routes through batch buffer."""
         from memchorus.hooks import MemChorusHooks
 
         mock_orch = MagicMock()
         mock_orch.recommended_sources.return_value = ["mock"]
         mock_orch.save.return_value = True
 
+        # Collect what the batcher receives so we can assert payloads were queued
+        queued_payloads: list = []
+        mock_batcher = MagicMock()
+        mock_batcher.add = lambda p: queued_payloads.append(p)  # noqa: B017
+
         hooks_instance = MemChorusHooks()
-        # Patch _get_orchestrator to return our mock
         with patch("memchorus.hooks._get_orchestrator", return_value=mock_orch):
-            long_significant = (
-                "We decided to implement a caching strategy with Redis to handle "
-                "the increased load during peak traffic periods effectively today."
-            )
-            result = hooks_instance.on_post_tool_call(
-                result=long_significant,
-                tool_name="terminal",
-            )
-            self.assertIsNotNone(result)
-            self.assertTrue("saved_ids" in result)
+            with patch("memchorus.hooks._get_capture_batcher", return_value=mock_batcher):
+                long_significant = (
+                    "We decided to implement a caching strategy with Redis to handle "
+                    "the increased load during peak traffic periods effectively today."
+                )
+                result = hooks_instance.on_post_tool_call(
+                    result=long_significant,
+                    tool_name="terminal",
+                )
+                # GAP026-C/D behaviour: on_post_tool_call returns None (batched)
+                self.assertIsNone(result)
+                # Payload was queued via the batcher
+                self.assertEqual(len(queued_payloads), 1)
+                self.assertIn(long_significant, queued_payloads[0]["text"])
+                self.assertEqual(queued_payloads[0].get("outcome_type"), "automatic")
 
     def test_hooks_rejects_short_output(self) -> None:
         """Short meaningful output gets rejected by hooks via min_content_length."""

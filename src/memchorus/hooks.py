@@ -64,6 +64,104 @@ def _get_orchestrator() -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
+# GAP026-C/D: Batched tool-capture with flush + structured ImportError logging
+# ---------------------------------------------------------------------------
+
+# Module-level batcher instance shared across all hook invocations.
+# Initialized lazily on first use to avoid startup cost when hooks are disabled.
+_CAPTURE_BATCHER: Any = None
+
+
+def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
+    """Lazily create and return the global ToolCaptureBatcher singleton.
+
+    Returns None if imports fail — caller should fall back to direct save.
+    Logs a structured ImportError on first failure (GAP026-D).
+    """
+    global _CAPTURE_BATCHER
+    if _CAPTURE_BATCHER is not None:
+        return _CAPTURE_BATCHER
+
+    try:
+        from memchorus.tool_capture_buffer import ToolCaptureBuffer  # noqa: F811
+        from memchorus.auto_storage_engine import AutoStorageEngine
+
+        engine = AutoStorageEngine(orchestrator=orchestrator)
+
+        def _batch_flush(payloads: List[Dict[str, Any]]) -> None:
+            """Flush a batch of payloads through AutoStorageEngine."""
+            for payload in payloads:
+                try:
+                    text = payload.get("text", "")
+                    res = engine.capture_outcome(text, outcome_type="automatic")
+                    if res.get("saved"):
+                        logger.info(
+                            "hooks: batch-saved content (%s, importance %.2f)",
+                            res.get("significance", ""),
+                            res.get("importance_score", 0.0),
+                        )
+                    else:
+                        logger.debug("hooks: capture_outcome rejected: %s", res.get("reason", ""))
+                except Exception as fe:
+                    logger.warning("hooks: batch flush item failed — skipping. %s", fe)
+
+        _CAPTURE_BATCHER = ToolCaptureBuffer(
+            max_items=10,
+            flush_interval=5.0,
+            callback=_batch_flush,
+        )
+        return _CAPTURE_BATCHER
+
+    except ImportError as ie:
+        logger.error(
+            "hooks: AutoStorageEngine/ToolCaptureBatcher import failed — %s\n"
+            "All post-tool captures will fall back to direct orchestrator.save until restart.\n"
+            "This usually means a broken package install; try:\n"
+            "  pip install --no-deps 'git+https://github.com/BuboTheWise/MemChorus.git@master'",
+            ie,
+        )
+        return None
+
+
+def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
+    """Queue a tool-capture payload in the batch buffer (GAP026-C).
+
+    If batching is unavailable, falls back to an immediate orchestrator.save()
+    so no data is lost — just written individually instead of batched.
+    """
+    try:
+        batcher = _get_capture_batcher(orchestrator)
+        if batcher is not None:
+            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
+            payload = {
+                "text": output_str,
+                "categories": ["AUTO", "RESULT"],
+                "outcome_type": "automatic",
+                "importance_score": 0.0,
+                "_auto_provenance": True,
+            }
+            batcher.add(payload)
+            return
+
+        # Batch unavailable — immediate fallback save (GAP026-D structured logging)
+    except Exception as e:
+        logger.warning("hooks: batch path failed — falling back to direct save. %s", e)
+
+    content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
+    auto_key = f"result_{content_hash}"
+    payload = {
+        "text": output_str,
+        "categories": ["AUTO", "RESULT"],
+        "outcome_type": "automatic",
+        "importance_score": 0.0,
+        "_auto_provenance": True,
+    }
+    saved = orchestrator.save(auto_key, payload)
+    if not saved:
+        logger.debug("hooks: direct fallback save rejected key=%s", auto_key)
+
+
+# ---------------------------------------------------------------------------
 # Hook class — discovered by Hermes via entry_points["hermes.plugins.lifecycle"]
 # ---------------------------------------------------------------------------
 
@@ -250,54 +348,10 @@ class MemChorusHooks:
 
             # Route through AutoStorageEngine's capture_outcome pipeline for
             # proper significance detection, scoring, provenance markers, and
-            # dedup — not a bare orchestrator.save().
-            auto_storage = None
-            try:
-                from memchorus.auto_storage_engine import AutoStorageEngine
-                if auto_storage is None:
-                    auto_storage = AutoStorageEngine(orchestrator=orchestrator)
-                storage_result = auto_storage.capture_outcome(output_str, outcome_type="automatic")
-                if not storage_result.get("saved"):
-                    reason = storage_result.get("reason", "unknown")
-                    logger.debug("hooks: capture_outcome rejected: %s", reason)
-                    return None
-
-                result: Dict[str, Any] = {
-                    "source": "memchorus_auto_storage",
-                    "saved_ids": [storage_result.get("key", "")],
-                    "significance": storage_result.get("significance", ""),
-                    "importance_score": storage_result.get("importance_score", 0.0),
-                }
-                logger.info("hooks: auto-saved content (%s, importance %.2f)", result["significance"], result["importance_score"])
-                return result
-            except ImportError as import_exc:
-                # AutoStorageEngine module itself couldn't be imported — log once and fall back
-                logger.warning(
-                    "hooks: AutoStorageEngine import failed — falling back to direct save. %s",
-                    import_exc,
-                )
-            except Exception as sexc:
-                logger.warning("hooks: capture_outcome/Engine failed — falling back to direct save. %s", sexc)
-
-            # Fallback to direct orchestrator.save if engine fails
-            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
-            auto_key = f"result_{content_hash}"
-            payload = {
-                "text": output_str,
-                "categories": ["AUTO", "RESULT"],
-                "outcome_type": "automatic",
-                "importance_score": 0.0,
-                "_auto_provenance": True,
-            }
-            saved = orchestrator.save(auto_key, payload)
-            if not saved:
-                return None
-
-            result = {
-                "source": "memchorus_auto_storage_fallback",
-                "saved_ids": [auto_key],
-            }
-            return result
+            # dedup — results are buffered via ToolCaptureBatcher to avoid
+            # hammering storage on every tool call (GAP026-C / GAP026-D).
+            _try_save_with_batch(orchestrator, output_str)
+            return None
 
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_post_tool_call failed — returning None. %s", exc)
