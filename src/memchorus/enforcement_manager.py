@@ -25,9 +25,27 @@ import time as _time_mod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from memchorus.behavioral_trigger import BehavioralTrigger, DetectedPoint  # type: ignore[import-not-found]
-from memchorus.auto_recall_engine import AutoRecallEngine           # type: ignore[import-not-found]
-from memchorus.auto_storage_engine import AutoStorageEngine         # type: ignore[import-not-found]
+try:
+    from memchorus.behavioral_trigger import BehavioralTrigger, DetectedPoint  # type: ignore[import-not-found]
+except ImportError as e:
+    raise ImportError(
+        f"enforcement_manager requires behavioral_trigger: {e}. "
+        "Either install the missing dependency or disable enforcement in config."
+    ) from e
+
+try:
+    from memchorus.auto_recall_engine import AutoRecallEngine  # type: ignore[import-not-found]
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.warning("auto_recall_engine unavailable — recall will be degraded: %s", e)
+    AutoRecallEngine = None  # type: ignore[misc,assignment]
+
+try:
+    from memchorus.auto_storage_engine import AutoStorageEngine  # type: ignore[import-not-found]
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.warning("auto_storage_engine unavailable — storage will be degraded: %s", e)
+    AutoStorageEngine = None  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +90,8 @@ class BehavioralEnforcementManager:
         self,
         orchestrator: Any,
         trigger: Optional[BehavioralTrigger] = None,
-        recall_engine: Optional[AutoRecallEngine] = None,
-        storage_engine: Optional[AutoStorageEngine] = None,
+        recall_engine: Optional[Any] = None,
+        storage_engine: Optional[Any] = None,
     ) -> None:
         self._orchestrator = orchestrator
 
@@ -81,14 +99,20 @@ class BehavioralEnforcementManager:
         self._trigger = trigger or BehavioralTrigger()
 
         if recall_engine is None:
-            recall_engine = AutoRecallEngine(
-                orchestrator=orchestrator,
-                trigger=self._trigger,
-            )
+            if AutoRecallEngine is not None:
+                recall_engine = AutoRecallEngine(  # type: ignore[misc]
+                    orchestrator=orchestrator,
+                    trigger=self._trigger,
+                )
+            else:
+                logger.warning("AutoRecallEngine unavailable — recall disabled")
         self._recall_engine = recall_engine
 
         if storage_engine is None:
-            storage_engine = AutoStorageEngine(orchestrator=orchestrator)
+            if AutoStorageEngine is not None:
+                storage_engine = AutoStorageEngine(orchestrator=orchestrator)  # type: ignore[misc]
+            else:
+                logger.warning("AutoStorageEngine unavailable — storage disabled")
         self._storage_engine = storage_engine
 
         # --- Feature toggles (all ON by default) ---
@@ -122,13 +146,13 @@ class BehavioralEnforcementManager:
         result.triggered_points = len(detected)
 
         # --- Step 2: recall injection (per DP type) ---
-        if self._recall_enabled and detected:
+        if self._recall_enabled and detected and self._recall_engine is not None:
             seen_types: set = set()
             for point in detected:
                 dp_type = point.type
                 if dp_type.value not in seen_types:
                     try:
-                        hits = self._recall_engine.on_decision_point(point)
+                        hits = self._recall_engine.on_decision_point(point)  # type: ignore[union-attr]
                         result.recall_context.extend(hits)
                     except Exception as exc:
                         logger.warning("Enforce: recall failed for %s: %s", point.type, exc)
@@ -136,9 +160,9 @@ class BehavioralEnforcementManager:
                     seen_types.add(dp_type.value)
 
         # --- Step 3: automatic storage capture ---
-        if self._storage_enabled:
+        if self._storage_enabled and self._storage_engine is not None:
             try:
-                storage_outcome = self._storage_engine.capture_outcome(text)
+                storage_outcome = self._storage_engine.capture_outcome(text)  # type: ignore[union-attr]
                 result.storage_outcome = storage_outcome
                 # Surface inner save failures that were caught inside AutoStorageEngine
                 # rather than propagating as exceptions — otherwise the caller of
