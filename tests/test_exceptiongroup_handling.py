@@ -18,6 +18,9 @@ from unittest.mock import patch
 
 from memchorus.mempalace_memory_source import _McpClient
 
+# conftest exports safe_return_value for closing leaked coros before returning.
+from conftest import safe_return_value  # noqa: E402
+
 
 class TestRuntimeExceptionGroup:
     """Verify _run_async unwraps ExceptionGroup without crashing (module-level helper)."""
@@ -30,12 +33,19 @@ class TestRuntimeExceptionGroup:
             raise ExceptionGroup("task crash", [RuntimeError("server died")])
 
         # Patch asyncio.run so it can hit the code path under test
-        with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
-                "simulated anyio tg", [ConnectionRefusedError("subprocess gone")]
-        )):
-            result = _run_async(broken())
+        coro = broken()
+        try:
+            with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
+                    "simulated anyio tg", [ConnectionRefusedError("subprocess gone")]
+            )):
+                result = _run_async(coro)
 
-        assert result is None, "_run_async should return None on ExceptionGroup instead of crashing"
+            assert result is None, "_run_async should return None on ExceptionGroup instead of crashing"
+        finally:
+            try:
+                coro.close()
+            except RuntimeError:
+                pass
 
     def test_run_async_returns_none_on_nested_exceptiongroup(self):
         from memchorus.mempalace_memory_source import _run_async
@@ -43,12 +53,19 @@ class TestRuntimeExceptionGroup:
         async def broken():
             pass  # Won't run - asyncio.run is mocked below
 
-        with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
-                "outer", [ExceptionGroup("inner", [RuntimeError("deep crash")])]
-        )):
-            result = _run_async(broken())
+        coro = broken()
+        try:
+            with patch('memchorus.mempalace_memory_source.asyncio.run', side_effect=ExceptionGroup(
+                    "outer", [ExceptionGroup("inner", [RuntimeError("deep crash")])]
+            )):
+                result = _run_async(coro)
 
-        assert result is None, "_run_async should handle nested ExceptionGroup too"
+            assert result is None, "_run_async should handle nested ExceptionGroup too"
+        finally:
+            try:
+                coro.close()
+            except RuntimeError:
+                pass
 
 
 class TestMcpClientGracedegradation:
@@ -64,7 +81,8 @@ class TestMcpClientGracedegradation:
         import shutil
         client = _McpClient(timeout=2)
 
-        with patch('memchorus.mempalace_memory_source._run_async', return_value=None):
+        with patch('memchorus.mempalace_memory_source._run_async',
+                   side_effect=safe_return_value(None)):
             result = client.connect()
 
         assert result is False, "connect must treat _run_async returning None as failure"
@@ -125,7 +143,7 @@ class TestMemorySourceGracedegradation:
         )):
             result = src.save("test_key", {"data": "value"})
 
-        # Should return False (or True if local cache saved despite MCP failure) — no crash
+        # Should return False (or True if local cache saved despite MCP failure) -- no crash
 
     def test_delete_does_not_crash_on_exceptiongroup(self):
         from memchorus.mempalace_memory_source import MemPalaceMemorySource
