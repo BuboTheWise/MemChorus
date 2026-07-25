@@ -214,6 +214,8 @@ def test_save_with_explicit_source_name_routes_to_correct_backend():
             'mempalace_config': {},
         }
         orch = MemoryOrchestrator(config)
+        if 'mempalace' in orch.memory_sources:
+            orch.disable_source('mempalace')
 
         # Always route to hermes_default explicitly (ignore the missing 'hermes_default' typo in the orchestrator)
         key = 'explicit_route_key'
@@ -295,6 +297,10 @@ def test_search_limit_returns_requested_amount_with_staggered_sources():
     # Build orchestrator with two registered sources providing staggered counts
     config = {'default_source': 'hermes_default', 'hermes_default_config': {}, 'mempalace_config': {}}
     orch = MemoryOrchestrator(config)
+
+    # Disable mempalace to avoid live MCP database pollution during tests
+    if 'mempalace' in orch.memory_sources:
+        orch.disable_source('mempalace')
 
     # Replace real sources with mocked ones
     source_a = make_mock_source('srcA', 7)   # 7 results
