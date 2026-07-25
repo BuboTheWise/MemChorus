@@ -344,7 +344,8 @@ def test_write_memory_file_writes_formatted_entries():
     entry.close()
 
     try:
-        src = HermesDefaultMemorySource(name='test_source', config={})
+        tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
         test_entries = [
             {'timestamp': '2024-05-01', 'content': 'entry one'},
             {'timestamp': '2024-06-01', 'content': 'entry two'},
@@ -431,7 +432,8 @@ def test_name_property_returns_correct_value():
         src1 = HermesDefaultMemorySource(name='my_custom_source', config={'memory_dir': tmpdir})
         assert src1.name == 'my_custom_source'
 
-        src2 = HermesDefaultMemorySource(config={})
+        # Isolate from global cache — was hitting ~/.hermes/memories/ with config={}
+        src2 = HermesDefaultMemorySource(config={'memory_dir': tmpdir})
         assert src2.name == 'hermes_default'
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
