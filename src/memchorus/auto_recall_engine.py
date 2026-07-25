@@ -35,14 +35,12 @@ except ImportError:
 else:
     _AUTO_RECALL_AVAILABLE = True
 
+try:
+    from memchorus.recursion_guard import RecursionGuard  # type: ignore[import-not-found]
+except ImportError:
+    RecursionGuard = None  # type: ignore[misc,assignment]
+
 logger = logging.getLogger(__name__)
-# ---------------------------------------------------------------------------
-# MC-001 recursion guard sentinel (module-level)
-# ---------------------------------------------------------------------------
-
-_REC_GUARD: bool = False  # flipped during enforce() to catch re-entry
-
-
 # ---------------------------------------------------------------------------
 # Query templates per decision point type
 # ---------------------------------------------------------------------------
@@ -116,8 +114,9 @@ class AutoRecallEngine:
         # Per-type cache: maps DecisionPoint value (int) -> _CacheEntry
         self._cache: Dict[int, _CacheEntry] = {}
 
-        # MC-001 re-entry guard — flipped during enforce() to block recursive calls
-        self._in_enforcement_recall = False
+        # Recursion guard: prevents re-entrant recall during enforcement chains.
+        # Uses the shared RecursionGuard depth counter instead of boolean sentinels.
+        self._guard = RecursionGuard(max_depth=2) if RecursionGuard is not None else None  # type: ignore[has-type]
 
     # ------------------------------------------------------------------
     # Public API
@@ -132,43 +131,42 @@ class AutoRecallEngine:
         Returns:
             Up to 3 highest-relevance search results, or ``[]`` on degradation.
         """
-        global _REC_GUARD
-
-        # MC-001 guard: block recursive entry during enforcement cycle
-        if _REC_GUARD or self._in_enforcement_recall:
-            logger.debug(
-                "AutoRecallEngine: recursion guard blocked re-entry for %s",
-                decision_point.type.name,
-            )
-            return []
-
         dp_type = decision_point.type
 
-        # Early-termination cache check
+        # Early-termination cache check (runs outside guard — read-only)
         cached = self._get_cached(dp_type)
         if cached is not None:
             return cached
 
-        # Activate recursion guard before doing work
-        _REC_GUARD = True
-        self._in_enforcement_recall = True
-        try:
-            query = self._extract_query(dp_type)
-            results = self._do_search(query)
+        # Try to enter the depth guard; bail on recursion limit.
+        # When RecursionGuard unavailable, just run the recall directly.
+        if self._guard is not None:
+            try:
+                with self._guard.enter():
+                    return self._execute_recognize(dp_type)
+            except RecursionError:
+                logger.debug(  # noqa: SLF001
+                    "AutoRecallEngine: recursion guard blocked re-entry for %s",
+                    decision_point.type.name,  # type: ignore[union-attr]
+                )
+                return []
 
-            # Harden: enforce hard limit of 3 regardless of orchestrator output
-            results = results[:3]
+        return self._execute_recognize(dp_type)
 
-            # Stash in cache
-            self._cache[dp_type.value] = _CacheEntry(
-                result=list(results), timestamp=time.time()
-            )
+    def _execute_recognize(self, dp_type: DecisionPoint) -> List[Dict[str, Any]]:
+        """Core recall logic wrapped by RecursionGuard.enter()."""
+        query = self._extract_query(dp_type)
+        results = self._do_search(query)
 
-            return results
-        finally:
-            # Always deactivate guard, even on exception
-            _REC_GUARD = False
-            self._in_enforcement_recall = False
+        # Harden: enforce hard limit of 3 regardless of orchestrator output
+        results = results[:3]
+
+        # Stash in cache
+        self._cache[dp_type.value] = _CacheEntry(
+            result=list(results), timestamp=time.time()
+        )
+
+        return list(results)
 
     def fire_for_text(self, text: str) -> Dict[str, List[Dict[str, Any]]]:
         """Convenience wrapper: call BehavioralTrigger on *text*, then retrieve
