@@ -432,7 +432,8 @@ def test_name_property_returns_correct_value():
         src1 = HermesDefaultMemorySource(name='my_custom_source', config={'memory_dir': tmpdir})
         assert src1.name == 'my_custom_source'
 
-        src2 = HermesDefaultMemorySource(config={})
+        # Isolate from global cache — was hitting ~/.hermes/memories/ with config={}
+        src2 = HermesDefaultMemorySource(config={'memory_dir': tmpdir})
         assert src2.name == 'hermes_default'
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
