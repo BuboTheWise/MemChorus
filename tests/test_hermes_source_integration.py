@@ -344,7 +344,8 @@ def test_write_memory_file_writes_formatted_entries():
     entry.close()
 
     try:
-        src = HermesDefaultMemorySource(name='test_source', config={})
+        tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
+        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
         test_entries = [
             {'timestamp': '2024-05-01', 'content': 'entry one'},
             {'timestamp': '2024-06-01', 'content': 'entry two'},
