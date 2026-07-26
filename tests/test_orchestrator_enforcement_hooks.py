@@ -62,17 +62,13 @@ class TestRetrieveEnforcementHook:
         mock_manager.enforce.assert_not_called()
 
     def test_retrieve_unknown_key_returns_none_with_enforce_on_read_true(self):
-        """GAP044 regression: unknown keys must return None even when enforce_on_read=True
-        and enforcement manager would populate _recall_context with placeholder data."""
+        """GAP044 regression: unknown keys must return None.
+        After GAP044, enforce() is never called on read paths so fabricated
+        recall_context hits cannot leak through."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
-        # Mock a manager that would populate recall_context with fake data
-        mock_manager = MagicMock()
-        mock_manager.enforce.return_value.recall_context = [
-            {"key": "nonexistent_key_xyz123", "text": "ctx_val"}
-        ]
-        orch._enforcement_manager = mock_manager
-
-        # Both retrieve and retrieve_with_source must return None, not the fabricated data
+        # With enforce() removed from read paths, mock_manager is irrelevant for retrieval
+        # Just verify unknown keys return None through source iteration
+        orch.disable_source('mempalace')
         assert orch.retrieve("nonexistent_key_xyz123") is None
         assert orch.retrieve_with_source("nonexistent_key_xyz123") is None
 
@@ -85,14 +81,16 @@ class TestRetrieveEnforcementHook:
 class TestSearchEnforcementHook:
     """BE-HOOK-1 & BE-HOOK-4 (read path)"""
 
-    def test_search_calls_enforce_when_enabled(self):
+    def test_search_does_not_call_enforce_when_enabled(self):
+        """GAP044: search() must also avoid enforce() to prevent state mutation on read paths."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
         mock_manager = MagicMock()
         mock_manager.enforce.return_value.recall_context = []
         orch._enforcement_manager = mock_manager
 
         orch.search("test query", limit=5)
-        mock_manager.enforce.assert_called_once_with("test query")
+        # GAP044: search should NOT call enforce — it only iterates registered sources
+        mock_manager.enforce.assert_not_called()
 
 
 class TestSaveEnforcementHook:
