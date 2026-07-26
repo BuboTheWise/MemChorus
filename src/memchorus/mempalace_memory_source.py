@@ -645,6 +645,30 @@ class MemPalaceMemorySource(MemorySource):
     _WING_MAP_DEFAULT = _DEFAULT_WING_MAP
     _ROOM_MAP_DEFAULT = _DEFAULT_ROOM_MAP
 
+    def _ensure_connected(self) -> bool:
+        """Establish MCP connection if it hasn't been established yet.
+
+        Lazy initialization — the subprocess is not spawned until this method
+        is called for the first time.  Returns True when a live session exists,
+        False when the probe fails (caller should fall back to local cache).
+
+        Honors ``skip_mcp``: when True the connection attempt is skipped
+        entirely and False is returned immediately.
+        """
+        # skip_mcp takes precedence — never try to connect when explicitly disabled.
+        if self.config.get("skip_mcp", False):
+            return False
+
+        if self._connected and self._client.is_alive:
+            return True
+
+        try:
+            self._connected = self._client.connect()
+        except Exception:
+            self._connected = False
+
+        return self._connected
+
     def __init__(
         self,
         name: str = "mempalace",
@@ -685,17 +709,18 @@ class MemPalaceMemorySource(MemorySource):
         )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # MCP client -- attempts a real connection eagerly unless disabled.
+        # MCP client — created eagerly but does *not* attempt a connection yet.
+        # The actual subprocess spawn is deferred until first data-plane use via
+        # _ensure_connected().  This keeps instantiation lightweight so that
+        # auto_bootstrap probe-only checks and orchestrator wiring don't pay
+        # the fork/exec overhead when MCP is unreachable or unused.
         mcp_timeout = float(self.config.get("mcp_timeout", 10))
         self._client = _McpClient(timeout=mcp_timeout, config=self.config)
         self._connected = False
 
-        if not self.config.get("skip_mcp", False):
-            try:
-                self._connected = self._client.connect()
-            except Exception:
-                # Connection failed -- continue in fallback mode.
-                self._connected = False
+        # If skip_mcp is explicitly set, skip lazy connection entirely.
+        if self.config.get("skip_mcp", False):
+            self._connected = False
 
     # --- MemorySource abstract methods ------------------------------------------
 
@@ -712,7 +737,7 @@ class MemPalaceMemorySource(MemorySource):
 
         wing = self._resolve_wing(category)
 
-        if self._connected and self._client.is_alive:
+        if self._ensure_connected() and self._client.is_alive:
             # §2 Room selection by significance category (AC-R2.1-2.4)
             cat_room = self._categorize_room(value, room_map=self._room_map)
             # AC-R2.3: raw string keys without category metadata fall back to legacy hashing
@@ -737,7 +762,7 @@ class MemPalaceMemorySource(MemorySource):
         §6 AC-R6.1: Uses resolved wing/room from category info when available.
         §6 AC-R6.2: Broadens to wing-level search when category unavailable.
         """
-        if self._connected and self._client.is_alive:
+        if self._ensure_connected() and self._client.is_alive:
             # First try: check local cache for category metadata (§6)
             filepath = self._cache_dir / f"{key}.json"
             cached_value = None
@@ -798,7 +823,7 @@ class MemPalaceMemorySource(MemorySource):
         results: List[Dict[str, Any]] = []
         seen_keys: set = set()
 
-        if self._connected and self._client.is_alive:
+        if self._ensure_connected() and self._client.is_alive:
             mp_results = self._client.search(
                 query=query, limit=limit, wing=wing, room=room
             )
@@ -1060,7 +1085,7 @@ class MemPalaceMemorySource(MemorySource):
         findings: List[Dict[str, Any]] = []
 
         # Try MCP first.
-        if self._connected and self._client.is_alive:
+        if self._ensure_connected() and self._client.is_alive:
             mp_hits = self._client.search(query=query, limit=5)
             if mp_hits:
                 for r in (isinstance(mp_hits, list) and mp_hits or []):
@@ -1117,7 +1142,7 @@ class MemPalaceMemorySource(MemorySource):
         deleted = False
 
         # Attempt MCP deletion — search for the drawer that matches this key
-        if self._connected and self._client.is_alive:
+        if self._ensure_connected() and self._client.is_alive:
             try:
                 hits = self._client.search(query=key, limit=5)
                 if not isinstance(hits, list):
