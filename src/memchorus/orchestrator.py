@@ -711,14 +711,6 @@ class MemoryOrchestrator:
             )
 
         # when all sources are disabled we should not leak stale recall cache entries.
-        _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
-        if _recall_context and _has_enabled:
-            for rec in _recall_context:
-                if rec.get("key") == key:
-                    self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
-                    self._evict_oldest_if_needed()
-                    return rec.get("content", rec)
-
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
             if source and getattr(source, 'is_available', True) and self.is_source_enabled(src_name):
@@ -755,15 +747,6 @@ class MemoryOrchestrator:
         # GAP044: enforce() removed — it mutates state on read paths.
 
         # when all sources are disabled we should not leak stale recall cache entries.
-        _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
-        if _recall_context and _has_enabled:
-            for rec in _recall_context:
-                if rec.get("key") == key:
-                    hit = {"key": key, "content": rec.get("content", rec)}
-                    self._retrieve_cache[key] = (hit, time.monotonic())
-                    self._evict_oldest_if_needed()
-                    return hit
-
         # --- Source iteration ----------------------------------------
         if self._priority_order:
             candidate_sources = list(self._priority_order)
@@ -1021,16 +1004,6 @@ class MemoryOrchestrator:
                 "Content dedup removed %d duplicate items from %d total (before hash collapse)",
                 dupes_removed, dupes_removed + len(ranked),
             )
-
-        if _recall_context:
-            existing_keys = {r["key"] for r in results}
-            for rec in _recall_context:
-                rk = rec.get("key", "")
-                if rk and rk not in existing_keys:
-                    rec.setdefault("score", 0.5)
-                    rec["key"] = rk
-                    results.append(rec)
-                    existing_keys.add(rk)
 
         return results
 
