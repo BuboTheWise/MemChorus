@@ -723,8 +723,10 @@ class MemoryOrchestrator:
                 list(self.memory_sources.keys()),
             )
 
-        # If recall fired and found exact-key hit, cache + return it early  ----------
-        if _recall_context:
+        # Only return enforcement-recall hits if we have at least one enabled source;
+        # when all sources are disabled we should not leak stale recall cache entries.
+        _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
+        if _recall_context and _has_enabled:
             for rec in _recall_context:
                 if rec.get("key") == key:
                     self._retrieve_cache[key] = (rec.get("content", rec), time.monotonic())
@@ -779,7 +781,10 @@ class MemoryOrchestrator:
                         finally:
                             self._in_enforcement_recall = False
 
-        if _recall_context:
+        # Only return enforcement-recall hits if we have at least one enabled source;
+        # when all sources are disabled we should not leak stale recall cache entries.
+        _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
+        if _recall_context and _has_enabled:
             for rec in _recall_context:
                 if rec.get("key") == key:
                     hit = {"key": key, "content": rec.get("content", rec)}
