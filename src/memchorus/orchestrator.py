@@ -699,21 +699,8 @@ class MemoryOrchestrator:
             else:
                 del self._retrieve_cache[key]  # expired
 
-        # --- Pre-decision recall (behavioral enforcement hook) ---
-        _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(key)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully
-                        finally:
-                            self._in_enforcement_recall = False
+
+        # GAP044: enforce() removed — it mutates state on read paths.
 
         # GAP008: use priority_order if configured, else default scorer ranking
         if self._priority_order:
@@ -723,7 +710,6 @@ class MemoryOrchestrator:
                 list(self.memory_sources.keys()),
             )
 
-        # Only return enforcement-recall hits if we have at least one enabled source;
         # when all sources are disabled we should not leak stale recall cache entries.
         _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
         if _recall_context and _has_enabled:
@@ -765,23 +751,9 @@ class MemoryOrchestrator:
             if time.monotonic() - cached_ts < self._cache_ttl:
                 return self._retrieve_with_source_from_cache(key, cached_value)
 
-        # --- Pre-decision recall (behavioral enforcement hook) -------
-        _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(key)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully
-                        finally:
-                            self._in_enforcement_recall = False
 
-        # Only return enforcement-recall hits if we have at least one enabled source;
+        # GAP044: enforce() removed — it mutates state on read paths.
+
         # when all sources are disabled we should not leak stale recall cache entries.
         _has_enabled = any(self.is_source_enabled(s) for s in self.memory_sources)
         if _recall_context and _has_enabled:
@@ -887,21 +859,8 @@ class MemoryOrchestrator:
         if context is None:
             context = ContextWeight()
 
-        # --- Pre-decision recall (behavioral enforcement hook) ---
-        _recall_context: List[Dict[str, Any]] = []
-        if self._enforce_on_read:
-            with self._enforcement_lock:
-                if not self._in_enforcement_recall:
-                    em = self._get_enforcement_manager()
-                    if em is not None:
-                        try:
-                            self._in_enforcement_recall = True
-                            _recall_result = em.enforce(query)
-                            _recall_context = getattr(_recall_result, 'recall_context', [])
-                        except Exception:
-                            pass  # degrade gracefully — base search continues
-                        finally:
-                            self._in_enforcement_recall = False
+
+        # GAP044: enforce() removed — it mutates state on read paths.
 
         # Inject domain-level weightings before scoring
         all_results = []
@@ -1063,7 +1022,6 @@ class MemoryOrchestrator:
                 dupes_removed, dupes_removed + len(ranked),
             )
 
-        # Inject pre-decision recalled context into the result set (deduped by key)
         if _recall_context:
             existing_keys = {r["key"] for r in results}
             for rec in _recall_context:
