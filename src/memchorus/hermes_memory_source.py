@@ -404,6 +404,30 @@ class HermesDefaultMemorySource(MemorySource):
             pass
         return deleted
 
+    def list_all_keys(self) -> List[str]:
+        """Enumerate all memory keys in this source.
+
+        Walks the underlying *memory_dir*, collects every ``.json`` file,
+        strips the extension, and filters out provenance artifacts that
+        should never appear as searchable memories.
+
+        Returns:
+            List[str]: All valid memory key names (without .json suffix).
+        """
+        keys: List[str] = []
+        try:
+            for filename in os.listdir(self.memory_dir):
+                if not filename.endswith('.json'):
+                    continue
+                key_name = filename[:-5]  # strip .json
+                # Skip auto-generated / provenance artifacts (same filter as search())
+                if key_name.startswith(('result-', 'auto-tool-', 'auto-result-')):
+                    continue
+                keys.append(key_name)
+        except Exception:
+            pass
+        return sorted(keys)
+
     def is_available(self) -> bool:
         """
         Check if Hermes default memory source is available.
