@@ -1,5 +1,7 @@
 # MemChorus
 
+Current version: 1.5.12
+
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
 MemChorus treats memory not as a single store but as a **chorus of distinct sources** — each with different strengths, costs, and semantics. An orchestrator sits in front, deciding where to write and which sources to consult on reads so the agent gets the right context without wasting compute or tokens.
