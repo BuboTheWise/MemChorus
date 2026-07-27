@@ -224,6 +224,7 @@ _KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
     "post-action learnings outcomes results decisions made changes completed tasks progress milestones reviews improvements",
     "errors recovery patterns failure modes known issues bugs fixes troubleshooting diagnostic root cause debugging steps workarounds",
     "synthesis analysis findings insights patterns understanding conclusions research outcomes knowledge distillation key takeaways learnings",
+    "synthesis analysis findings key insight understanding learned important patterns review summary conclusions takeaways documentation research",
     # Truncated templates (pre-v1.5 legacy — still block echoes from older recall cycles)
     "past planning patterns architecture decisions strategy notes",
     "tool usage history command conventions domain-specific guidance",

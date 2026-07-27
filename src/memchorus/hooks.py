@@ -430,7 +430,12 @@ class MemChorusHooks:
         try:
             batcher = _CAPTURE_BATCHER
             if batcher is not None:
-                count_before = len(getattr(batcher, '_queue', []) or getattr(batcher, 'pending', []))
+                # pending is an int property — don't wrap in len() again.
+                # Fall back to _queue only if .pending doesn't exist (old code).
+                try:
+                    count_before = batcher.pending  # already an int
+                except AttributeError:
+                    count_before = len(getattr(batcher, '_queue', []))
                 batcher.close()
                 logger.info(
                     "hooks: on_session_end flush complete (pending=%d)",
