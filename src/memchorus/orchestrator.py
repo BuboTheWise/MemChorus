@@ -850,6 +850,12 @@ class MemoryOrchestrator:
         if context is None:
             context = ContextWeight()
 
+        # GAP040: normalise list/tuple queries to space-joined strings before
+        # passing to source.search(query, ...) or scorer.score_and_rank(...).
+        # Callers sometimes pass orch.search(['term1', 'term2']) instead of a
+        # plain string; downstream code expects query.lower() which fails on list.
+        if isinstance(query, (list, tuple)):
+            query = ' '.join(str(item) for item in query)
 
         # GAP044: enforce() removed — it mutates state on read paths.
 
