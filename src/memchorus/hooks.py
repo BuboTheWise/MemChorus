@@ -287,7 +287,7 @@ class MemChorusHooks:
 
             result: Dict[str, Any] = {
                 "source": "memchorus_pre_llm_call",
-                "injected_context": "\n\n".join(injected_blocks),
+                "context": "\n\n".join(injected_blocks),
             }
             return result
 
