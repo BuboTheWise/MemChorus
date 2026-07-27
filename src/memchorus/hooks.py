@@ -451,7 +451,7 @@ class MemChorusHooks:
                 pass  # best-effort unregister; harmless if it fails
 
         except Exception as exc:  # pragma: no cover - graceful degradation
-            logger.warning("on_session_end failed — atexit safety net still active. %s", exc)
+            logger.warning("on_session_end failed — atexit safety net still active. %s", exc, exc_info=True)
             return None
 
         return {

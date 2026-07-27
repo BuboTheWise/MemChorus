@@ -668,8 +668,11 @@ class MemoryOrchestrator:
                         try:
                             outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
                             _storage_result = em.enforce(outcome_text)
+                            # Guard against recursive enforcement chains where errors may be an int
+                            errors = getattr(_storage_result, 'errors', None)
+                            error_count = len(errors) if isinstance(errors, (list, tuple)) else 0
                             logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
-                                        key, _storage_result.triggered_points, len(_storage_result.errors))
+                                        key, _storage_result.triggered_points, error_count)
                         except Exception:
                             pass  # degrade gracefully — the save itself already succeeded
                         finally:
