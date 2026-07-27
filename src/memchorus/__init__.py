@@ -9,9 +9,52 @@ import sys  # loaded early for __getattr__ / sys.modules access
 # Lazy bootstrap guard (set to True by __getattr__ after first trigger).
 _bootstrap_done: bool = False
 
-# _instance as a real module-level default so `from memchorus import _instance`
-# does NOT raise ImportError before bootstrap runs. After bootstrap completes,
-# sys.modules[__name__]._instance is overwritten with the actual orchestrator.
+# --- Per-profile instance registry (AC2) -----------------------------------
+# Each Hermes profile gets its own MemoryOrchestrator so memories saved by one
+# agent never bleed into another's data.  Backward compat is maintained via an
+# `_instance` alias that maps to whatever the *active* profile resolves to.
+_INSTANCE_REGISTRY: dict[str, object] = {}  # profile_name -> orchestrator
+
+# Active profile — resolved once on first bootstrap from env / explicit arg.
+_ACTIVE_PROFILE: str | None = None
+
+
+def _resolve_active_profile(profile_name: str | None = None) -> str:
+    """Derive the active Hermes profile name for registry keying.
+
+    Priority chain (AC3):
+     1. Explicit ``profile_name`` argument (non-None, non-empty).
+     2. ``HERMES_PROFILE`` env var.
+     3. Fallback to ``"default"`` so there is always a stable key.
+    """
+    if profile_name:
+        return str(profile_name)
+    from_env = os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_DEFAULT_PROFILE")
+    if from_env:
+        return str(from_env)
+    return "default"
+
+
+def get_orchestrator(profile_name: str | None = None):
+    """Return the MemoryOrchestrator for *profile_name*.
+
+    When *profile_name* is ``None``, resolves via `_resolve_active_profile`.
+    Returns ``None`` when no orchestrator has been registered yet.
+
+    This is the primary AC2 entry point — replaces bare ``_instance`` access at
+    call sites that need profile-aware behaviour.
+    """
+    effective = _resolve_active_profile(profile_name) if profile_name is None else profile_name
+    return _INSTANCE_REGISTRY.get(effective)
+
+
+def register_orchestrator(orchestrator, profile_name: str | None = None):
+    """Register a MemoryOrchestrator instance under the given profile name."""
+    effective = _resolve_active_profile(profile_name) if profile_name is None else profile_name
+    _INSTANCE_REGISTRY[effective] = orchestrator
+
+
+# `_instance` backward-compat shim — resolves to the active profile's orchestrator.
 _instance = None  # type: ignore[type-arg]
 
 # Cache for lazily-loaded symbols so subsequent attribute hits are instant.
@@ -92,6 +135,10 @@ def _trigger_lazy_bootstrap():
             result = MemoryOrchestrator()
         except Exception as exc:
             _fb_logger.error("Degraded fallback failed: %s", exc)
+    # AC2: register under profile key AND maintain _instance alias
+    profile = _resolve_active_profile()
+    if result is not None:
+        register_orchestrator(result, profile)
     sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
     _bootstrap_done = True
 
@@ -148,6 +195,10 @@ def __getattr__(name: str) -> object:
                 )
                 pass  # _instance remains unset so __getattr__ raises AttributeError on access
         sys.modules[__name__]._instance = result  # type: ignore[attr-defined]
+        # AC2: also register in per-profile registry
+        profile = _resolve_active_profile()
+        if result is not None:
+            register_orchestrator(result, profile)
         _bootstrap_done = True
 
     # Step 2 — resolve the requested name from lazy table or module globals
