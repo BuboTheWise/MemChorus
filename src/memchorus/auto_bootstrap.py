@@ -61,11 +61,26 @@ _DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
 
 # --- helpers ----------------------------------------------------------------
 
+def _resolve_hermes_profile() -> str:
+    """Return the active Hermes profile name.
+
+    Resolution order:
+      1. HERMES_PROFILE env var (set by dispatcher at spawn time)
+      2. Fall back to 'default' when not running under Hermes Kanban
+
+    Returns the raw profile string — callers own any normalization.
+    """
+    return os.environ.get("HERMES_PROFILE", "default")
+
+
 def _load_yaml_config() -> Dict[str, Any]:
     """Read ~/.hermes/memchorus.yaml (or similar) if it exists.
 
+    This is Layer 2 of the config cascade (global defaults). Does NOT include
+    profile-specific overrides — those come from _load_profile_yaml_config().
+
     Returns an empty dict when the file is missing, YAML is unavailable, or
-    the file parses to a non-dict value \u2014 never raises on external failure.
+    the file parses to a non-dict value — never raises on external failure.
     """
     if not _HAS_YAML:
         return {}
@@ -84,9 +99,55 @@ def _load_yaml_config() -> Dict[str, Any]:
                 logger.warning(
                     "YAML config at %s is not a mapping; skipping.", candidate
                 )
-            except Exception as exc:  # pragma: no cover \u2014 defensive
-                logger.debug("Failed to read %s \u2014 %s", candidate, exc)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Failed to read %s — %s", candidate, exc)
     return {}
+
+
+def _load_profile_yaml_config(profile: str) -> Dict[str, Any]:
+    """Load profile-specific YAML overrides from ~/.hermes/profiles/<profile>/memchorus.yaml.
+
+    This is Layer 3 of the config cascade. The loaded dict will be deep-merged
+    onto the global config before env-var resolution (Layer 4).
+
+    Returns an empty dict when the file doesn't exist or is malformed — never raises.
+    """
+    if not _HAS_YAML:
+        return {}
+
+    candidate = os.path.expanduser(f"~/.hermes/profiles/{profile}/memchorus.yaml")
+    if not os.path.isfile(candidate):
+        logger.debug("No profile-specific config at %s — skipping.", candidate)
+        return {}
+
+    try:
+        with open(candidate) as fh:  # type: ignore[possibly-unbound-variable]
+            data = yaml.safe_load(fh)
+        if isinstance(data, dict):
+            logger.info("Loaded profile-specific YAML config from %s (profile=%s)", candidate, profile)
+            return data
+        logger.warning(
+            "Profile YAML config at %s is not a mapping; skipping.", candidate
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug("Failed to read profile config %s — %s", candidate, exc)
+    return {}
+
+
+def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge *override* into *base*.
+
+    Nested dicts are merged recursively; non-dict values in *override* replace
+    the corresponding keys in *base*. Returns a new dict — neither input is
+    mutated.
+    """
+    result = base.copy()
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
 
 
 def _resolve_boolean(raw: Any) -> bool:
@@ -130,30 +191,36 @@ def _bootstrap() -> Optional[Any]:
 
     Every step is separately try/except'd (graceful degradation).
     """
-    # --- Step 1: Config resolution ---
-    yaml_cfg = _load_yaml_config()
+    # --- Step 1: Config resolution (four-layer cascade) ---
+    # Layer 1: hardcoded _DEFAULTS
+    # Layer 2: ~/.hermes/memchorus.yaml (global config)
+    # Layer 3: ~/.hermes/profiles/<HERMES_PROFILE>/memchorus.yaml (profile overrides)
+    # Layer 4: MEMCHORUS_* env vars / MEMCHORUS_CONFIG JSON
+
+    global_cfg = _load_yaml_config()
+    profile_name = _resolve_hermes_profile()
+    profile_cfg = _load_profile_yaml_config(profile_name)
+
+    # Merge: defaults <- global YAML <- profile YAML (deep merge for nested values)
     config: Dict[str, Any] = dict(_DEFAULTS)
+    config = _deep_merge(config, global_cfg)
+    config = _deep_merge(config, profile_cfg)
+
+    # If both global or profile set data_dir/hermes_default_config via their
+    # YAML, the deep merge will have resolved it by now. We only need to look
+    # at 'config' from this point on — no parallel yaml_cfg indirection.
+    yaml_cfg = config  # alias for backward compat with downstream references
 
     # enforcement toggles — recall (pre-decision memory retrieval) and storage
     # (post-action automatic capture). Both default to True so enforcement is
     # opt-out, not opt-in. The user must explicitly set these to false to disable.
-    enforce_on_read = _resolve_boolean(yaml_cfg.get("enforce_on_read", True))
-    enforce_on_write = _resolve_boolean(yaml_cfg.get("enforce_on_write", True))
+    enforce_on_read = _resolve_boolean(config.get("enforce_on_read", True))
+    enforce_on_write = _resolve_boolean(config.get("enforce_on_write", True))
 
-    # YAML layer (medium priority)
-    for key in ("default_source", "half_life_days", "cache_ttl_seconds"):
-        if key in yaml_cfg:
-            config[key] = yaml_cfg[key]  # type: ignore[typeddict-item]
-
-    # custom_loops_dir from YAML (expand ~ manually since yaml returns str)
-    if "custom_loops_dir" in yaml_cfg:
-        raw_dir = str(yaml_cfg["custom_loops_dir"])
-        config["custom_loops_dir"] = os.path.expanduser(raw_dir)
-
-    auto_enabled_raw = yaml_cfg.get("auto_enabled", _DEFAULTS["auto_enabled"])
+    auto_enabled_raw = config.get("auto_enabled", _DEFAULTS["auto_enabled"])
     config["auto_enabled"] = _resolve_boolean(auto_enabled_raw)
 
-    # Env var layer (high priority — overrides everything else)
+    # Env var layer (Layer 4 — highest priority, overrides everything else)
     env_auto = os.environ.get("MEMCHORUS_AUTO_ENABLED")
     if env_auto is not None:
         config["auto_enabled"] = _resolve_boolean(env_auto)
@@ -161,7 +228,7 @@ def _bootstrap() -> Optional[Any]:
     for key in ("default_source",):
         env_val = os.environ.get(f"MEMCHORUS_{key.upper()}")
         if env_val is not None:
-            config[key] = env_val  # type: ignore[typeddict-item]
+            config[key] = env_val
 
     env_hl = os.environ.get("MEMCHORUS_HALF_LIFE_DAYS")
     if env_hl is not None:
@@ -176,7 +243,11 @@ def _bootstrap() -> Optional[Any]:
     if env_loops is not None:
         config["custom_loops_dir"] = os.path.expanduser(env_loops)
 
-    # Adapter-specific config from MEMCHORUS_CONFIG env var (highest priority).
+    # Log resolved profile and layered config for debugging
+    logger.info(
+        "MemChorus bootstrap: profile=%s, global_cfg=%d keys, profile_cfg=%d keys",
+        profile_name, len(global_cfg), len(profile_cfg),
+    )
     # This lets tests and external callers override hermes_default_config,
     # mempalace_config, etc. without needing to hit YAML.
     import json
@@ -228,19 +299,19 @@ def _bootstrap() -> Optional[Any]:
         "enabled" if enforce_on_write else "disabled",
     )
 
-    # --- Step 3: MemPalace probe ---
-    mp_available = False
+    # --- Step 3: MemPalace availability probe (import-only) ---
+    # With lazy init, constructing MemPalaceMemorySource does NOT spawn a subprocess —
+    # the actual connection is deferred until first data operation via _ensure_connected().
+    # We only need to verify the class can be imported.
+    mp_available = True
     try:
         from memchorus.mempalace_memory_source import MemPalaceMemorySource  # noqa: F401
-        
-        _mp_src = MemPalaceMemorySource()
-        mp_available = True
     except Exception as exc:
         logger.warning(
-            "MemPalace MCP server unreachable during bootstrap probe \u2014 "
-            "will continue with %s only. Error: %s",
+            "MemPalace module unavailable during bootstrap — will continue with %s only. Error: %s",
             default_source, exc,
         )
+        mp_available = False
 
     # AC-A3: probe failure warning already emitted above in except block.
     # Log bootstrap status without duplicating the warning.
