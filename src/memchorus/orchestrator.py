@@ -227,6 +227,14 @@ class MemoryOrchestrator:
 
         if self._lifecycle_manager.is_enabled:
             logger.info("MemoryOrchestrator: lifecycle management enabled")
+            # Wire + start the sweep scheduler (§6.1)
+            try:
+                from memchorus.lifecycle_manager import SweepScheduler
+                self._lifecycle_manager._scheduler = SweepScheduler(self._lifecycle_manager)
+                self._lifecycle_manager._scheduler.start()
+                logger.info("MemoryOrchestrator: sweep scheduler started")
+            except Exception as e:
+                logger.warning("Failed to start sweep scheduler: %s", e)
         else:
             logger.debug(
                 "MemoryOrchestrator: lifecycle disabled (lifecycle_config.enabled=False or not set)"
