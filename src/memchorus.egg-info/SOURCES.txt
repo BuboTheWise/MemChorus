@@ -46,6 +46,7 @@ tests/test_bug3_auto_storage_filters.py
 tests/test_bug3_filters.py
 tests/test_bug4_recall_bloat.py
 tests/test_content_matching_quality.py
+tests/test_detect_str_invariant.py
 tests/test_detector.py
 tests/test_echo_prevention.py
 tests/test_enforcement_manager.py
@@ -60,6 +61,7 @@ tests/test_format_context_block_line_boundary.py
 tests/test_gap018_sweep_scheduler_wiring.py
 tests/test_gap021_search_max_results_and_retrieve_with_source.py
 tests/test_gap023_orchestrator_facade_methods.py
+tests/test_gap040_search_list_query.py
 tests/test_gap_features.py
 tests/test_hermes_source_integration.py
 tests/test_hook_keyword_contract.py
@@ -89,9 +91,11 @@ tests/test_priority_ordering_overlap.py
 tests/test_profile_isolation_boundary.py
 tests/test_profile_routing.py
 tests/test_rank_sources.py
+tests/test_recall_injection_key_and_session_end.py
 tests/test_recall_quality.py
 tests/test_recommended_sources.py
 tests/test_recursion_guard.py
+tests/test_recursion_guard_deep_nesting.py
 tests/test_relevance_engine.py
 tests/test_relevance_score_bounds.py
 tests/test_relevance_scoring.py

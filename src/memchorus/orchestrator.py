@@ -648,7 +648,7 @@ class MemoryOrchestrator:
         # ---- safety net: try ANY available non-disabled source --------
         if not saved:
             for n, src in self.memory_sources.items():
-                if src and getattr(src, 'is_available', True) and self.is_source_enabled(n):
+                if src and _check_source_available(src) and self.is_source_enabled(n):
                     saved = self._try_save_to(src, key, value)
                     if saved:
                         break
@@ -721,7 +721,7 @@ class MemoryOrchestrator:
         # when all sources are disabled we should not leak stale recall cache entries.
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
-            if source and getattr(source, 'is_available', True) and self.is_source_enabled(src_name):
+            if source and _check_source_available(source) and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
                 if result is not None:
                     self._retrieve_cache[key] = (result, time.monotonic())
@@ -863,7 +863,7 @@ class MemoryOrchestrator:
         all_results = []
         remaining_fetch_budget = effective_limit  # cap on raw results collected from sources
         for source_name, source in self.memory_sources.items():
-            if not source or not getattr(source, 'is_available', True) or not self.is_source_enabled(source_name):
+            if not source or not _check_source_available(source) or not self.is_source_enabled(source_name):
                 continue
             try:
                 results = source.search(query, effective_limit)
@@ -1223,7 +1223,7 @@ class MemoryOrchestrator:
             bool: True if at least one source is available, False otherwise
         """
         for source in self.memory_sources.values():
-            if getattr(source, 'is_available', True):
+            if _check_source_available(source):
                 return True
         return False
     
@@ -1239,8 +1239,8 @@ class MemoryOrchestrator:
                 'name': 'memchorus_orchestrator',
                 'version': __import__('memchorus').__version__,
                 'default_source': self._default_source_name,
-                'available_sources': len([s for s in self.memory_sources.values() if getattr(s, 'is_available', True)]),
-                'total_sources': len(self.memory_sources)
+                'available_sources': sorted([s for s in self.memory_sources.keys() if _check_source_available(self.memory_sources.get(s))]),
+                # GAP014: source enable status in orchestrator info
             },
             'sources': {}
         }
@@ -1278,9 +1278,14 @@ class MemoryOrchestrator:
 
             # availability guard
             try:
-                available = getattr(src, 'is_available', True)
+                _avail = getattr(src, 'is_available', None)
+                if _avail is None:
+                    available = True
+                elif callable(_avail):
+                    available = _avail()
+                else:
+                    available = bool(_avail)
             except (TypeError, AttributeError):
-                # is_available may be unbound if it's a dataclass method stub or missing entirely
                 available = True
             if not available:
                 continue
