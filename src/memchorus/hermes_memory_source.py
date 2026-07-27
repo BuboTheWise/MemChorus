@@ -14,6 +14,23 @@ from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
 
 
+def _resolve_hermes_memory_dir(default: str = "~/.hermes/memories") -> str:
+    """Resolve the memory directory with per-profile isolation.
+
+    If HERMES_PROFILE is set (e.g. by the Kanban dispatcher), returns
+    ~/.hermes/profiles/<profile>/memories/ so each agent's auto-captured
+    memories live in its own space. Falls back to *default* when no profile
+    env var is present.
+
+    The caller can always override via config['data_dir'] — this function
+    only supplies the default path.
+    """
+    profile = os.environ.get("HERMES_PROFILE")
+    if profile:
+        return os.path.expanduser(f"~/.hermes/profiles/{profile}/memories")
+    return os.path.expanduser(default)
+
+
 class HermesDefaultMemorySource(MemorySource):
     """
     Memory source implementation for Hermes default memory system.
@@ -64,11 +81,14 @@ class HermesDefaultMemorySource(MemorySource):
         """Initialize the memory storage directory.
 
         Accepts 'data_dir' (set by orchestrator auto_bootstrap via hermes_default_config)
-        or 'memory_dir' (direct construction fallback). Defaults to ~/.hermes/memories.
+        or 'memory_dir' (direct construction fallback). Defaults to a profile-specific
+        path when HERMES_PROFILE is set (~/.hermes/profiles/<profile>/memories/) so that
+        each agent's auto-captured memories are isolated. Falls back to ~/.hermes/memories
+        when no profile is detected.
         """
         self.memory_dir = self.config.get(
             'data_dir',
-            self.config.get('memory_dir', os.path.expanduser('~/.hermes/memories')),
+            self.config.get('memory_dir', _resolve_hermes_memory_dir()),
         )
         os.makedirs(self.memory_dir, exist_ok=True)
 
