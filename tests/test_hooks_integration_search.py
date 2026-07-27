@@ -24,15 +24,32 @@ from memchorus.hooks import MemChorusHooks
 from memchorus.orchestrator import MemoryOrchestrator
 
 
+@pytest.fixture(autouse=True)
+def _reset_hook_module_state():
+    """GAP045: Reset module-level global state before/after each test
+
+    The _CAPTURE_BATCHER singleton in memchorus.hooks holds orchestrator
+    references that leak across test boundaries. Without this fixture,
+    tests running later can inherit batcher state from earlier tests,
+    causing stale data or unexpected behavior.
+    """
+    import memchorus.hooks as hooks_module
+    hooks_module._CAPTURE_BATCHER = None
+    yield
+    hooks_module._CAPTURE_BATCHER = None
+
 @pytest.fixture
 def real_orchestrator(tmp_path):
-    """A real MemoryOrchestrator backed by a temporary hermes_default source."""
+    """A real MemoryOrchestrator backed by a temporary hermes_default source (mempalace disabled for isolation - GAP045)."""
     orch_config = {
         "hermes_default_config": {"memory_dir": str(tmp_path / "test_mem.json")},
         "enforce_on_read": False,
         "enforce_on_write": False,
     }
     orch = MemoryOrchestrator(config=orch_config)
+    # Disable mempalace to prevent contamination from live/stale memory data (GAP045)
+    if 'mempalace' in orch.memory_sources:
+        orch.disable_source('mempalace')
     return orch
 
 
