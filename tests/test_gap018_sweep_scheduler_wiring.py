@@ -301,5 +301,57 @@ class TestAutoLifecycleEnginesConfigKey(unittest.TestCase):
         self.assertAlmostEqual(state.sweep_interval_hours, 8.0, delta=0.1)
 
 
+class TestGAP018PreSweepMemoryCountValidation(unittest.TestCase):
+    """Verify sweep processes existing memories instead of returning scanned=0 flagged=0.
+
+    The root cause was _gather_memories_from_source calling search("*", limit=10_000)
+    to enumerate all memories, but "*" is a single character so _content_matches
+    filters it to zero terms -> score 0 for everything -> filtered by min_score.
+
+    The fix adds list_all_keys() + retrieve() fallback when search returns empty.
+    """
+
+    def test_list_all_keys_enumerates_memories(self):
+        """list_all_keys returns all memory keys, filtering provenance artifacts."""
+        import tempfile
+        from memchorus.hermes_memory_source import HermesDefaultMemorySource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = HermesDefaultMemorySource(name="test", data_dir=tmpdir)
+            # Save some real memories
+            source.save("learning-test-fact-1", {"text": "important learning"})
+            source.save("learning-test-fact-2", {"mistake_observed": True})
+
+            keys = source.list_all_keys()
+            self.assertIn("learning-test-fact-1", keys)
+            self.assertIn("learning-test-fact-2", keys)
+
+    def test_sweep_processes_existing_memories_via_fallback(self):
+        """_gather_memories_from_source falls back to list_all_keys when search("*") returns empty."""
+        import tempfile
+        from memchorus.hermes_memory_source import HermesDefaultMemorySource
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = HermesDefaultMemorySource(name="hermes_default", data_dir=tmpdir)
+            # Add some real memories to the store
+            source.save("test-memory-alpha", {"important": "data"})
+            source.save("test-memory-beta", {"value": 42})
+
+            # Confirm search("*") returns nothing by default (proves the bug)
+            direct = source.search("*", limit=10_000)
+            self.assertEqual(direct, [], 'search("*") should return empty due to term length')
+
+            # But _gather_memories_from_source with a real LM instance should find them
+            from memchorus.lifecycle_manager import LifecycleManager
+
+            lm = LifecycleManager(orchestrator=None, config={"enabled": True})
+            gathered = lm._gather_memories_from_source("hermes_default", source)
+
+            # Fallback kicks in and finds the memories that search("*") missed
+            gathered_keys = [m.get("key") for m in gathered]
+            self.assertIn("test-memory-alpha", gathered_keys,
+                          "Should find test-memory-alpha via list_all_keys fallback")
+
+
 if __name__ == "__main__":
     unittest.main()

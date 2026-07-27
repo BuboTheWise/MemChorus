@@ -342,6 +342,10 @@ class LifecycleManager:
     ) -> List[Dict[str, Any]]:
         """Collect all active memories from one backend via its search API.
 
+        Falls back to ``list_all_keys()`` + ``retrieve()`` when the wildcard
+        ``search("*")`` returns empty (e.g. HermesDefaultMemorySource treats ``*``
+        as a single-character term that scores zero for every memory file).
+
         Returns a flat list of dicts with keys: key, content, source, timestamp.
         """
         results = []
@@ -354,6 +358,29 @@ class LifecycleManager:
                         continue
                     item.setdefault("source", source_name)
                     results.append(item)
+
+            # Fallback: search("*") may return empty when the query term "*"
+            # is filtered to zero terms (score = 0 < min_score threshold).
+            # If the source exposes list_all_keys(), use that + retrieve()
+            # as a reliable enumeration path.
+            if not results and hasattr(source_obj, 'list_all_keys') and hasattr(source_obj, 'retrieve'):
+                try:
+                    all_keys = source_obj.list_all_keys()
+                    for key in all_keys:
+                        content = source_obj.retrieve(key)
+                        if content is None:
+                            continue
+                        results.append({
+                            "key": key,
+                            "content": content,
+                            "source": source_name,
+                        })
+                except Exception as inner_exc:
+                    logger.warning(
+                        "LifecycleManager: fallback list_all_keys failed for %s: %s",
+                        source_name, inner_exc,
+                    )
+
         except Exception as exc:
             self._record_backend_failure(source_name)
             logger.warning(
