@@ -99,10 +99,10 @@ class TestIntegrationPreLlmCallWithRealMemories:
                 "provides search terms"
             )
             assert "source" in result
-            assert "injected_context" in result
+            assert "context" in result
             # The injected context should contain the memory recall label
-            assert "[MemChorus Memory Recall]" in result["injected_context"], (
-                f"Expected memory recall block in output, got: {result['injected_context'][:200]}"
+            assert "[MemChorus Memory Recall]" in result["context"], (
+                f"Expected memory recall block in output, got: {result['context'][:200]}"
             )
 
     def test_integration_no_matching_memories_returns_none(self, real_orchestrator, hooks):
@@ -150,7 +150,7 @@ class TestIntegrationPreLlmCallWithRealMemories:
             assert result is not None, (
                 "Expected non-None when user_message search finds memories"
             )
-            assert "[MemChorus Memory Recall]" in result["injected_context"]
+            assert "[MemChorus Memory Recall]" in result["context"]
 
     def test_integration_search_limit_respects_decision_point_priority(self, real_orchestrator, hooks):
         """Verify that when BehavioralTrigger returns PLANNING_START decision point,
