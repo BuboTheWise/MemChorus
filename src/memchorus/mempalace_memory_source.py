@@ -759,19 +759,30 @@ class MemPalaceMemorySource(MemorySource):
     def retrieve(self, key: str) -> Optional[Any]:
         """Look up the memory.  Tries MCP first; falls back to local cache.
 
-        §6 AC-R6.1: Uses resolved wing/room from category info when available.
-        §6 AC-R6.2: Broadens to wing-level search when category unavailable.
+        GAP044 fix: require local proof-of-storage before touching MCP.
+
+        Broadened semantic search for an arbitrary key matches unrelated
+        content elsewhere in the wing and returns fabricated false-positive
+        results.  save() writes to BOTH MCP and local cache, so a cached
+        JSON file is definitive proof the key was genuinely stored.
         """
+        # Proof-of-storage guard: if no local cache entry exists for this key,
+        # the key was never saved through MemChorus — skip MCP semantic search
+        # entirely to avoid false-positive matches on unrelated content.
+        filepath = self._cache_dir / f"{key}.json"
+        has_local_proof = filepath.exists()
+
+        if not has_local_proof:
+            return None
+
         if self._ensure_connected() and self._client.is_alive:
-            # First try: check local cache for category metadata (§6)
-            filepath = self._cache_dir / f"{key}.json"
+            # Load cached value for category metadata (§6).
             cached_value = None
-            if filepath.exists():
-                try:
-                    with open(filepath) as f:
-                        cached_value = json.load(f)
-                except Exception:
-                    pass
+            try:
+                with open(filepath) as f:
+                    cached_value = json.load(f)
+            except Exception:
+                pass
 
             # Derive wing and room from cached category info
             wing = self._resolve_wing_from_payload(cached_value)
@@ -784,11 +795,6 @@ class MemPalaceMemorySource(MemorySource):
             if cat_room:
                 found_results = self._client.search(
                     query="", wing=wing, room=cat_room, limit=1
-                )
-            # AC-R6.2: Broaden to wing-level when room search fails or no category
-            if not found_results:
-                found_results = self._client.search(
-                    query=key[:32], wing=wing, limit=5
                 )
 
             results = found_results
@@ -804,13 +810,11 @@ class MemPalaceMemorySource(MemorySource):
                         return self._from_str(str(r_content))
 
         # Local cache fallback.
-        filepath = self._cache_dir / f"{key}.json"
-        if filepath.exists():
-            try:
-                with open(filepath) as f:
-                    return json.load(f)
-            except Exception:
-                pass
+        try:
+            with open(filepath) as f:
+                return json.load(f)
+        except Exception:
+            pass
 
         return None
 
