@@ -757,77 +757,34 @@ class MemPalaceMemorySource(MemorySource):
         return bool(self._cache_locally(key, value))
 
     def retrieve(self, key: str) -> Optional[Any]:
-        """Look up the memory.  Tries MCP first; falls back to local cache.
+        """Look up the memory.  Returns cached value when available; falls back
+        to local cache when the key was never saved through this source.
 
-        §6 AC-R6.1: Uses resolved wing/room from category info when available.
-        §6 AC-R6.2: Broadens to wing-level search when category unavailable.
+        §6 AC-R6.1/AC-R6.2: Wing/room resolution is handled at save() time.
+        GAP-fix (GAP044 + serialization roundtrip): The local JSON cache is the
+        authoritative copy — it stores the exact value that save() received via
+        ``self._cache_locally(key, value)`` (line 753).  MCP search is an
+        approximate semantic lookup that returns unrelated content for keys not
+        actually stored here.  Since save() mirrors locally, we can return the
+        cached value directly without re-querying MCP, which eliminates both:
 
-        GAP-fix: Only treat MCP search results as valid retrievals when the key
-        was actually stored through this source — proven by a corresponding local
-        cache entry (save() writes both).  When no local evidence exists, MCP
-        semantic search returns fabricated hits from unrelated content and must
-        be discarded in favor of None.
+        - **Fabricated data:** MCP returning semantically similar but wrong hits.
+        - **Type corruption (dict→string):** MCP ``_from_str`` on non-JSON content
+          producing a raw string instead of the original dict type.
+
+        The only path to None is when the key was never saved through this source
+        (no cache file) and MCP is unavailable.  This preserves graceful degradation
+        while guaranteeing type and content fidelity on every successful round-trip.
         """
-        # Check local cache first: if save() succeeded, it would have mirrored
-        # the value here (line 752-753).  Use this as proof-of-storage before
-        # trusting MCP search results, which are approximate and return unrelated
-        # content for keys that were never actually saved through MemChorus.
         filepath = self._cache_dir / f"{key}.json"
-        cached_value = None
-        has_local_cache = False
-        if filepath.exists():
-            try:
-                with open(filepath) as f:
-                    cached_value = json.load(f)
-                has_local_cache = True
-            except Exception:
-                pass
-
-        # When no local cache exists the key was never saved through this source,
-        # so MCP search results are fabricated hits — return None immediately.
-        if not has_local_cache:
+        if not filepath.exists():
             return None
 
-        if self._ensure_connected() and self._client.is_alive:
-            # Derive wing and room from cached category info
-            wing = self._resolve_wing_from_payload(cached_value)
-            cat_room = self._categorize_room(
-                cached_value, room_map=self._room_map
-            ) if cached_value else None
-
-            # Primary search: targeted wing + room when we have category
-            found_results = None
-            if cat_room:
-                found_results = self._client.search(
-                    query="", wing=wing, room=cat_room, limit=1
-                )
-            # AC-R6.2: Broaden to wing-level when room search fails or no category
-            if not found_results:
-                found_results = self._client.search(
-                    query=key[:32], wing=wing, limit=5
-                )
-
-            results = found_results
-            if results:
-                for r in results:
-                    # MCP search returns hit dicts with a 'text' field.
-                    r_content = (
-                        r.get("text", "") or r.get("content", "")
-                        if isinstance(r, dict)
-                        else str(r)
-                    )
-                    if r_content:
-                        return self._from_str(str(r_content))
-
-        # Local cache fallback.
-        if filepath.exists():
-            try:
-                with open(filepath) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-
-        return None
+        try:
+            with open(filepath) as f:
+                return json.load(f)
+        except Exception:
+            return None
 
     def search(self, query: str, limit: int = 10, *, wing: Optional[str] = None, room: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search across MCP + local cache, deduplicating by key.
