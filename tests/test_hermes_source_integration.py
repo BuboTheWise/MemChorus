@@ -57,7 +57,7 @@ def test_delete_memory_dir_mid_operation_returns_none_not_crash():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         # Verify memory source detects unavailability (not a crash)
-        available = src.is_available()
+        available = src.is_available
         assert available is False, "Expected is_available to return False after dir deletion, got: %s" % str(available)
 
     finally:
@@ -151,15 +151,15 @@ def test_is_available_checks_directory_correctly():
 
     try:
         src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
-        assert src.is_available() is True, "Expected available when directory exists"
+        assert src.is_available is True, "Expected available when directory exists"
 
         # Remove the directory - should become unavailable
         shutil.rmtree(tmpdir, ignore_errors=True)
-        assert src.is_available() is False, "Expected unavailable after directory deletion"
+        assert src.is_available is False, "Expected unavailable after directory deletion"
 
         # Re-create the directory - should become available again
         os.makedirs(tmpdir, exist_ok=True)
-        assert src.is_available() is True, "Expected available after directory re-creation"
+        assert src.is_available is True, "Expected available after directory re-creation"
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -412,15 +412,15 @@ def test_is_available_returns_false_when_dir_deleted():
     tmpdir = tempfile.mkdtemp(prefix='hermes_integration_')
     try:
         src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
-        assert src.is_available() is True
+        assert src.is_available is True
 
         shutil.rmtree(tmpdir, ignore_errors=True)
         # Wait for Python to flush/cleanup file handles from previous makedirs
         # Force re-check against the filesystem
-        assert src.is_available() is False
+        assert src.is_available is False
 
         os.makedirs(tmpdir)
-        assert src.is_available() is True
+        assert src.is_available is True
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
