@@ -49,8 +49,7 @@ def _make_loop_yaml(base_dir: str) -> None:
         conditions:
           kw:
             type: keyword_pattern
-            value:
-              - test
+            value: memchorustestkeyword
     """)
     with open(os.path.join(loop_dir_path, "test_loop.yaml"), "w") as f:
         f.write(yaml_content)
@@ -298,7 +297,7 @@ class TestFeedbackLoopIntegrationEvaluate(unittest.TestCase):
         )
 
         ctx = TurnContext(
-            user_message="this is a test message with the keyword",
+            user_message="this is a test message with memchorustestkeyword pattern",
             conversation_length=0,
             tool_calls_this_turn=0,
             empty_tool_responses=0,
@@ -306,7 +305,7 @@ class TestFeedbackLoopIntegrationEvaluate(unittest.TestCase):
         )
 
         promos = integration.evaluate(ctx, TriggerEvent.PRE_LLM_CALL)
-        # The kw should match "test_loop.yaml" (which has keyword 'test').
+        # The kw should match "test_loop.yaml" (which has keyword 'memchorustestkeyword').
         self.assertTrue(promos)
 
     # -- Verify evaluate returns empty list on no-match keywords --
