@@ -127,11 +127,19 @@ class ConditionEvaluator:
 
     @staticmethod
     def _match_keyword_pattern(value: Any, ctx: TurnContext) -> bool:
-        pattern = str(value) if not isinstance(value, str) else value
-        if pattern:
-            match_text = ctx.user_message + " " + " ".join(ctx.recent_messages[-10:])
+        # YAML produces Python lists — search each keyword individually
+        if isinstance(value, (list, tuple)):
+            patterns = [str(v) for v in value]
+        else:
+            patterns = [str(value)]
+
+        match_text = ctx.user_message + " " + " ".join(ctx.recent_messages[-10:])
+        for pattern in patterns:
+            if not pattern:
+                continue
             try:
-                return bool(_re.search(pattern, match_text, _re.IGNORECASE))
+                if _re.search(pattern, match_text, _re.IGNORECASE):
+                    return True
             except Exception:
                 pass
         return False
