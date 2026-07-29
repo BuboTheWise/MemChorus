@@ -647,7 +647,24 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.10 (current — on `master`)
+### v1.5.12 (current — on `master`)
+
+- **GAP040 fix:** `orchestrator.search()` now normalizes list/tuple query inputs to strings, preventing silent failures when batch queries are passed.
+- **GAP018 fix:** `SweepScheduler` properly wired to `LifecycleManager` on orchestrator initialization — lifecycle sweeps actually run instead of being silently skipped.
+- **is_available callable bug fix** (`orchestrator.py`): corrected the callable-check logic that caused false negatives with certain property descriptors.
+
+### v1.5.11
+
+- **Per-profile isolation:** Four-layer config cascade (global → profile → workspace → runtime) and instance registry with `get_orchestrator()` API for deterministic multi-session use.
+- **on_session_end lifecycle hook + atexit safety net:** Prevents data loss if a session ends without explicit save. Save-call counter added for observability.
+- **Session-end crash fix (GAP045):** Fixed `TypeError: object of type 'int' has no len()` in `on_session_end` when pending items was a bare integer.
+- **Recall injection key mismatch fix:** DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION added to _QUERY_MAP, fixing silent drops during behavioral trigger evaluation.
+- **GAP044 fixes:** Removed `enforce()` calls and recall-context mutation from read paths (`retrieve`, `retrieve_with_source`, `search`) — reads no longer have side-effects. Cleaned stale `_recall_context`/`_has_enabled` references. Expanded enforcement hook test coverage.
+- **GAP023 fix:** Added missing MemorySource ABC facade methods to orchestrator.
+- **GAP021 fix:** `max_results` alias added to `search()` + `retrieve_with_source` provenance API.
+- **MCP deferred spawn (GAP-053):** MCP subprocess now spawned lazily on first data-plane access instead of at import time, reducing cold-start overhead.
+
+### v1.5.10
 
 **- RecursionGuard unified depth counter:** Replaced fragile boolean recursion sentinels (`_REC_GUARD` module-level bool + instance-level `_in_enforcement_save`, `_in_enforcement_recall` flags) with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. All 4 enforcement hooks in orchestrator.py (save, retrieve, retrieve_with_source, search) and auto_recall_engine.py now use the shared guard. Thread-safe under Python GIL. 26 deep-nesting tests added covering save → enforce → hook → save chains at 1–3 levels with full exception path coverage.
 - **GAP026-C batched flush:** ToolCaptureBuffer caps saves, preventing excessive individual writes per session (50+ saved actions).
@@ -681,7 +698,7 @@ orchestrate.save(
 )
 \`\`\`
 
-Other v1.5.09 features:
+Other features shipped in v1.5.x releases:
 
 **Post-Audit Fixes (2026-07-11+):**
 
@@ -689,7 +706,7 @@ Other v1.5.09 features:
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
-**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design), but the `MergeEngine` implementation is still pending. Writes with `enabled: true` will be a no-op until the engine ships — the config key exists so users can prepare ahead of time without breaking existing deployments.
+**Merge-at-Write Status:** Shipped (v1.5.x). `MergeEngine` is fully implemented with Jaccard-similarity-based dedup, three merge strategies (`overwrite`, `append`, `union`), and per-profile strategy resolution via `PROFILE_STRATEGY_MAP`. Wired into `MemoryOrchestrator.save()` and `consolidate_key()` — when a save is intercepted and high-similarity hits exceed the cluster threshold, the existing entry is merged before dispatch. Config: `lifecycle.merge_at_write.enabled: true` + optional `strategy`, `similarity_min`, `cluster_max`. Full test coverage in `src/tests/test_lifecycle_merge_engine.py` (31 tests).
 
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
@@ -717,4 +734,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.5.09 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.5.12 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
