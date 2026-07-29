@@ -334,6 +334,117 @@ Key behaviour:
 
 See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
+## Feedback Loop Configuration
+
+Feedback loop YAML definitions live in the directory pointed to by `FEEDBACK_LOOP_DIR` env var (defaults to `~/.hermes/memchorus/feedback_loops/`). One `.yaml` file per loop. Each file describes conditions under which the agent receives a behavioural correction prompt before its next LLM call. Loops are loaded once at hook initialisation via `FeedbackLoopIntegration.build()` and automatically invalidate stale definitions on reload.
+
+### Schema Reference (`schema_v1`)
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `schema` | string | yes | — | Must be `schema_v1` |
+| `name` | string | yes | — | Unique loop identifier (used in escalation tracking) |
+| `trigger_event` | enum | yes | — | `pre_llm_call` or `post_tool_call` |
+| `cooldown_interval` | int | no | 0 | Seconds before this loop can fire again (max 3600) |
+| `priority` | int | no | 50 | Higher = evaluated earlier among concurrent loops |
+| `enabled` | bool | no | true | Set to `false` to disable without deleting the file |
+| `correction_prompt` | string | yes | — | Template text injected into the agent's context on match |
+| `conditions` | mapping | yes | — | Dictionary of condition-key → matcher definition |
+
+### Condition Matchers
+
+Each condition is a mapping entry keyed by an arbitrary identifier (e.g. `long_convo`, `loop_keyword`). The value describes **how** to match:
+
+| Matcher `type` | `value` shape | Fires when… |
+|---|---|---|
+| `conversation_length` | `{min: int}` or `{max: int, min: int}` | Turn count exceeds/goes below threshold |
+| `keyword_pattern` | string or `[strings]` | User message contains the keyword/regex |
+| `repetition_entropy` | `{threshold: float, window: int}` | Entropy of last *N* messages drops below threshold (repititive loops) |
+| `tool_response_empty_count` | `${int}` | Consecutive empty tool responses hit this count |
+
+### Example Loop Definitions
+
+**Example 1 — Keyword-based correction for planning drift:**
+
+```yaml
+schema: schema_v1
+name: planning_drift_guard
+trigger_event: pre_llm_call
+cooldown_interval: 300       # only fire every 5 minutes
+priority: 80
+enabled: true
+correction_prompt: >
+  The agent appears to be drifting from the original plan. Re-read the task objective
+  and refocus on delivering concrete progress toward the stated goal. Avoid speculative
+  tangents; complete the current step before branching out.
+conditions:
+  drift_keyword:
+    type: keyword_pattern
+    value:
+      - "actually, what I should do"
+      - "wait let me re-think"
+      - "on second thought maybe"
+```
+
+**Example 2 — Escalating correction for empty-tool-response loops:**
+
+```yaml
+schema: schema_v1
+name: empty_tool_response_escalation
+trigger_event: pre_llm_call
+cooldown_interval: 60
+priority: 90
+enabled: true
+correction_prompt: >
+  You have received consecutive empty tool responses. This usually means the tool output
+  was filtered or the call returned nothing useful. Re-evaluate your approach — consider
+  a different strategy or acknowledge the information gap and move forward.
+conditions:
+  empty_count:
+    type: tool_response_empty_count
+    value: 3                   # fire after 3 consecutive empties
+```
+
+**Example 3 — Long-conversation relevance boost:**
+
+```yaml
+schema: schema_v1
+name: long_convo_recall_boost
+trigger_event: pre_llm_call
+cooldown_interval: 600
+priority: 40
+enabled: true
+correction_prompt: >
+  This conversation has been running for a while. Re-collect yourself by recalling the
+  original objective and any key decisions made earlier in the session before proceeding.
+conditions:
+  length_check:
+    type: conversation_length
+    value:
+      min: 15                   # activate after 15 turns
+```
+
+### How Feedback Loops Execute at Runtime
+
+When a hook fires (`on_pre_llm_call`), the following sequence runs inside `_try_feedback_loop()`:
+
+1. A `TurnContext` is constructed from the current call's kwargs (user message, conversation length, tool call counts, recent messages).
+2. All loaded loop definitions are evaluated against this context via `FeedbackLoopIntegration.evaluate()`.
+3. For each matching definition:
+   - The **EscalationTracker** determines the correction level (Level 1 = hint, Level 2 = directive, Level 3 = hard correction) based on how many times this same loop has already triggered in the current session.
+   - If within the **cooldown window**, the loop is skipped silently.
+4. Matching loops produce formatted strings like `[FEEDBACK:<loop_name>] STEERING (Level N ...): <correction_prompt>`.
+5. These strings are appended to `injected_blocks` alongside any memory recall blocks, then prepended to the LLM context.
+
+**Key property:** Every step is wrapped in try/except — malformed YAML, schema mismatches, and missing fields log a warning and get skipped. The host application never crashes because of a feedback loop definition error.
+
+### Orientation Cache Behaviour
+
+The orientation cache (`_CacheRegistry`) uses an LRU policy with a configurable maximum of 256 entries. After GAP026 hardening:
+- **Default TTL:** 15 seconds (was 60s) — stale project context invalidates faster during multi-task sessions.
+- **Empty-result guard:** Query results returning an empty list are intentionally _not_ cached, preventing empty-result cache poisoning where a genuine hit later would be shadowed by the empty entry.
+- **Selective invalidation:** `clear_project(project_name)` removes only entries for that project without nuking unrelated cache keys.
+
 ## Installation
 
 Requires Python 3.8+. Install from GitHub via pip (recommended for most users):
