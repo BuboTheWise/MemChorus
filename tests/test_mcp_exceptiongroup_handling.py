@@ -112,7 +112,7 @@ class TestBaseExceptionGroupCrashFix:
         with patch.object(mps_module, '_run_async',
                           side_effect=safe_side_effect(base_eg_fn)):
             src = MemPalaceMemorySource(name="test-fallback", config=config)
-            assert src.is_available() is True, "Should still be available via local fallback"
+            assert src.is_available is True, "Should still be available via local fallback"
 
     def test_memoerysource_save_falls_back_to_local_cache(self, tmp_path):
         """save/retrieve fall back to local cache when MCP fails with BaseExceptionGroup."""

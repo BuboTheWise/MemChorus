@@ -55,7 +55,7 @@ class TestFallbackMode:
 
     def test_source_is_available_in_fallback_mode(self, tmp_cache):
         src = self._make_source(tmp_cache)
-        assert src.is_available() is True
+        assert src.is_available is True
 
     def test_save_retrieve_roundtrip(self, tmp_cache):
         src = self._make_source(tmp_cache)

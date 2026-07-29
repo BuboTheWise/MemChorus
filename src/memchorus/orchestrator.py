@@ -41,13 +41,13 @@ logger = logging.getLogger(__name__)
 def _check_source_available(source) -> bool:
     """Check source availability safely, handling both method and property forms.
 
-    The ABC contract in memory_source.py defines is_available as an abstract *method*,
-    but enforcement_manager.py implements it as a @property, and custom subclasses
-    may use either form. This helper resolves the mismatch transparently:
+    The ABC contract in memory_source.py defines is_available as an abstract @property,
+    but subclasses may implement it as a method for legacy reasons. This helper resolves
+    the mismatch transparently:
       - If callable (method), call it to get the boolean result.
       - If not callable (property/data), read the value directly.
       - Return False if source is None or is_available attribute is missing.
-      - Return True on exception so a broken availability check doesn't kill operations.
+      - Return False on exception so a broken source is correctly marked unavailable.
     """
     if source is None:
         return False
@@ -59,7 +59,7 @@ def _check_source_available(source) -> bool:
             return bool(attr())
         return bool(attr)
     except Exception:
-        return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -271,10 +271,16 @@ class MemoryOrchestrator:
             self.memory_sources['mempalace'] = mempalace_source
             self._source_enabled['mempalace'] = True
             self._source_priority['mempalace'] = 0
+        except ImportError as exc:
+            logger.warning(
+                "MemPalace MCP source unavailable (missing mcp package). "
+                "Continuing with hermes_default only. Install: pip install memchorus[mcp]. Error: %s", exc
+            )
         except Exception as exc:
             logger.warning(
                 "MemPalace source unavailable during orchestrator init — "
-                "continuing with hermes_default only. Error: %s", exc,
+                "continuing with hermes_default only. "
+                "If you want MemPalace, check ~/.hermes/config.yaml for mcp_servers.mempalace.command or ensure mempalace-mcp binary is on PATH. Error: %s", exc
             )
     
     def register_source(self, source: MemorySource, priority: int = 10) -> bool:

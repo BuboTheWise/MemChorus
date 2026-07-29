@@ -428,9 +428,9 @@ class HermesDefaultMemorySource(MemorySource):
             pass
         return sorted(keys)
 
+    @property
     def is_available(self) -> bool:
-        """
-        Check if Hermes default memory source is available.
+        """Check if Hermes default memory source is available.
 
         Returns:
             bool: True if the source is available, False otherwise
@@ -451,7 +451,7 @@ class HermesDefaultMemorySource(MemorySource):
         return {
             'name': self._name,
             'type': 'hermes_default',
-            'available': self.is_available(),
+            'available': self.is_available,
             'memory_dir': self.memory_dir,
             'description': 'Hermes default memory system - resilient core',
             'version': '1.0.1'
