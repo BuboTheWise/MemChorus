@@ -24,6 +24,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Kanban hex ID pattern — t_ followed by exactly 8 hex digits.
+_KANBAN_HEX_RE = re.compile(r"^t_[0-9a-f]{8}$", flags=re.IGNORECASE)
+
 # Tunables — set at import time or overridden during bootstrap (by auto_bootstrap).
 DEFAULT_CACHE_TTL_SECONDS: float = 15.0
 
@@ -70,20 +73,20 @@ class _CacheRegistry:
 
     def put(self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float) -> None:
         if not results:
-            return  # GAP026: do NOT cache empty lists — they poison subsequent calls
+            return  # Do NOT cache empty lists — they poison subsequent calls
         if len(self._cache) >= self._maxsize:
             oldest = min(self._cache, key=lambda k: self._cache[k].timestamp)
             del self._cache[oldest]
         self._cache[key] = _CacheEntry(results=results, timestamp=time.monotonic(), ttl=int(ttl_seconds))
 
-    def clear_project(self, project: str) -> None:
-        """GAP026: delete only cache entries matching *project* without nuking unrelated keys."""
-        keys_to_delete = [k for k in self._cache if k.project == project]
-        for k in keys_to_delete:
-            del self._cache[k]
-
     def clear(self) -> None:
         self._cache.clear()
+
+    def clear_project(self, project: str) -> None:
+        """Delete only entries matching *project* without nuking unrelated keys."""
+        to_remove = [k for k in self._cache if k.project == project]
+        for k in to_remove:
+            del self._cache[k]
 _cache = _CacheRegistry()
 
 
@@ -119,23 +122,19 @@ def _build_orientation_query(
 
 _SKIP_DIRS = {"kanban", "workspaces", ".hermes"}
 
-# GAP026: detect pure-hex Kanban task IDs so we don't use them as project names
-_KANBAN_HEX_RE = re.compile(r"^t_[0-9a-f]{1,16}$", flags=re.IGNORECASE)
-
-
 def _is_skip_dir(name: str) -> bool:
     """Return True if a path segment looks like infrastructure, not a project."""
-    return name in _SKIP_DIRS or bool(_KANBAN_HEX_RE.match(name))
+    return name in _SKIP_DIRS or name.startswith("t_")
 
 
-def _is_hermez_project_name(name: str) -> bool:
+def _is_hermes_project_name(name: str) -> bool:
     """Return True if *name* looks like a real project name rather than a skip value."""
     if not name:
         return False
+    # Kanban hex IDs (e.g. t_be1e596c) are meaningless as KG query terms — skip them.
     if _KANBAN_HEX_RE.match(name):
         return False
     return True
-
 
 # --------------------------------------------------------------------------- #
 
@@ -156,7 +155,7 @@ def _resolve_project(env_task: Optional[str]) -> Optional[str]:
         return tenant.strip()
 
     # Priority 2: Task-level project reference (skip hex-style Kanban IDs)
-    if env_task and env_task.strip() and _is_hermez_project_name(env_task.strip()):
+    if env_task and env_task.strip() and _is_hermes_project_name(env_task.strip()):
         return env_task.strip()
 
     # Priority 3: Workspace directory structure
