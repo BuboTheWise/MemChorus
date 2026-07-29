@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: memchorus
-Version: 1.5.11
+Version: 1.5.12
 Summary: Memory orchestration system for Hermes agents
 Home-page: https://github.com/BuboTheWise/MemChorus
 Author: BuboTheWise
@@ -11,20 +11,26 @@ Classifier: Operating System :: OS Independent
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
-Requires-Dist: pydantic>=2.0
+Requires-Dist: pydantic<3.0,>=2.0
 Requires-Dist: pyyaml>=5.4
-Requires-Dist: mcp>=1.0
+Provides-Extra: mcp
+Requires-Dist: mcp<2.0,>=1.0; extra == "mcp"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
 Dynamic: author
 Dynamic: classifier
 Dynamic: description
 Dynamic: description-content-type
 Dynamic: home-page
 Dynamic: license-file
+Dynamic: provides-extra
 Dynamic: requires-dist
 Dynamic: requires-python
 Dynamic: summary
 
 # MemChorus
+
+Current version: 1.5.12
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -366,6 +372,24 @@ Verify the import works before using it:
 ```bash
 python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
+
+#### Optional Dependencies
+
+MemChorus splits its runtime dependencies into a lean core plus optional extras so that installation plays nicely alongside other packages (especially Hermes base environments with their own Pydantic version).
+
+| Extra | Command | What it adds |
+|---|---|---|
+| **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
+| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
+| **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
+
+You can combine extras: `"memchorus[mcp,dev]"` for full development.
+
+#### Version Compatibility Notes
+
+- **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
+- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
+- If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
 
 ### MemPalace backend
 
