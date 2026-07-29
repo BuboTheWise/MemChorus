@@ -419,9 +419,21 @@ class _McpClient:
         return py
 
     def connect(self) -> bool:
-        """Start server subprocess, run initialize handshake, return True/False."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp.client.session import ClientSession
+        """Start server subprocess, run initialize handshake, return True/False.
+
+        Returns False gracefully when the mcp package is not installed
+        (i.e. MemChorus was installed without the [mcp] extra).
+        """
+        try:
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+            from mcp.client.session import ClientSession
+        except ImportError:
+            logger.warning(
+                "connect: MCP package not installed — cannot connect to MemPalace. "
+                "Install with: pip install memchorus[mcp]"
+            )
+            self._connected = False
+            return False
 
         cmd, args = self._get_transport()
         if not Path(cmd).exists():
