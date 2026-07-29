@@ -256,9 +256,19 @@ class MemChorusHooks:
                     "[/MemChorus Memory Recall]"
                 )
 
-            # 2. Evaluate feedback loop corrections (delegated to private method)
-            feedback_blocks = self._try_feedback_loop(input_text, kwargs)
-            injected_blocks.extend(feedback_blocks)
+            # 2. Inline-inject feedback loop corrections — positioned between
+            #    recall results and any tool output that follows downstream.
+            #    _try_feedback_loop() formats lines for merge; when both memory
+            #    recall and feedback fire, the user sees:
+            #      [MemChorus Memory Recall]
+            #      ...recall items...
+            #      -- Feedback Loop Corrections --
+            #      [FEEDBACK:name] STEERING:...
+            #      -- End Feedback --
+            #      [/MemChorus Memory Recall]    (when recall present)
+            feedback_lines = self._try_feedback_loop(input_text, kwargs)
+            if feedback_lines:
+                injected_blocks.append("\n".join(feedback_lines))
 
             if not injected_blocks:
                 return None
@@ -273,12 +283,24 @@ class MemChorusHooks:
             logger.warning("on_pre_llm_call failed — returning None (hooks remain active). %s", exc)
             return None
 
-    def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
-        """Evaluate feedback loop corrections and return formatted block(s).
+    # -------------------------------------------------------------------
+    # Private helpers
+    # -------------------------------------------------------------------
 
-        Returns a list of labelled feedback strings suitable for appending to the
-        injected context blocks. Gracefully degrades to an empty list if the
-        feedback subsystem is unavailable or raises internally.
+    def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
+        """Evaluate feedback loop and return formatted lines for inline injection.
+
+        Builds a FeedbackTurnContext from the hook kwargs, asks the integration
+        to evaluate any matching loops against TriggerEvent.PRE_LLM_CALL, and
+        returns a list of ready-to-merge lines (or [] on failure/no-match).
+
+        By design this lives as a private method here rather than being called
+        through ``inject_feedback_corrections()`` so that:
+
+          1. Feedback corrections can be injected *between* memory recall and
+             downstream tool output — the caller controls block ordering
+          2. We get granular line control (List[str]) instead of a pre-joined string
+          3. The hook class owns its own degradation boundary
         """
         try:
             from memchorus.feedback_loop.integration import (
@@ -300,10 +322,13 @@ class MemChorusHooks:
                 trigger_event=TriggerEvent.PRE_LLM_CALL,
             )
 
-            if feedback_text:
-                return [feedback_text]
-            return []
-        except Exception as fexc:  # graceful degradation for feedback loops
+            if not feedback_text:
+                return []
+
+            # Split to lines so the caller can merge them with other blocks
+            return feedback_text.splitlines()
+
+        except Exception as fexc:
             logger.warning("Feedback loop evaluation skipped: %s", fexc)
             return []
 
