@@ -16,7 +16,6 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
-import threading
 import hashlib
 import json
 import logging
@@ -33,6 +32,7 @@ from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
+from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
 
 logger = logging.getLogger(__name__)
@@ -144,16 +144,12 @@ class MemoryOrchestrator:
         self._enforce_on_read = bool(self.config.get('enforce_on_read', True))
         self._enforce_on_write = bool(self.config.get('enforce_on_write', True))
         self._enforcement_manager: Optional[BehavioralEnforcementManager] = None
-        # Guard against recursive enforcement when capture_outcome calls back into save()
-        self._in_enforcement_save = False
-        # Read-side recursion guard (MC-001 / t_7d26af26): prevents orchestrator.search()
-        # and orchestrator.retrieve() from recursively triggering enforcement when the recall
-        # engine's nested search/recall fires an inner enforce().  Without this flag, pre-decision
-        # recall -> AutoRecallEngine._do_search() -> orchestrator.search() -> enforce() recurses
-        # indefinitely until RecursionError.
-        self._in_enforcement_recall = False
-        # Thread-safe access to the recursion guards (MC-003)
-        self._enforcement_lock = threading.RLock()
+        # GAP027: unified RecursionGuard replaces legacy boolean sentinels + RLock.
+        # Prevents infinite recursion when enforcement hooks call back into save(),
+        # and caps depth to enforcement_max_depth (default 5) for additional safety.
+        self._guard = RecursionGuard(
+            max_depth=int(self.config.get('enforcement_max_depth', 5))
+        )
 
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
@@ -664,25 +660,18 @@ class MemoryOrchestrator:
             del self._retrieve_cache[key]
 
         # --- Post-action storage capture (behavioral enforcement hook) ---
-        # Guard against recursive enforcement when capture_outcome calls back into save()
+        # GAP027: RecursionGuard prevents save()->capture_outcome()->save() recursion
         if saved and self._enforce_on_write:
-            with self._enforcement_lock:
-                if not self._in_enforcement_save:
+            try:
+                with self._guard as depth:
                     em = self._get_enforcement_manager()
                     if em is not None:
-                        self._in_enforcement_save = True
-                        try:
-                            outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
-                            _storage_result = em.enforce(outcome_text)
-                            # Guard against recursive enforcement chains where errors may be an int
-                            errors = getattr(_storage_result, 'errors', None)
-                            error_count = len(errors) if isinstance(errors, (list, tuple)) else 0
-                            logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
-                                        key, _storage_result.triggered_points, error_count)
-                        except Exception:
-                            pass  # degrade gracefully — the save itself already succeeded
-                        finally:
-                            self._in_enforcement_save = False
+                        outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                        _storage_result = em.enforce(outcome_text)
+                        logger.debug("Post-action storage capture after save('%s'): %d points, errors=%d",
+                                    key, _storage_result.triggered_points, len(_storage_result.errors))
+            except (RecursionError, Exception):
+                pass  # degrade gracefully — the save itself already succeeded
         
         return saved
     
