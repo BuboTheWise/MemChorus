@@ -39,10 +39,17 @@ setup(
     ],
     python_requires=">=3.8",
     install_requires=[
-        "pydantic>=2.0",       # schema_v1 validation
+        "pydantic>=2.0,<3.0",  # schema_v1 validation (pinned <3.0 to avoid breaking changes)
         "pyyaml>=5.4",         # YAML loop definition loader
-        "mcp>=1.0",            # stdio transport for MemPalace MCP client
     ],
+    extras_require={
+        "mcp": [
+            "mcp>=1.0,<2.0",  # stdio transport for MemPalace MCP client (pin <2.0 to avoid breaking API)
+        ],
+        "dev": [
+            "pytest>=7.0",
+        ],
+    },
     entry_points={
         "hermes_agent.plugins": [
             "memchorus = memchorus.hooks",

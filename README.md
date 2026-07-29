@@ -343,6 +343,24 @@ Verify the import works before using it:
 python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
 
+#### Optional Dependencies
+
+MemChorus splits its runtime dependencies into a lean core plus optional extras so that installation plays nicely alongside other packages (especially Hermes base environments with their own Pydantic version).
+
+| Extra | Command | What it adds |
+|---|---|---|
+| **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
+| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
+| **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
+
+You can combine extras: `"memchorus[mcp,dev]"` for full development.
+
+#### Version Compatibility Notes
+
+- **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
+- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
+- If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
+
 ### MemPalace backend
 
 For the MemPalace source to connect live, ensure `mempalace-server` is available as an MCP stdio server. Check with:
