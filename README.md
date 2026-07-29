@@ -722,7 +722,7 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **798 tests** collected across all modules (current)
+- **1,200+ tests** across all modules (run `pytest --collect-only` for the live count — the number grows with each cycle)
 
 
 ## Tipping the Owl
