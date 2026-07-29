@@ -533,14 +533,85 @@ for r in results:
 
 **Hermes plugin mode (auto-registered sources):**
 
-When MemChorus is enabled as a Hermes plugin (`hermes_mcp_memchorus`), the orchestrator auto-registers `hermes_default`. If live MCP tools are reachable, `mempalace` joins automatically — no manual wiring needed. Install via:
+When installed, MemChorus registers itself as a Hermes lifecycle plugin via `setup.py` entry points. After enabling the plugin in your Hermes config, the orchestrator and memory sources load automatically — no manual wiring required.
+
+1. **Install and enable the plugin:**
 
 ```bash
-/home/user/.hermes/hermes-agent/venv/bin/python3 -c "
-import importlib; spec = importlib.util.find_spec('memchorus.hooks')
-if spec: print('Module memchorus.hooks found OK')
-"
+pip install 'git+https://github.com/BuboTheWise/MemChorus.git@master'
 ```
+
+Then in your Hermes `config.yaml`:
+
+```yaml
+plugins:
+  memchorus:
+    enabled: true
+```
+
+2. **What happens at runtime:**
+
+When the agent starts, Hermes discovers the `hermes_agent.plugins` entry point (`memchorus = memchorus.hooks`) and instantiates `MemChorusHooks`. The hooks trigger a lazy bootstrap that builds a `MemoryOrchestrator` and registers sources automatically:
+
+- **`hermes_default`** — always registered. Reads/writes Hermes' native memory store (MEMORY.md / USER.md) under the active profile's path.
+- **`mempalace`** — auto-joins if live MCP tools are reachable (e.g., via `hermes_mcp_mempalace`). Falls back gracefully with a warning log if MCP is down.
+
+All hook activity respects environment control:
+
+```bash
+# Disable all hooks without removing the plugin
+export MEMCHORUS_AUTO_ENABLED=false
+
+# Override workspace for testing
+export HERMES_PROFILE=my_profile
+```
+
+3. **What the hooks inject at runtime (no agent intervention needed):**
+
+Every turn, the lifecycle hooks fire at these points. Below is a realistic session showing what gets injected:
+
+```
+--- Agent start ---
+[AUTO] on_session_start: hermes_default + mempalace registered
+    HERMES_KANBAN_TASK=t_abc123 profile=cthugha
+    Memory sources ready (active: 2, available: 2)
+
+--- Turn 1: user asks "how do I enable MemChorus plugin mode?" ---
+[AUTO] on_pre_llm_call: decision points [TOOL_CALL_INTENT]
+    Search: "enable memchorus plugin mode" -> hermes_default + mempalace
+    Recall hit (score=0.82):
+      [hermes_default] key=hints/memchorus_plugin_enable
+        content="Enable in config.yaml under plugins.memchorus.enabled:true ..."
+
+[AUTO] injected into prompt:
+  [MemChorus Memory Recall]
+  [hermes_default] score=0.82 hints/memchorus_plugin_enable
+    Enable plugin via plugins.memchorus.enabled=true in config.yaml.
+  [/MemChorus Memory Recall]
+
+--- Turn 2: agent runs pytest ---
+[AUTO] on_post_tool_call: detected decision points [RESULT], signal OK (347 chars)
+    Saved to AutoStorageEngine -> hermes_default
+      key=result_a1f2b3c4 (importance=0.60, categories=[AUTO,RESULT])
+
+--- Session end ---
+[AUTO] on_session_end: flush ToolCaptureBatcher (pending=3)
+    atexit handler deregistered
+```
+
+**Controlling hook behavior:**
+
+Supported environment variables (resolved at bootstrap, highest priority):
+
+| Environment variable | Effect |
+|---|---|
+| `MEMCHORUS_AUTO_ENABLED=false` | Disable all hooks and auto-bootstrap entirely |
+| `HERMES_PROFILE=cthugha` | Route memories to a specific profile's memory dir |
+| `MEMCHORUS_DEFAULT_SOURCE=mempalace` | Change default source (default: `hermes_default`) |
+| `MEMCHORUS_HALF_LIFE_DAYS=14` | Adjust memory score decay rate (default: 30) |
+| `MEMCHORUS_CACHE_TTL_SECS=60` | Recall cache TTL (default: 60) |
+| `MEMCHORUS_CUSTOM_LOOPS_DIR=/path` | Override feedback loops directory |
+
 
 **Registering additional sources:**
 
