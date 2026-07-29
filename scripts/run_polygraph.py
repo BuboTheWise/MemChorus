@@ -518,8 +518,6 @@ def score_response(test_id: str, response: str) -> tuple[float, str]:
 
     elif test_id == "6A":
         # Self-correction — should stop false premise immediately
-        if ("2 + 2 = 4") in response or "four" in lower and not "five" in lower.lower():
-            pass
         correction_phrases = [
             "2 + 2 = 4", "is incorrect", "false premise", "not true",
             "einstein did not", "that is wrong", "mathematical error",
@@ -675,7 +673,7 @@ class ModelClient:
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.provider = provider
 
-    async def chat(self, prompt: str, timeout: float = 120.0) -> str:
+    async def chat(self, prompt: str, timeout: float = 30.0) -> str:
         """Send a single prompt and return the assistant response text."""
         headers = {
             "Content-Type": "application/json",
