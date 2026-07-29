@@ -131,63 +131,99 @@ class _McpTransportDetector:
             Explicit path to the Hermes config file.  When omitted, auto-locates
             via ``_find_config()``.
         """
+        goto_fallback = False
+        data = None
+        parts: List[str] = []
         target = config_path if config_path is not None else _McpTransportDetector._find_config()
 
         if target is None:
             logger.debug("_McpTransportDetector: no config.yaml found")
-            return None
+            goto_fallback = True
+        else:
+            try:
+                with open(target) as f:
+                    data = yaml.safe_load(f)
+            except Exception as exc:
+                logger.warning(
+                    "_McpTransportDetector: failed to parse %s: %s", target, exc
+                )
+                goto_fallback = True
+            else:
+                if not isinstance(data, dict):
+                    logger.warning("_McpTransportDetector: config.yaml is not a mapping")
+                    goto_fallback = True
 
-        try:
-            with open(target) as f:
-                data = yaml.safe_load(f)
-        except Exception as exc:
-            logger.warning(
-                "_McpTransportDetector: failed to parse %s: %s", target, exc
+        # Navigate mcp_servers -> mempalace -> command (only when data is valid).
+        if not goto_fallback:
+            mcp_servers = data.get("mcp_servers", {})
+            if not isinstance(mcp_servers, dict):
+                goto_fallback = True
+
+        if not goto_fallback:
+            mempalace_cfg = mcp_servers.get("mempalace", {})
+            if not isinstance(mempalace_cfg, dict):
+                goto_fallback = True
+
+        if not goto_fallback:
+            command_raw = mempalace_cfg.get("command", None)
+            if not command_raw or not isinstance(command_raw, str):
+                goto_fallback = True
+
+        if not goto_fallback:
+            try:
+                parts = shlex.split(command_raw)
+            except ValueError as exc:
+                logger.warning(
+                    "_McpTransportDetector: invalid command string in config.yaml: %s", exc
+                )
+                goto_fallback = True
+
+        if not goto_fallback and not parts:
+            goto_fallback = True
+
+        # If we found a valid override, return immediately.
+        if not goto_fallback:
+            resolved = {
+                "command": parts[0],
+                "args": parts[1:],
+                "resolved_from": f"config.yaml mcp_servers.mempalace.command ({target})",
+            }
+
+            logger.info(
+                "_McpTransportDetector: config override detected -> command=%r, args=%r, source=%s",
+                resolved["command"],
+                resolved["args"],
+                resolved["resolved_from"],
             )
-            return None
-        if not isinstance(data, dict):
-            logger.warning("_McpTransportDetector: config.yaml is not a mapping")
-            return None
 
-        # Navigate mcp_servers -> mempalace -> command
-        mcp_servers = data.get("mcp_servers", {})
-        if not isinstance(mcp_servers, dict):
-            return None
+            return resolved
 
-        mempalace_cfg = mcp_servers.get("mempalace", {})
-        if not isinstance(mempalace_cfg, dict):
-            return None
-
-        command_raw = mempalace_cfg.get("command", None)
-        if not command_raw or not isinstance(command_raw, str):
-            return None
-
-        try:
-            parts = shlex.split(command_raw)
-        except ValueError as exc:
-            logger.warning(
-                "_McpTransportDetector: invalid command string in config.yaml: %s", exc
+        # -- Fallback: check PATH for the mempalace-mcp binary --
+        binary_path = shutil.which("mempalace-mcp")
+        if binary_path:
+            logger.info(
+                "_McpTransportDetector: mempalace-mcp found on PATH (no override needed) -> %s",
+                binary_path,
             )
-            return None
+            return {
+                "command": binary_path,
+                "args": [],
+                "resolved_from": "PATH (mempalace-mcp)",
+            }
 
-        if not parts:
-            return None
-
-        # Split into [command, *args]
-        resolved = {
-            "command": parts[0],
-            "args": parts[1:],
-            "resolved_from": f"config.yaml mcp_servers.mempalace.command ({target})",
-        }
-
-        logger.info(
-            "_McpTransportDetector: config override detected -> command=%r, args=%r, source=%s",
-            resolved["command"],
-            resolved["args"],
-            resolved["resolved_from"],
+        # -- Actionable warning when no transport could be discovered --
+        logger.warning(
+            "_McpTransportDetector: no MemPalace MCP transport configuration found.\n"
+            "To enable it, add this to %s:\n"
+            "---\n"
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /path/to/mempalace-mcp-server\n"
+            "---",
+            target if target is not None else "~/.hermes/config.yaml",
         )
 
-        return resolved
+        return None
 
 
 async def _call_tool_async(
@@ -260,15 +296,16 @@ class _McpClient:
     The cost is starting a Python subprocess for each operation, but MemChorus
     save/retrieve/search are not firehose operations -- the overhead is acceptable.
 
-    **Transport resolution chain (v2.2):**
+    **Transport resolution chain (v2.3):**
     0. ``config.yaml mcp_servers.mempalace.command`` — user override from Hermes config
        (highest priority, checked by ``_McpTransportDetector``)
-    1. ``config.get("python_bin")`` — explicit user override passed to the constructor
-    2. ``shutil.which("mempalace-python")`` — dedicated shim on PATH
-    3. pipx venv locations (existing)
-    4. ``sys.executable`` (existing)
-    5. ``python3`` on PATH (existing)
-    6. ``/usr/bin/python3`` fallback, lowest priority (existing)
+    1. ``mempalace-mcp`` binary discovered on PATH via ``shutil.which()``
+    2. ``config.get("python_bin")`` — explicit user override passed to the constructor
+    3. ``shutil.which("mempalace-python")`` — dedicated shim on PATH
+    4. pipx venv locations (existing)
+    5. ``sys.executable`` (existing)
+    6. ``python3`` on PATH (existing)
+    7. ``/usr/bin/python3`` fallback, lowest priority (existing)
     """
 
     def __init__(self, timeout: float = 30.0, config: Optional[Dict[str, Any]] = None):
@@ -291,7 +328,8 @@ class _McpClient:
     def _get_transport(self) -> tuple[str, list]:
         """Return (command, args) for launching the MCP subprocess.
 
-        Priority 0: config.yaml override from ``_McpTransportDetector``.
+        Priority 0: config.yaml override from ``_McpTransportDetector``
+            (includes the auto-discovered ``mempalace-mcp`` on PATH).
         Fallback: self._python_bin + standard module path.
         """
         if self._transport_override:
@@ -876,6 +914,7 @@ class MemPalaceMemorySource(MemorySource):
 
         return results[:limit]
 
+    @property
     def is_available(self) -> bool:
         """True if MCP is alive *or* the local cache dir is writable.
 
@@ -897,7 +936,7 @@ class MemPalaceMemorySource(MemorySource):
         return {
             "name": self._name,
             "type": "mempalace",
-            "available": self.is_available(),
+            "available": self.is_available,
             "mcp_connected": mcp_up,
             "fallback_dir": str(self._cache_dir),
             "python_bin": getattr(self._client, "_python_bin", "unknown"),

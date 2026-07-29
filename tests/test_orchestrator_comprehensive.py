@@ -308,7 +308,7 @@ def test_search_limit_returns_requested_amount_with_staggered_sources():
     # Put them in a known iteration order
     orch.memory_sources = {'srcA': source_a, 'srcB': source_b}
 
-    assert all(s.is_available() for s in orch.memory_sources.values())
+    assert all(s.is_available for s in orch.memory_sources.values())
 
     # Test Case 1: total available (12) >= requested limit (10) -> should get exactly 10
     results = orch.search('test_query', limit=10)
