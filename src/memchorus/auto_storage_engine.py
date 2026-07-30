@@ -65,7 +65,7 @@ _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
         ("understood", r'\bunderstood\b'),
         ("found that", r'found\s+that'),
         # Technical/architectural insight indicators (t_dc2e44b9)
-        ("implements", r'\blear[nn]ing:?\b'),
+        ("learning:", r'\blear[nn]ing:?[:\s]\b'),
         ("architecture", r'\barchitectur(e|al)(\s+(design|style|pattern))?\b'),
         ("provides functionality", r'\bprovides\s+(functionality|capability|support)\b'),
         ("handles", r'\bhandles?\s+(requests|calls|events|connections|operations|errors)\b'),
@@ -85,7 +85,7 @@ _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
         ("fails when", r'\bfails?\s+(when|because)|\b(fail(?:ed|ure)s?)\s+(at|on)\b'),
         ("bug in", r'\bbug[s]?\s+in\b'),
         ("does not support", r'\b(does\s+not\s+support|cannot\s+handle|unsupported)\b'),
-        ("workaround", r'\b(work[a ]?round|(patch|fix)[\s_-]?(to|for))\b'),
+        ("workaround", r'\bwork\s+around\b|\bworkaround\b|(?:fix|patch)[\s_-]?[Ff]or\b'),
         ("gotcha", r'\b(got[ _]?cha|pitfall|trap|hazard)\b'),
         ("causes", r'\b(causes?\s+(?:a\s+|an\s+)?(error|issue|problem|crash|failure))\b'),
         ("known issue", r'\b(known[\s_-]?issue|limitation|constraint|edge\s+case)\b'),
@@ -99,7 +99,7 @@ _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
         # Technical/architectural decision indicators (t_dc2e44b9)
         ("default", r'\b(def(ault|aults)\s+(to|is|are|at))\b'),
         ("fallback when", r'\bfallback[s]?\s+(when|to)|\b(default\s+behavior)\b'),
-        ("require", r'\brequ(re|ired)\s+(by|for|ing)\b'),
+        ("require", r'\brequ(ire|ires|ired)\s+(by|for|ing)|\brequires?\s+\b'),
         ("must not", r'\b(must[\s_-]?not|cannot|must\s+never)\b'),
     ],
     SignificanceCategory.RESULT: [
