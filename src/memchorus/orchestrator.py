@@ -677,6 +677,11 @@ class MemoryOrchestrator:
                                     key, _storage_result.triggered_points, error_count)
             except RecursionError:
                 pass  # max depth hit — degrade gracefully; the save itself already succeeded
+            except Exception:  # noqa: BLE001
+                # Any other enforcement error (RuntimeError, AttributeError, etc.) should not
+                # roll back a successful save. The data is already persisted; only lose the
+                # enrichment metadata.
+                logger.debug("Post-action enforcement failed for save('%s') — degrading gracefully", key)
         
         return saved
     
