@@ -82,14 +82,16 @@ class ConditionEvaluator:
         sig_type = cls._resolve_field(signal, "type") or ""
         value = cls._resolve_field(signal, "value")
 
-        # Use dispatcher for known types
-        matcher = ConditionEvaluator._MATCHERS.get(sig_type)
-        if matcher is not None:
-            try:
-                return bool(matcher(value, context))
-            except Exception as exc:
-                logger.warning("Matcher error for type %r: %s -- skipping", sig_type, exc)
-                return False
+        # Dispatch directly to avoid relying on mutable class-level state that can be
+        # cleared by upstream tests during full-suite CI runs (mutable _MATCHERS dict)
+        if sig_type == "conversation_length":
+            return cls._match_conversation_length(value, context)
+        elif sig_type == "tool_response_empty_count":
+            return cls._match_tool_response_empty_count(value, context)
+        elif sig_type == "keyword_pattern":
+            return cls._match_keyword_pattern(value, context)
+        elif sig_type == "repetition_entropy":
+            return cls._match_repetition_entropy(value, context)
 
         if not sig_type:
             logger.warning("Empty signal type -- skipping")

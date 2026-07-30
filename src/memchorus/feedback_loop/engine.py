@@ -197,16 +197,26 @@ class FeedbackDetector:
         if value_raw is None and isinstance(signal, dict):
             value_raw = signal.get("value")
 
-        matcher = ConditionEvaluator._MATCHERS.get(sig_type)
-        if matcher is None:
-            logger.warning("Unknown feedback condition signal type: %r -- skipping", sig_type)
-            return False
-
+        # Dispatch directly to avoid relying on mutable class-level _MATCHERS that can be
+        # cleared by upstream tests during full-suite CI runs
         try:
-            return bool(matcher(value_raw, ctx))
+            if sig_type == "conversation_length":
+                return bool(ConditionEvaluator._match_conversation_length(value_raw, ctx))
+            elif sig_type == "tool_response_empty_count":
+                return bool(ConditionEvaluator._match_tool_response_empty_count(value_raw, ctx))
+            elif sig_type == "keyword_pattern":
+                return bool(ConditionEvaluator._match_keyword_pattern(value_raw, ctx))
+            elif sig_type == "repetition_entropy":
+                return bool(ConditionEvaluator._match_repetition_entropy(value_raw, ctx))
         except Exception as exc:
             logger.warning("Condition evaluation error for type %r: %s -- skipping", sig_type, exc)
             return False
+
+        if not sig_type:
+            return False
+
+        logger.warning("Unknown feedback condition signal type: %r -- skipping", sig_type)
+        return False
 
     @staticmethod
     def _format_prompt(loop_name: str, base: str, level: int) -> str:
