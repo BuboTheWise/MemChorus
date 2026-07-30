@@ -50,28 +50,60 @@ ALL_CATEGORIES: List[SignificanceCategory] = [
     SignificanceCategory.RESULT,
 ]
 
-# Mapping of category -> search strings (case-insensitive)
+# Mapping of category -> search strings (case-insensitive).
+# Each entry is (human_label, compiled_regex_string).
+# The original keyword list captured natural-language reasoning well but missed
+# technical documentation, code diffs, and infrastructure output entirely.
+# Expanded 2026-07-29 to catch architecture specs, API references, configuration
+# descriptions, error patterns, and design rationale that agents encounter when
+# reading codebases or tool output (t_dc2e44b9).
 _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
     SignificanceCategory.LEARNING: [
+        # Original natural-language learning indicators
         ("learned", r'\blearned\b'),
         ("realized", r'\brealized\b'),
         ("understood", r'\bunderstood\b'),
         ("found that", r'found\s+that'),
+        # Technical/architectural insight indicators (t_dc2e44b9)
+        ("learning:", r'\blear[nn]ing:?[:\s]\b'),
+        ("architecture", r'\barchitectur(e|al)(\s+(design|style|pattern))?\b'),
+        ("provides functionality", r'\bprovides\s+(functionality|capability|support)\b'),
+        ("handles", r'\bhandles?\s+(requests|calls|events|connections|operations|errors)\b'),
+        ("designed to", r'\bdesigned\s+to\b'),
+        ("pattern", r'\b(pat(tern|terns)|workflow)(\s+(design|convention))?\b'),
+        ("key insight", r'\b(key[\s_-]?insight|important[\s_-]?(finding|detail))\b'),
+        ("understanding of", r'\bunderstanding\s+of\b'),
     ],
     SignificanceCategory.MISTAKE: [
+        # Original natural-language mistake indicators
         ("went wrong", r'went\s+wrong'),
         ("wrong approach", r'wrong\s+approach'),
         ("should have", r'should\s+have\b'),
         ("mistake was", r'mistake\s+was\b'),
         ("incorrectly", r'\bincorrectly\b'),
+        # Technical error/bug/pitfall indicators (t_dc2e44b9)
+        ("fails when", r'\bfails?\s+(when|because)|\b(fail(?:ed|ure)s?)\s+(at|on)\b'),
+        ("bug in", r'\bbug[s]?\s+in\b'),
+        ("does not support", r'\b(does\s+not\s+support|cannot\s+handle|unsupported)\b'),
+        ("workaround", r'\bwork\s+around\b|\bworkaround\b|(?:fix|patch)[\s_-]?[Ff]or\b'),
+        ("gotcha", r'\b(got[ _]?cha|pitfall|trap|hazard)\b'),
+        ("causes", r'\b(causes?\s+(?:a\s+|an\s+)?(error|issue|problem|crash|failure))\b'),
+        ("known issue", r'\b(known[\s_-]?issue|limitation|constraint|edge\s+case)\b'),
     ],
     SignificanceCategory.DECISION: [
+        # Original natural-language decision indicators
         ("decided", r'\bdecided\b'),
         ("chose", r'\bchose\b'),
         ("go with", r'go\s+with'),
         ("settled on", r'settled\s+on'),
+        # Technical/architectural decision indicators (t_dc2e44b9)
+        ("default", r'\b(def(ault|aults)\s+(to|is|are|at))\b'),
+        ("fallback when", r'\bfallback[s]?\s+(when|to)|\b(default\s+behavior)\b'),
+        ("require", r'\brequ(ire|ires|ired)\s+(by|for|ing)|\brequires?\s+\b'),
+        ("must not", r'\b(must[\s_-]?not|cannot|must\s+never)\b'),
     ],
     SignificanceCategory.RESULT: [
+        # Original natural-language result indicators
         ("result", r'\bresult\b'),
         ("outcome", r'\boutcome\b'),
         ("achieved", r'\bachieved\b'),
