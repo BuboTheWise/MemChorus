@@ -237,8 +237,9 @@ def orientation_search(
                 seen_keys.add(k)  # type: ignore[arg-type]  -- key is always a string after set add
                 all_results.append(r)
 
-    # Cap to limit (AC-O1: up to 5 items)
-    all_results = all_results[:limit]
+    # Cap to limit (AC-O1: up to 5 items) — score-based so higher-relevance results
+    # survive truncation rather than being position-dependent on query execution order.
+    all_results = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)[:limit]
 
     # Write to LRU cache (AC-O2)
     _cache.put(cache_key, all_results, cache_ttl_seconds)
