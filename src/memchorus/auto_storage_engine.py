@@ -342,14 +342,39 @@ class CaptureResult:
 
 
 def _detect_significance(text: str) -> List[SignificanceCategory]:
-    """Scan *text* for keywords across all categories; return matched list."""
+    """Scan *text* for keywords across all categories; return matched list.
+
+    RESULT only fires as a fallback when no higher-value category (LEARNING,
+    MISTAKE, or DECISION) matched. This prevents generic tool-output words like
+    ``result``, ``success``, and ``outcome`` from inflating importance scores on
+    everything.  Corpus data showed RESULT matching 94.7% of stored items simply
+    because those words appear naturally in command output — not because the
+    content meaningfully describes a result.
+
+    Higher-value categories can still co-fire (e.g., a mistake that teaches
+    something returns both MISTAKE and LEARNING).
+
+    Priority hierarchy: LEARNING > MISTAKE > DECISION > RESULT (catch-all).
+    """
     lower: str = text.lower()
     out: List[SignificanceCategory] = []
-    for cat, entries in _SIG_KEYWORDS.items():
-        for label, pattern in entries:
+
+    # High-value categories — checked first; they may co-fire legitimately.
+    for cat in (SignificanceCategory.LEARNING,
+                SignificanceCategory.MISTAKE,
+                SignificanceCategory.DECISION):
+        for label, pattern in _SIG_KEYWORDS[cat]:
             if re.search(pattern, lower):
                 out.append(cat)
                 break  # one match per category is enough
+
+    # RESULT only fires as fallback when nothing else matched
+    if not out:
+        for label, pattern in _SIG_KEYWORDS[SignificanceCategory.RESULT]:
+            if re.search(pattern, lower):
+                out.append(SignificanceCategory.RESULT)
+                break
+
     return out
 
 

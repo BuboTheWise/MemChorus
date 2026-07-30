@@ -167,6 +167,72 @@ class TestSignificanceDetection(unittest.TestCase):
         engine = _make_engine()
         self._assert_category(engine, "The deployment was a success with zero downtime", SignificanceCategory.RESULT)
 
+    # ---- RESULT suppression (t_61c6ab7c) ----
+    # RESULT only fires as fallback; when LEARNING/MISTAKE/DECISION also match,
+    # those win. This prevents generic tool-output words from diluting signal.
+
+    def test_result_suppressed_when_learning_also_matches(self) -> None:
+        engine = _make_engine()
+        # "learned" triggers LEARNING; "success" triggers RESULT
+        # Expect only LEARNING, not LEARNING|RESULT
+        result = engine.capture_outcome("I learned that the deployment was a success")
+        self.assertTrue(result["saved"])
+        self.assertEqual(SignificanceCategory[result["significance"].upper()], SignificanceCategory.LEARNING)
+
+    def test_result_suppressed_when_mistake_also_matches(self) -> None:
+        engine = _make_engine()
+        # "went wrong" triggers MISTAKE; "result" triggers RESULT
+        result = engine.capture_outcome("Something went wrong and the result was a crash")
+        self.assertTrue(result["saved"])
+        cat = SignificanceCategory[result["significance"].upper()]
+        self.assertIn(cat, (SignificanceCategory.MISTAKE, SignificanceCategory.LEARNING))
+
+    def test_result_suppressed_when_decision_also_matches(self) -> None:
+        engine = _make_engine()
+        # "decided" triggers DECISION; "outcome" triggers RESULT
+        result = engine.capture_outcome("We decided the outcome was acceptable")
+        self.assertTrue(result["saved"])
+        self.assertEqual(SignificanceCategory[result["significance"].upper()], SignificanceCategory.DECISION)
+
+    def test_result_standalone_when_no_higher_category(self) -> None:
+        engine = _make_engine()
+        # Only RESULT keywords present — should still match RESULT as fallback
+        result = engine.capture_outcome("The outcome of the benchmark was 99.2% accuracy")
+        self.assertTrue(result["saved"])
+        self.assertEqual(SignificanceCategory[result["significance"].upper()], SignificanceCategory.RESULT)
+
+    def test_detect_significance_result_only_fires_as_fallback(self) -> None:
+        """Direct unit test on _detect_significance to verify suppression logic."""
+        from memchorus.auto_storage_engine import (
+            _detect_significance, SignificanceCategory as SC,
+        )
+        # Both LEARNING and RESULT keywords present — only LEARNING should appear
+        cats = _detect_significance("I learned something; the success was surprising")
+        self.assertIn(SC.LEARNING, cats)
+        self.assertNotIn(SC.RESULT, cats)
+
+        # Only RESULT keywords — RESULT fires as fallback
+        cats = _detect_significance("The result was a success")
+        self.assertIn(cats, [[SC.RESULT], []])  # list with one element, or empty (no keywords at all unlikely here)
+        self.assertTrue(len(cats) > 0 and cats[0] == SC.RESULT)
+
+        # MISTAKE + RESULT keywords — MISTAKE wins, RESULT suppressed
+        cats = _detect_significance("I should have checked first; the outcome was an error")
+        self.assertIn(SC.MISTAKE, cats)
+        self.assertNotIn(SC.RESULT, cats)
+
+    def test_high_value_categories_can_cofire(self) -> None:
+        """A text matching both LEARNING and MISTAKE keywords returns both."""
+        from memchorus.auto_storage_engine import (
+            _detect_significance, SignificanceCategory as SC,
+        )
+        # "learned" matches LEARNING; "should have" matches MISTAKE
+        cats = _detect_significance(
+            "I learned that I should have used the correct API endpoint from the start"
+        )
+        self.assertIn(SC.LEARNING, cats)
+        self.assertIn(SC.MISTAKE, cats)
+
     # ---- Technical/architectural keyword detection (t_dc2e44b9) ----
 
     # LEARNING: technical vocabulary from documentation / architecture specs
