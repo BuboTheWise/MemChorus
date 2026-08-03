@@ -147,7 +147,7 @@ def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
     try:
         batcher = _get_capture_batcher(orchestrator)
         if batcher is not None:
-            batcher.add({"text": output_str, "_outcome_type": "automatic"})
+            batcher.add({"text": output_str, "outcome_type": "automatic"})
             return
 
         # Batch unavailable — route through engine for proper classification
