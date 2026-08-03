@@ -2,7 +2,7 @@
 MemChorus lifecycle hooks for Hermes plugin integration.
 
 This module provides the MemChorusHooks class that Hermes Gateway discovers via
-setup.py entry_points ("hermes_agent.plugins" group) and calls at key moments
+setup.cfg entry_points and calls at key moments in the agent execution loop:
 pre_llm_call, post_tool_call, on_session_start.
 
 On import of memchorus package, global bootstrap fires if enabled.
@@ -13,12 +13,10 @@ calling agent to do anything beyond `import memchorus`.
 Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 """
 
-import atexit
 import hashlib
 import importlib  # for dynamic entry_point discovery
 import json
 import logging
-import re
 import os
 from typing import Any, Dict, List, Optional
 
@@ -65,118 +63,6 @@ def _get_orchestrator() -> Optional[Any]:
 
 
 # ---------------------------------------------------------------------------
-# GAP026-C/D: Batched tool-capture with flush + structured ImportError logging
-# ---------------------------------------------------------------------------
-
-# Module-level batcher instance shared across all hook invocations.
-# Initialized lazily on first use to avoid startup cost when hooks are disabled.
-_CAPTURE_BATCHER: Any = None
-
-def _atexit_flush() -> None:
-    """Fallback flush safety net — ensures buffered captures are written even if
-    on_session_end doesn't fire (e.g., unhandled exception or SIGTERM).
-
-    Registered via atexit to guarantee remaining items in the batch buffer reach
-    storage before the process exits. No-op when _CAPTURE_BATCHER is None.
-    """
-    if _CAPTURE_BATCHER is not None:
-        try:
-            _CAPTURE_BATCHER.close()
-            logger.info("hooks: atexit flushed capture buffer")
-        except Exception as exc:
-            logger.warning("hooks: atexit flush failed: %s", exc)
-
-
-def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
-    """Lazily create and return the global ToolCaptureBatcher singleton.
-
-    Returns None if imports fail — caller should fall back to direct save.
-    Logs a structured ImportError on first failure (GAP026-D).
-    """
-    global _CAPTURE_BATCHER
-    if _CAPTURE_BATCHER is not None:
-        return _CAPTURE_BATCHER
-
-    try:
-        from memchorus.tool_capture_buffer import ToolCaptureBuffer  # noqa: F811
-        from memchorus.auto_storage_engine import AutoStorageEngine
-
-        engine = AutoStorageEngine(orchestrator=orchestrator)
-
-        def _batch_flush(payloads: List[Dict[str, Any]]) -> None:
-            """Flush a batch of payloads through AutoStorageEngine."""
-            for payload in payloads:
-                try:
-                    text = payload.get("text", "")
-                    res = engine.capture_outcome(text, outcome_type="automatic")
-                    if res.get("saved"):
-                        logger.info(
-                            "hooks: batch-saved content (%s, importance %.2f)",
-                            res.get("significance", ""),
-                            res.get("importance_score", 0.0),
-                        )
-                    else:
-                        logger.debug("hooks: capture_outcome rejected: %s", res.get("reason", ""))
-                except Exception as fe:
-                    logger.warning("hooks: batch flush item failed — skipping. %s", fe)
-
-        _CAPTURE_BATCHER = ToolCaptureBuffer(
-            max_items=10,
-            flush_interval=5.0,
-            callback=_batch_flush,
-        )
-        return _CAPTURE_BATCHER
-
-    except ImportError as ie:
-        logger.error(
-            "hooks: AutoStorageEngine/ToolCaptureBatcher import failed — %s\n"
-            "All post-tool captures will fall back to direct orchestrator.save until restart.\n"
-            "This usually means a broken package install; try:\n"
-            "  pip install --no-deps 'git+https://github.com/BuboTheWise/MemChorus.git@master'",
-            ie,
-        )
-        return None
-
-
-def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
-    """Queue a tool-capture payload in the batch buffer (GAP026-C).
-
-    If batching is unavailable, falls back to an immediate orchestrator.save()
-    so no data is lost — just written individually instead of batched.
-    """
-    try:
-        batcher = _get_capture_batcher(orchestrator)
-        if batcher is not None:
-            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
-            payload = {
-                "text": output_str,
-                "categories": ["AUTO", "RESULT"],
-                "outcome_type": "automatic",
-                "importance_score": 0.0,
-                "_auto_provenance": True,
-            }
-            batcher.add(payload)
-            return
-
-        # Batch unavailable — immediate fallback save (GAP026-D structured logging)
-    except Exception as e:
-        logger.warning("hooks: batch path failed — falling back to direct save. %s", e)
-
-    content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
-    auto_key = f"result_{content_hash}"
-    payload = {
-        "text": output_str,
-        "categories": ["AUTO", "RESULT"],
-        "outcome_type": "automatic",
-        "importance_score": 0.0,
-        "_auto_provenance": True,
-    }
-    saved = orchestrator.save(auto_key, payload)
-    if not saved:
-        logger.debug("hooks: direct fallback save rejected key=%s", auto_key)
-
-
-# ---------------------------------------------------------------------------
 # Hook class — discovered by Hermes via entry_points["hermes.plugins.lifecycle"]
 # ---------------------------------------------------------------------------
 
@@ -184,10 +70,9 @@ class MemChorusHooks:
     """Lifecycle hooks that fire at key decision points in the agent loop.
 
     Methods are called by Hermes Gateway at runtime:
-      - on_pre_llm_call(context)        before every LLM API call
-      - on_post_tool_call(tool_data)    after every tool execution
-      - on_session_start(session_id)    once per new Hermes session start
-      - on_session_end(session_id)      once per Hermes session end / teardown
+      - on_pre_llm_call(context)   before every LLM API call
+      - on_post_tool_call(tool_data)   after every tool execution
+      - on_session_start(session_id)   once per new Hermes session start)
 
     Each method queries the global orchestrator and injects relevant context or
     saves newly significant outcomes automatically. BehavioralTrigger.detect() is
@@ -219,13 +104,12 @@ class MemChorusHooks:
 
         try:
             # 1. Call auto-recall engine via orchestrator's search pipeline
-            # Use _build_search_terms() for progressive fallback — even when
-            # user_message and conversation_history are empty, we can still
-            # recall from task context (task_id, model, platform, session_id).
-            input_text = _build_search_terms(kwargs)
+            # Hermes turn_context.invoke_hook() passes user_message + conversation_history
+            input_text = kwargs.get("user_message") or kwargs.get("conversation_history", "")
             if not input_text:
                 return None
 
+            # Detect behavioral decision points to shape the search strategy.
             detected_points = []
             if self._btrigger is not None:
                 input_str = str(input_text)[:4096]  # cap for performance
@@ -256,16 +140,26 @@ class MemChorusHooks:
                     "[/MemChorus Memory Recall]"
                 )
 
-            # 2. Evaluate feedback loop corrections (delegated to private method)
-            feedback_blocks = self._try_feedback_loop(input_text, kwargs)
-            injected_blocks.extend(feedback_blocks)
+            # 2. Inline-inject feedback loop corrections — positioned between
+            #    recall results and any tool output that follows downstream.
+            #    _try_feedback_loop() formats lines for merge; when both memory
+            #    recall and feedback fire, the user sees:
+            #      [MemChorus Memory Recall]
+            #      ...recall items...
+            #      -- Feedback Loop Corrections --
+            #      [FEEDBACK:name] STEERING:...
+            #      -- End Feedback --
+            #      [/MemChorus Memory Recall]    (when recall present)
+            feedback_lines = self._try_feedback_loop(input_text, kwargs)
+            if feedback_lines:
+                injected_blocks.append("\n".join(feedback_lines))
 
             if not injected_blocks:
                 return None
 
             result: Dict[str, Any] = {
                 "source": "memchorus_pre_llm_call",
-                "context": "\n\n".join(injected_blocks),
+                "injected_context": "\n\n".join(injected_blocks),
             }
             return result
 
@@ -273,12 +167,24 @@ class MemChorusHooks:
             logger.warning("on_pre_llm_call failed — returning None (hooks remain active). %s", exc)
             return None
 
-    def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
-        """Evaluate feedback loop corrections and return formatted block(s).
+    # -------------------------------------------------------------------
+    # Private helpers
+    # -------------------------------------------------------------------
 
-        Returns a list of labelled feedback strings suitable for appending to the
-        injected context blocks. Gracefully degrades to an empty list if the
-        feedback subsystem is unavailable or raises internally.
+    def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
+        """Evaluate feedback loop and return formatted lines for inline injection.
+
+        Builds a FeedbackTurnContext from the hook kwargs, asks the integration
+        to evaluate any matching loops against TriggerEvent.PRE_LLM_CALL, and
+        returns a list of ready-to-merge lines (or [] on failure/no-match).
+
+        By design this lives as a private method here rather than being called
+        through ``inject_feedback_corrections()`` so that:
+
+          1. Feedback corrections can be injected *between* memory recall and
+             downstream tool output — the caller controls block ordering
+          2. We get granular line control (List[str]) instead of a pre-joined string
+          3. The hook class owns its own degradation boundary
         """
         try:
             from memchorus.feedback_loop.integration import (
@@ -300,10 +206,13 @@ class MemChorusHooks:
                 trigger_event=TriggerEvent.PRE_LLM_CALL,
             )
 
-            if feedback_text:
-                return [feedback_text]
-            return []
-        except Exception as fexc:  # graceful degradation for feedback loops
+            if not feedback_text:
+                return []
+
+            # Split to lines so the caller can merge them with other blocks
+            return feedback_text.splitlines()
+
+        except Exception as fexc:
             logger.warning("Feedback loop evaluation skipped: %s", fexc)
             return []
 
@@ -376,10 +285,48 @@ class MemChorusHooks:
 
             # Route through AutoStorageEngine's capture_outcome pipeline for
             # proper significance detection, scoring, provenance markers, and
-            # dedup — results are buffered via ToolCaptureBatcher to avoid
-            # hammering storage on every tool call (GAP026-C / GAP026-D).
-            _try_save_with_batch(orchestrator, output_str)
-            return None
+            # dedup — not a bare orchestrator.save().
+            auto_storage = None
+            try:
+                from memchorus.auto_storage_engine import AutoStorageEngine
+                if auto_storage is None:
+                    auto_storage = AutoStorageEngine(orchestrator=orchestrator)
+                storage_result = auto_storage.capture_outcome(output_str, outcome_type="automatic")
+                if not storage_result.get("saved"):
+                    reason = storage_result.get("reason", "unknown")
+                    logger.debug("hooks: capture_outcome rejected: %s", reason)
+                    return None
+
+                result: Dict[str, Any] = {
+                    "source": "memchorus_auto_storage",
+                    "saved_ids": [storage_result.get("key", "")],
+                    "significance": storage_result.get("significance", ""),
+                    "importance_score": storage_result.get("importance_score", 0.0),
+                }
+                logger.info("hooks: auto-saved content (%s, importance %.2f)", result["significance"], result["importance_score"])
+                return result
+            except Exception as sexc:
+                logger.warning("hooks: capture_outcome/Engine failed — falling back to direct save. %s", sexc)
+
+            # Fallback to direct orchestrator.save if engine fails
+            content_hash = hashlib.md5(output_str.encode()).hexdigest()[:16]
+            auto_key = f"result_{content_hash}"
+            payload = {
+                "text": output_str,
+                "categories": ["AUTO", "RESULT"],
+                "outcome_type": "automatic",
+                "importance_score": 0.0,
+                "_auto_provenance": True,
+            }
+            saved = orchestrator.save(auto_key, payload)
+            if not saved:
+                return None
+
+            result = {
+                "source": "memchorus_auto_storage_fallback",
+                "saved_ids": [auto_key],
+            }
+            return result
 
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_post_tool_call failed — returning None. %s", exc)
@@ -429,48 +376,6 @@ class MemChorusHooks:
             logger.warning("on_session_start orientation failed. %s", exc)
             return None
 
-    def on_session_end(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        """Fire when a Hermes session ends to flush pending captures and clean up resources.
-
-        Ensures the ToolCaptureBatcher drains any remaining items to storage before
-        the process exits. Also deregisters the atexit handler so we don't double-flush
-        if both on_session_end and atexit fire.
-
-        Returns dict with flush confirmation or None if nothing to flush.
-        """
-        global _CAPTURE_BATCHER
-        try:
-            batcher = _CAPTURE_BATCHER
-            if batcher is not None:
-                # pending is an int property — don't wrap in len() again.
-                # Fall back to _queue only if .pending doesn't exist (old code).
-                try:
-                    count_before = batcher.pending  # already an int
-                except AttributeError:
-                    count_before = len(getattr(batcher, '_queue', []))
-                batcher.close()
-                logger.info(
-                    "hooks: on_session_end flush complete (pending=%d)",
-                    count_before,
-                )
-            else:
-                logger.debug("hooks: on_session_end — no capture batcher to flush")
-            _CAPTURE_BATCHER = None
-            # Remove atexit handler since we're flushing explicitly here
-            try:
-                atexit.unregister(_atexit_flush)
-            except Exception:
-                pass  # best-effort unregister; harmless if it fails
-
-        except Exception as exc:  # pragma: no cover - graceful degradation
-            logger.warning("on_session_end failed — atexit safety net still active. %s", exc, exc_info=True)
-            return None
-
-        return {
-            "source": "memchorus_session_end",
-            "teardown": "complete",
-        }
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -479,207 +384,13 @@ class MemChorusHooks:
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
 _MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
 _MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat (t_32e7877a)
-
-def _extract_text_from_message(message: Any) -> str:
-    """Extract text content from a Message dict/object for search purposes."""
-    if isinstance(message, str):
-        return message
-    if isinstance(message, dict):
-        return message.get("content", "") or message.get("text", "") or ""
-    # Fallback for object with .content or .text attributes
-    try:
-        content = getattr(message, "content", None) or getattr(message, "text", None)
-        if isinstance(content, str):
-            return content
-    except Exception:
-        pass
-    return ""
-
-
-# ---------------------------------------------------------------------------
-# Search term quality helpers — stop-word filtering, stemming, TF scoring
-# Added for t_9848871a: mitigate score dilution from noise in raw messages
-# ---------------------------------------------------------------------------
-
-_STOP_WORDS = frozenset([
-    # Core English stopwords
-    "i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you",
-    "your", "yours", "yourself", "yourselves", "he", "him", "his",
-    "himself", "she", "her", "hers", "herself", "it", "its", "itself",
-    "they", "them", "their", "theirs", "themselves", "what", "which",
-    "who", "whom", "this", "that", "these", "those", "am", "is", "are",
-    "was", "were", "be", "been", "being", "have", "has", "had", "having",
-    "do", "does", "did", "doing", "a", "an", "the", "and", "but", "if",
-    "or", "because", "as", "until", "while", "of", "at", "by", "for",
-    "with", "about", "against", "between", "through", "during", "before",
-    "after", "above", "below", "to", "from", "up", "down", "in", "out",
-    "on", "off", "over", "under", "again", "further", "then", "once",
-    "here", "there", "when", "where", "why", "how", "all", "both",
-    "each", "every", "either", "neither", "nor", "not", "only", "own",
-    "same", "so", "than", "too", "very", "s", "t", "can", "will",
-    "just", "don", "should", "now", "d", "ll", "m", "o", "re", "ve",
-    "y", "ain", "aren", "couldn", "didn", "doesn", "hadn", "hasn",
-    "haven", "isn", "ma", "mightn", "mustn", "needn", "shan", "shouldn",
-    "wasn", "weren", "won", "wouldn",
-    # Common conversational filler and low-signal words
-    "said", "get", "got", "go", "going", "like", "make", "made", "may",
-    "might", "much", "many", "well", "want", "went", "will", "would",
-    "could", "shall", "also", "into", "one", "two", "first", "really",
-    "already", "something", "nothing", "everything", "anything",
-    "however", "therefore", "meanwhile", "furthermore", "consequently",
-    "additionally", "generally", "probably", "certainly", "actually",
-    "definitely", "basically", "literally", "exactly", "quite",
-    "rather", "perhaps", "obviously", "clearly", "simply",
-    # Developer/conversational noise
-    "hey", "hi", "hello", "thanks", "please", "ok", "okay", "sure",
-    "right", "yes", "no", "yeah", "yep", "hmm", "ugh", "wow",
-    "cool", "great", "nice", "awesome", "sorry", "oops", "err",
-    "errr", "ok", "lol", "btw", "fyi", "imo", "imho", "tbh", "idk",
-    "smh", "lmao", "rofl", "brb", "gtg", "ttfn", "np",
-    # Pseudo-code markers and formatting
-    "note", "edit", "update", "ps", "pp",
-])
-
-_MAX_TERMS = 40  # cap on how many terms to return
-
-
-def _simple_stem(word: str) -> str:
-    """Very conservative suffix stemming that avoids breaking root words.
-
-    Only strips productive English suffixes when the remaining base is
-    at least 5 characters long, preventing destruction of short roots.
-    """
-    w = word.lower()
-    if len(w) < 6:
-        return w
-
-    # -tion / -sion -> empty (implementa**tion** -> implementa ~implement)
-    for suff in ("tion", "sion"):
-        if w.endswith(suff):
-            base = w[:-len(suff)]
-            return base if len(base) >= 5 else w
-
-    # -ing -> remove (running -> run, fixing -> fix, building -> build)
-    if w.endswith("ing"):
-        base = w[:-3]
-        if len(base) >= 5:
-            # handle "fixing" -> "fix" double-consonant drop
-            if len(base[-1]) == len(base[-2]):
-                return base
-            return base
-    elif w.endswith("ed"):
-        base = w[:-2]
-        if len(base) >= 5:
-            # same double-consonant convention
-            if len(base[-1]) == len(base[-2]):
-                return base
-            return base
-    elif w.endswith("ing"):
-        base = w[:-3]
-        if len(base) >= 5:
-            return base
-
-    return w
-
-
-def _filter_and_score_terms(text: str) -> List[str]:
-    """Remove stopwords, apply stemming, rank by term frequency.
-
-    Prevents low-signal tokens from diluting match scores in
-    _content_matches(). Returns a list of high-signal terms sorted by
-    frequency (descending), capped at _MAX_TERMS.
-    """
-    # Tokenize on whitespace + common delimiters preserving alphanumerics
-    raw = re.findall(r"[a-zA-Z0-9]+(?:[._-][a-zA-Z0-9]+)*", text.lower())
-
-    # Stop-word filter
-    filtered = [w for w in raw if len(w) >= 2 and w not in _STOP_WORDS]
-
-    if not filtered:
-        return []
-
-    # Stem aggressively but conservatively — preserve root words < 6 chars
-    stemmed = [_simple_stem(w) for w in filtered]
-
-    # Count term frequency for ranking
-    tf: Dict[str, int] = {}
-    for word in stemmed:
-        tf[word] = tf.get(word, 0) + 1
-
-    # Sort by descending frequency then alphabetical tie-break
-    ranked = sorted(tf.keys(), key=lambda w: (-tf[w], w))
-    return ranked[:_MAX_TERMS]
-
-
-def _build_search_terms(kwargs: Dict[str, Any]) -> str:
-    """Build search query from kwargs with progressive fallbacks.
-
-    Even when user_message and conversation_history are empty/missing,
-    we can construct a meaningful recall query from task context, model,
-    platform, etc. This prevents pre-LLM recall from silently returning
-    None simply because the primary text sources are falsy.
-
-    Priority chain:
-        1. user_message (primary input)
-        2. conversation_history (last messages as fallback)
-        3. task_id / model / platform context for project-aligned recall
-        4. Empty string — caller should return None to skip
-    """
-    # Primary: user message
-    user_msg = kwargs.get("user_message")
-    if isinstance(user_msg, str) and user_msg.strip():
-        terms = _filter_and_score_terms(user_msg)
-        if terms:
-            return " ".join(terms)
-        return user_msg
-    if isinstance(user_msg, dict):
-        text = _extract_text_from_message(user_msg)
-        if text:
-            terms = _filter_and_score_terms(text)
-            if terms:
-                return " ".join(terms)
-            return text
-    # Catch-all for object-style messages with .content / .text attributes
-    if not isinstance(user_msg, (str, dict, type(None))):
-        text = _extract_text_from_message(user_msg)
-        if text:
-            terms = _filter_and_score_terms(text)
-            if terms:
-                return " ".join(terms)
-            return text
-
-    # Fallback 1: conversation history (use last message content)
-    history = kwargs.get("conversation_history") or []
-    if isinstance(history, list) and history:
-        messages = [_extract_text_from_message(m) for m in history]
-        available = " ".join([m for m in messages if m])[-4096:]  # cap length
-        if available:
-            terms = _filter_and_score_terms(available)
-            if terms:
-                return " ".join(terms)
-            return available
-
-    # Fallback 2: Build context-based query from metadata
-    parts: List[str] = []
-    task_id = kwargs.get("task_id")
-    if task_id:
-        parts.append(str(task_id))
-    model = kwargs.get("model")
-    if model:
-        parts.append(str(model))
-    platform = kwargs.get("platform")
-    if platform and str(platform).strip():
-        parts.append(str(platform))
-    session_id = kwargs.get("session_id")
-    if session_id:
-        parts.append(str(session_id)[:16])
-
-    return " ".join(parts)
-
+_HERMES_MEMCHORUS_CHAR_LIMIT = None
 
 # Per-profile override: reads config.yaml memchorus.hook_char_limit before global default
 def _resolve_char_limit() -> int:
     """Return per-profile char budget if set, else global default."""
+    if _HERMES_MEMCHORUS_CHAR_LIMIT is not None:
+        return _HERMES_MEMCHORUS_CHAR_LIMIT
     try:
         profile = os.environ.get("HERMES_PROFILE", "default")
         cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")
@@ -693,92 +404,42 @@ def _resolve_char_limit() -> int:
         pass
     return _MAX_BLOCK_CHARS
 
-def _has_feedback_priority(item: Dict[str, Any]) -> bool:
-    """Check if an item carries feedback-correction priority.
-
-    Feedback corrections are more actionable than raw recall and should be
-    preserved first when the context budget is tight.
-    """
-    key = str(item.get("key") or "").lower()
-    return ("feedback" in key or "correction" in key or
-            item.get("_is_feedback", False))
-
-
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
-
+    
     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
-    Truncation respects line boundaries — partial lines are dropped rather than cut,
-    ensuring markdown formatting stays intact. When budget is tight, feedback-correction
-    items take priority over raw recall results (higher-priority items kept last).
+    Truncated entries get '...' appended; excess items are silently dropped.
     """
     if not items:
         return ""
 
-    # --- Priority sort: feedback corrections before raw recall ---------------
-    # So that when the block ceiling forces item removal (below), lower-value
-    # recall entries are dropped first.
-    priority_items = [i for i in items if _has_feedback_priority(i)]
-    normal_items   = [i for i in items if not _has_feedback_priority(i)]
-    ordered        = priority_items + normal_items
-
     lines: List[str] = []
-    seen_keys: set = set()
-
-    for item in ordered[:5]:
+    seen_keys = set()
+    block_char_budget = _MAX_BLOCK_CHARS
+    
+    for item in items[:5]:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
-        seen_keys.add(key)
-        content_raw = item.get("content") or ""
+        content_raw = item.get('content') or ''
         # Defensive: some memory sources return nested dicts instead of strings
         if not isinstance(content_raw, str):
             content_raw = str(content_raw)
         raw_content = content_raw.rstrip()
 
-        # --- Per-entry budget enforcement (line-boundary aware) --------------
+        # Per-entry budget enforcement
         if len(raw_content) > _MAX_CONTENT_CHARS:
-            content_lines = raw_content.split("\n")
-            if len(content_lines) == 1:
-                # Single-line content — safe to cut at any point
-                raw_content = raw_content[:_MAX_CONTENT_CHARS] + "..."
-            else:
-                # Multi-line — only keep complete lines up to budget
-                kept: List[str] = []
-                running = 0
-                for line in content_lines:
-                    if running + len(line) + 1 > _MAX_CONTENT_CHARS:
-                        break
-                    kept.append(line)
-                    running += len(line) + 1
-                if kept:
-                    raw_content = "\n".join(kept) + "..."
-                else:
-                    # First line alone exceeds budget — partial cut as fallback
-                    raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
-
+            raw_content = raw_content[:_MAX_CONTENT_CHARS].rsplit(' ', 1)[0] + "..."  
+        
         line = f"- **{key}** — {raw_content}"
         lines.append(line)
-
+    
     joined = "\n".join(lines)
-    truncated = False
-
-    # --- Hard total block ceiling (drops complete entries, not partial lines)-
-    # Constants that appear in every output regardless of truncation
-    _header_len  = len("[MemChorus injected context]\n")
-    _footer_len  = len("\n[/MemChorus injected block]")
-
-    while len(joined) + _header_len + _footer_len > _MAX_BLOCK_CHARS:
-        if not lines:
-            break
-        lines.pop()
-        joined = "\n".join(lines)
-        truncated = True
-
-    # Append trailer only if we actually dropped entries
-    if truncated:
-        joined += "\n... (truncated, budget exceeded)"
-
+    
+    # Hard total block ceiling (fallback safety net)
+    if len(joined) > _MAX_BLOCK_CHARS:
+        joined = joined[:_MAX_BLOCK_CHARS].rsplit('\n', 1)[0] + "\n... (truncated, budget exceeded)"
+    
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
 
@@ -838,19 +499,10 @@ def register(ctx: Any) -> None:
     hooks = MemChorusHooks()
     _instance_holder[0] = hooks  # keep a reference so GC doesn't collect
 
-    # Register all four lifecycle hooks
+    # Register all three lifecycle hooks
     ctx.register_hook("pre_llm_call", hooks.on_pre_llm_call)
     ctx.register_hook("post_tool_call", hooks.on_post_tool_call)
     ctx.register_hook("on_session_start", hooks.on_session_start)
-    ctx.register_hook("on_session_end", hooks.on_session_end)
 
-    # Register atexit fallback safety net — flushes buffer if on_session_end doesn't fire
-    try:
-        atexit.register(_atexit_flush)
-    except Exception:
-        logger.warning("hooks: failed to register atexit fallback")
-
-    logger.info(
-        "MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start, on_session_end",
-        __import__('memchorus').__version__,
-    )
+    logger.info("MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start",
+                __import__('memchorus').__version__)

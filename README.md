@@ -1,7 +1,5 @@
 # MemChorus
 
-Current version: 1.5.12
-
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
 MemChorus treats memory not as a single store but as a **chorus of distinct sources** — each with different strengths, costs, and semantics. An orchestrator sits in front, deciding where to write and which sources to consult on reads so the agent gets the right context without wasting compute or tokens.
@@ -296,7 +294,7 @@ The lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogg
 Drop a `lifecycle` block into `~/.hermes/memchorus_config.yaml`. The nesting below reflects the exact dict structure the orchestrator expects (resolved by `_resolve_lifecycle_config`). Any omitted sub-keys fall back to their defaults:
 
 ```yaml
-+ ~/.hermes/memchorus_config.yaml
+# ~/.hermes/memchorus_config.yaml
 lifecycle:
   enabled: true                      # master toggle (default: false)
   sweep_interval_hours: 8            # how often sweeps run (default: 8)
@@ -334,117 +332,6 @@ Key behaviour:
 
 See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
-## Feedback Loop Configuration
-
-Feedback loop YAML definitions live in the directory pointed to by `FEEDBACK_LOOP_DIR` env var (defaults to `~/.hermes/memchorus/feedback_loops/`). One `.yaml` file per loop. Each file describes conditions under which the agent receives a behavioural correction prompt before its next LLM call. Loops are loaded once at hook initialisation via `FeedbackLoopIntegration.build()` and automatically invalidate stale definitions on reload.
-
-### Schema Reference (`schema_v1`)
-
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `schema` | string | yes | — | Must be `schema_v1` |
-| `name` | string | yes | — | Unique loop identifier (used in escalation tracking) |
-| `trigger_event` | enum | yes | — | `pre_llm_call` or `post_tool_call` |
-| `cooldown_interval` | int | no | 0 | Seconds before this loop can fire again (max 3600) |
-| `priority` | int | no | 50 | Higher = evaluated earlier among concurrent loops |
-| `enabled` | bool | no | true | Set to `false` to disable without deleting the file |
-| `correction_prompt` | string | yes | — | Template text injected into the agent's context on match |
-| `conditions` | mapping | yes | — | Dictionary of condition-key → matcher definition |
-
-### Condition Matchers
-
-Each condition is a mapping entry keyed by an arbitrary identifier (e.g. `long_convo`, `loop_keyword`). The value describes **how** to match:
-
-| Matcher `type` | `value` shape | Fires when… |
-|---|---|---|
-| `conversation_length` | `{min: int}` or `{max: int, min: int}` | Turn count exceeds/goes below threshold |
-| `keyword_pattern` | string or `[strings]` | User message contains the keyword/regex |
-| `repetition_entropy` | `{threshold: float, window: int}` | Entropy of last *N* messages drops below threshold (repititive loops) |
-| `tool_response_empty_count` | `${int}` | Consecutive empty tool responses hit this count |
-
-### Example Loop Definitions
-
-**Example 1 — Keyword-based correction for planning drift:**
-
-```yaml
-schema: schema_v1
-name: planning_drift_guard
-trigger_event: pre_llm_call
-cooldown_interval: 300       # only fire every 5 minutes
-priority: 80
-enabled: true
-correction_prompt: >
-  The agent appears to be drifting from the original plan. Re-read the task objective
-  and refocus on delivering concrete progress toward the stated goal. Avoid speculative
-  tangents; complete the current step before branching out.
-conditions:
-  drift_keyword:
-    type: keyword_pattern
-    value:
-      - "actually, what I should do"
-      - "wait let me re-think"
-      - "on second thought maybe"
-```
-
-**Example 2 — Escalating correction for empty-tool-response loops:**
-
-```yaml
-schema: schema_v1
-name: empty_tool_response_escalation
-trigger_event: pre_llm_call
-cooldown_interval: 60
-priority: 90
-enabled: true
-correction_prompt: >
-  You have received consecutive empty tool responses. This usually means the tool output
-  was filtered or the call returned nothing useful. Re-evaluate your approach — consider
-  a different strategy or acknowledge the information gap and move forward.
-conditions:
-  empty_count:
-    type: tool_response_empty_count
-    value: 3                   # fire after 3 consecutive empties
-```
-
-**Example 3 — Long-conversation relevance boost:**
-
-```yaml
-schema: schema_v1
-name: long_convo_recall_boost
-trigger_event: pre_llm_call
-cooldown_interval: 600
-priority: 40
-enabled: true
-correction_prompt: >
-  This conversation has been running for a while. Re-collect yourself by recalling the
-  original objective and any key decisions made earlier in the session before proceeding.
-conditions:
-  length_check:
-    type: conversation_length
-    value:
-      min: 15                   # activate after 15 turns
-```
-
-### How Feedback Loops Execute at Runtime
-
-When a hook fires (`on_pre_llm_call`), the following sequence runs inside `_try_feedback_loop()`:
-
-1. A `TurnContext` is constructed from the current call's kwargs (user message, conversation length, tool call counts, recent messages).
-2. All loaded loop definitions are evaluated against this context via `FeedbackLoopIntegration.evaluate()`.
-3. For each matching definition:
-   - The **EscalationTracker** determines the correction level (Level 1 = hint, Level 2 = directive, Level 3 = hard correction) based on how many times this same loop has already triggered in the current session.
-   - If within the **cooldown window**, the loop is skipped silently.
-4. Matching loops produce formatted strings like `[FEEDBACK:<loop_name>] STEERING (Level N ...): <correction_prompt>`.
-5. These strings are appended to `injected_blocks` alongside any memory recall blocks, then prepended to the LLM context.
-
-**Key property:** Every step is wrapped in try/except — malformed YAML, schema mismatches, and missing fields log a warning and get skipped. The host application never crashes because of a feedback loop definition error.
-
-### Orientation Cache Behaviour
-
-The orientation cache (`_CacheRegistry`) uses an LRU policy with a configurable maximum of 256 entries. After GAP026 hardening:
-- **Default TTL:** 15 seconds (was 60s) — stale project context invalidates faster during multi-task sessions.
-- **Empty-result guard:** Query results returning an empty list are intentionally _not_ cached, preventing empty-result cache poisoning where a genuine hit later would be shadowed by the empty entry.
-- **Selective invalidation:** `clear_project(project_name)` removes only entries for that project without nuking unrelated cache keys.
-
 ## Installation
 
 Requires Python 3.8+. Install from GitHub via pip (recommended for most users):
@@ -466,24 +353,6 @@ Verify the import works before using it:
 ```bash
 python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
-
-#### Optional Dependencies
-
-MemChorus splits its runtime dependencies into a lean core plus optional extras so that installation plays nicely alongside other packages (especially Hermes base environments with their own Pydantic version).
-
-| Extra | Command | What it adds |
-|---|---|---|
-| **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
-| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
-| **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
-
-You can combine extras: `"memchorus[mcp,dev]"` for full development.
-
-#### Version Compatibility Notes
-
-- **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
-- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
-- If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
 
 ### MemPalace backend
 
@@ -533,85 +402,14 @@ for r in results:
 
 **Hermes plugin mode (auto-registered sources):**
 
-When installed, MemChorus registers itself as a Hermes lifecycle plugin via `setup.py` entry points. After enabling the plugin in your Hermes config, the orchestrator and memory sources load automatically — no manual wiring required.
-
-1. **Install and enable the plugin:**
+When MemChorus is enabled as a Hermes plugin (`hermes_mcp_memchorus`), the orchestrator auto-registers `hermes_default`. If live MCP tools are reachable, `mempalace` joins automatically — no manual wiring needed. Install via:
 
 ```bash
-pip install 'git+https://github.com/BuboTheWise/MemChorus.git@master'
+/home/user/.hermes/hermes-agent/venv/bin/python3 -c "
+import importlib; spec = importlib.util.find_spec('memchorus.hooks')
+if spec: print('Module memchorus.hooks found OK')
+"
 ```
-
-Then in your Hermes `config.yaml`:
-
-```yaml
-plugins:
-  memchorus:
-    enabled: true
-```
-
-2. **What happens at runtime:**
-
-When the agent starts, Hermes discovers the `hermes_agent.plugins` entry point (`memchorus = memchorus.hooks`) and instantiates `MemChorusHooks`. The hooks trigger a lazy bootstrap that builds a `MemoryOrchestrator` and registers sources automatically:
-
-- **`hermes_default`** — always registered. Reads/writes Hermes' native memory store (MEMORY.md / USER.md) under the active profile's path.
-- **`mempalace`** — auto-joins if live MCP tools are reachable (e.g., via `hermes_mcp_mempalace`). Falls back gracefully with a warning log if MCP is down.
-
-All hook activity respects environment control:
-
-```bash
-# Disable all hooks without removing the plugin
-export MEMCHORUS_AUTO_ENABLED=false
-
-# Override workspace for testing
-export HERMES_PROFILE=my_profile
-```
-
-3. **What the hooks inject at runtime (no agent intervention needed):**
-
-Every turn, the lifecycle hooks fire at these points. Below is a realistic session showing what gets injected:
-
-```
---- Agent start ---
-[AUTO] on_session_start: hermes_default + mempalace registered
-    HERMES_KANBAN_TASK=t_abc123 profile=cthugha
-    Memory sources ready (active: 2, available: 2)
-
---- Turn 1: user asks "how do I enable MemChorus plugin mode?" ---
-[AUTO] on_pre_llm_call: decision points [TOOL_CALL_INTENT]
-    Search: "enable memchorus plugin mode" -> hermes_default + mempalace
-    Recall hit (score=0.82):
-      [hermes_default] key=hints/memchorus_plugin_enable
-        content="Enable in config.yaml under plugins.memchorus.enabled:true ..."
-
-[AUTO] injected into prompt:
-  [MemChorus Memory Recall]
-  [hermes_default] score=0.82 hints/memchorus_plugin_enable
-    Enable plugin via plugins.memchorus.enabled=true in config.yaml.
-  [/MemChorus Memory Recall]
-
---- Turn 2: agent runs pytest ---
-[AUTO] on_post_tool_call: detected decision points [RESULT], signal OK (347 chars)
-    Saved to AutoStorageEngine -> hermes_default
-      key=result_a1f2b3c4 (importance=0.60, categories=[AUTO,RESULT])
-
---- Session end ---
-[AUTO] on_session_end: flush ToolCaptureBatcher (pending=3)
-    atexit handler deregistered
-```
-
-**Controlling hook behavior:**
-
-Supported environment variables (resolved at bootstrap, highest priority):
-
-| Environment variable | Effect |
-|---|---|
-| `MEMCHORUS_AUTO_ENABLED=false` | Disable all hooks and auto-bootstrap entirely |
-| `HERMES_PROFILE=cthugha` | Route memories to a specific profile's memory dir |
-| `MEMCHORUS_DEFAULT_SOURCE=mempalace` | Change default source (default: `hermes_default`) |
-| `MEMCHORUS_HALF_LIFE_DAYS=14` | Adjust memory score decay rate (default: 30) |
-| `MEMCHORUS_CACHE_TTL_SECS=60` | Recall cache TTL (default: 60) |
-| `MEMCHORUS_CUSTOM_LOOPS_DIR=/path` | Override feedback loops directory |
-
 
 **Registering additional sources:**
 
@@ -718,27 +516,9 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.12 (current — on `master`)
+### v1.5.09 (current — on `master`)
 
-- **GAP040 fix:** `orchestrator.search()` now normalizes list/tuple query inputs to strings, preventing silent failures when batch queries are passed.
-- **GAP018 fix:** `SweepScheduler` properly wired to `LifecycleManager` on orchestrator initialization — lifecycle sweeps actually run instead of being silently skipped.
-- **is_available callable bug fix** (`orchestrator.py`): corrected the callable-check logic that caused false negatives with certain property descriptors.
-
-### v1.5.11
-
-- **Per-profile isolation:** Four-layer config cascade (global → profile → workspace → runtime) and instance registry with `get_orchestrator()` API for deterministic multi-session use.
-- **on_session_end lifecycle hook + atexit safety net:** Prevents data loss if a session ends without explicit save. Save-call counter added for observability.
-- **Session-end crash fix (GAP045):** Fixed `TypeError: object of type 'int' has no len()` in `on_session_end` when pending items was a bare integer.
-- **Recall injection key mismatch fix:** DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION added to _QUERY_MAP, fixing silent drops during behavioral trigger evaluation.
-- **GAP044 fixes:** Removed `enforce()` calls and recall-context mutation from read paths (`retrieve`, `retrieve_with_source`, `search`) — reads no longer have side-effects. Cleaned stale `_recall_context`/`_has_enabled` references. Expanded enforcement hook test coverage.
-- **GAP023 fix:** Added missing MemorySource ABC facade methods to orchestrator.
-- **GAP021 fix:** `max_results` alias added to `search()` + `retrieve_with_source` provenance API.
-- **MCP deferred spawn (GAP-053):** MCP subprocess now spawned lazily on first data-plane access instead of at import time, reducing cold-start overhead.
-
-### v1.5.10
-
-**- RecursionGuard unified depth counter:** Replaced fragile boolean recursion sentinels (`_in_enforcement_save` / `_in_enforcement_recall` flags) in orchestrator.py with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. Currently active on `save()` enforcement hooks only — read paths (`retrieve`, `retrieve_with_source`, `search`) had enforcement removed by GAP044. The `auto_recall_engine.py` retains its own module-level `_REC_GUARD` boolean + instance-level `_in_enforcement_recall` guard for internal recursion blocking during `on_decision_point()`. Thread-safe under Python GIL via internal RLock. 26 deep-nesting tests added covering save → enforce → hook → save chains at 1–3 levels with full exception path coverage.
-- **GAP026-C batched flush:** ToolCaptureBuffer caps saves, preventing excessive individual writes per session (50+ saved actions).
+**- GAP016 fix (PR #43):** The `CONTEXTUAL_SYNTHESIS_COMPLETION` query template added in GAP015 was not reflected in the echo-prevention guard set `_KNOWN_QUERY_TEMPLATES`. Added missing template string to the frozenset. All 5 `_QUERY_MAP` entries now verified as exact-match against guards (programmatic check). 14 tests pass, 1 expected skip, no regressions.
 - **GAP015 fix (PR #42):** `DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION` added to `_QUERY_MAP` in `auto_recall_engine.py`, fixing silent drops when behavioral triggers fire at contextual synthesis decision points.
 
 ### v1.5.08
@@ -769,7 +549,7 @@ orchestrate.save(
 )
 \`\`\`
 
-Other features shipped in v1.5.x releases:
+Other v1.5.0 features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
@@ -777,7 +557,7 @@ Other features shipped in v1.5.x releases:
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
-**Merge-at-Write Status:** Shipped (v1.5.x). `MergeEngine` is fully implemented with Jaccard-similarity-based dedup, three merge strategies (`overwrite`, `append`, `union`), and per-profile strategy resolution via `PROFILE_STRATEGY_MAP`. Wired into `MemoryOrchestrator.save()` and `consolidate_key()` — when a save is intercepted and high-similarity hits exceed the cluster threshold, the existing entry is merged before dispatch. Config: `lifecycle.merge_at_write.enabled: true` + optional `strategy`, `similarity_min`, `cluster_max`. Full test coverage in `src/tests/test_lifecycle_merge_engine.py` (31 tests).
+**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design), but the `MergeEngine` implementation is still pending. Writes with `enabled: true` will be a no-op until the engine ships — the config key exists so users can prepare ahead of time without breaking existing deployments.
 
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
@@ -793,7 +573,7 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **1,200+ tests** across all modules (run `pytest --collect-only` for the live count — the number grows with each cycle)
+- **798 tests** collected across all modules (current)
 
 
 ## Tipping the Owl
@@ -805,4 +585,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.5.12 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.5.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

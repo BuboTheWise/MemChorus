@@ -17,17 +17,15 @@ Query construction priority chain:
 import functools
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Kanban hex ID pattern — t_ followed by exactly 8 hex digits.
-_KANBAN_HEX_RE = re.compile(r"^t_[0-9a-f]{8}$", flags=re.IGNORECASE)
-
 # Tunables — set at import time or overridden during bootstrap (by auto_bootstrap).
+# Reduced from 60s to 15s so that project context changes propagate quickly.
+# Empty results are never cached (see _CacheRegistry.put) regardless of TTL.
 DEFAULT_CACHE_TTL_SECONDS: float = 15.0
 
 
@@ -54,7 +52,14 @@ class _CacheEntry:
 # --------------------------------------------------------------------------- #
 
 class _CacheRegistry:
-    """Simple LRU-like cache keyed by ``_CacheKey`` with TTL eviction."""
+    """Simple LRU-like cache keyed by ``_CacheKey`` with TTL eviction.
+
+    Key behaviours:
+    - Empty result lists are NEVER cached (prevents poison entries after
+      project switches or when orchestrator is unavailable).
+    - ``clear_project(project)`` invalidates all entries for a specific
+      project context without touching unrelated keys.
+    """
 
     def __init__(self, *, maxsize: int = 256) -> None:
         self._cache: Dict[_CacheKey, _CacheEntry] = {}
@@ -72,21 +77,29 @@ class _CacheRegistry:
         return entry.results
 
     def put(self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float) -> None:
+        # Do NOT cache empty lists — they indicate orchestrator unavailable or
+        # genuinely no data and would poison subsequent calls for the same
+        # project context until TTL expiry.
         if not results:
-            return  # Do NOT cache empty lists — they poison subsequent calls
+            return
+
         if len(self._cache) >= self._maxsize:
             oldest = min(self._cache, key=lambda k: self._cache[k].timestamp)
             del self._cache[oldest]
         self._cache[key] = _CacheEntry(results=results, timestamp=time.monotonic(), ttl=int(ttl_seconds))
 
+    def clear_project(self, project: str) -> None:
+        """Invalidate all entries whose cache key matches *project*.
+
+        Call this when the project context changes so that stale data
+        doesn't persist after a project switch.
+        """
+        stale_keys = [k for k in self._cache if k.project == project]
+        for k in stale_keys:
+            del self._cache[k]
+
     def clear(self) -> None:
         self._cache.clear()
-
-    def clear_project(self, project: str) -> None:
-        """Delete only entries matching *project* without nuking unrelated keys."""
-        to_remove = [k for k in self._cache if k.project == project]
-        for k in to_remove:
-            del self._cache[k]
 _cache = _CacheRegistry()
 
 
@@ -100,15 +113,14 @@ def _build_orientation_query(
     """Build the list of orientation queries for the current project context.
 
     Priority chain determines *project*:
-        1. HERMES_TENANT (explicit project namespace - maps to KG entity keys)
-        2. env_task value when it's a meaningful name (hex Kanban IDs are skipped)
-        3. Workspace directory structure (HERMES_KANBAN_WORKSPACE or HERMES_WORKSPACE)
-        4. Current working directory basename
-        5. ``None`` - silent skip
+        1. HERMES_KANBAN_TASK (Kanban task ID / slug)
+        2. HERMES_WORKSPACE env var (workspace path -- basename used as fallback)
+        3. Current working directory (basename)
+        4. ``None`` -- silent skip
 
     Returns:
         List of query dicts with keys "type" (kg/semantic) and "query" (string).
-        Empty list when no project detected - caller should treat as silent skip.
+        Empty list when no project detected -- caller should treat as silent skip.
     """
     project = _resolve_project(env_task)
     if project is None:
@@ -120,60 +132,23 @@ def _build_orientation_query(
     ]
 
 
-_SKIP_DIRS = {"kanban", "workspaces", ".hermes"}
-
-def _is_skip_dir(name: str) -> bool:
-    """Return True if a path segment looks like infrastructure, not a project."""
-    return name in _SKIP_DIRS or name.startswith("t_")
-
-
-def _is_hermes_project_name(name: str) -> bool:
-    """Return True if *name* looks like a real project name rather than a skip value."""
-    if not name:
-        return False
-    # Kanban hex IDs (e.g. t_be1e596c) are meaningless as KG query terms — skip them.
-    if _KANBAN_HEX_RE.match(name):
-        return False
-    return True
-
-# --------------------------------------------------------------------------- #
-
-
 def _resolve_project(env_task: Optional[str]) -> Optional[str]:
-    """Return the project identifier or None (silent skip).
+    """Return the project identifier or None (silent skip)."""
+    # 1. Kanban task ID (highest priority)
+    if env_task and env_task.strip():
+        # Strip common UUID suffixes so query is readable: "ee8c3626" not "t_ee8c3626"
+        task_id = env_task.strip()
+        return task_id
 
-    Priority-based fallback chain:
-        1. HERMES_TENANT env var (explicit project namespace / KG key)
-        2. Parse kanban task title for project reference (skip hex IDs like t_xxxxxxxx)
-        3. Check workspace directory structure
+    # 2. HERMES_WORKSPACE env var (workspace directory basename)
+    workspace = os.environ.get("HERMES_WORKSPACE")
+    if workspace and workspace.strip():
+        return os.path.basename(os.path.normpath(workspace))  # type: ignore[return-value]
 
-    Ensures the returned string matches KG triple entity keys.
-    """
-    # Priority 1: HERMES_TENANT (most specific - maps directly to KG triples)
-    tenant = os.environ.get("HERMES_TENANT")
-    if tenant and tenant.strip():
-        return tenant.strip()
-
-    # Priority 2: Task-level project reference (skip hex-style Kanban IDs)
-    if env_task and env_task.strip() and _is_hermes_project_name(env_task.strip()):
-        return env_task.strip()
-
-    # Priority 3: Workspace directory structure
-    for env_var in ("HERMES_WORKSPACE", "HERMES_KANBAN_WORKSPACE"):
-        workspace = os.environ.get(env_var)
-        if workspace and workspace.strip():
-            path = os.path.normpath(workspace)
-            parts = path.split(os.sep)
-            # Find the deepest meaningful segment (reverse walk skips boilerplate dirs)
-            for part in reversed(parts):
-                if part and not _is_skip_dir(part):
-                    return part
-
-    # Final fallback: current working directory basename
+    # 3. Current working directory fallback
     cwd = os.getcwd()
-    basename = os.path.basename(cwd)
-    if basename and basename != ".":
-        return basename
+    if cwd:
+        return os.path.basename(cwd)  # type: ignore[return-value]
 
     return None
 
@@ -211,12 +186,8 @@ def orientation_search(
     if not queries:
         return []  # silent skip -- no project detected
 
-    # Cache by the resolved project string — no redundant resolution needed
-    resolved = _resolve_project(env_task)
-    if resolved is None:
-        return []  # degenerate case
     cache_key = _CacheKey(
-        project=resolved,
+        project=_resolve_project(env_task) if env_task else os.environ.get("HERMES_TASK", ""),
         query_types=tuple(q["type"] for q in queries),
     )
 
@@ -237,9 +208,8 @@ def orientation_search(
                 seen_keys.add(k)  # type: ignore[arg-type]  -- key is always a string after set add
                 all_results.append(r)
 
-    # Cap to limit (AC-O1: up to 5 items) — score-based so higher-relevance results
-    # survive truncation rather than being position-dependent on query execution order.
-    all_results = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)[:limit]
+    # Cap to limit (AC-O1: up to 5 items)
+    all_results = all_results[:limit]
 
     # Write to LRU cache (AC-O2)
     _cache.put(cache_key, all_results, cache_ttl_seconds)
