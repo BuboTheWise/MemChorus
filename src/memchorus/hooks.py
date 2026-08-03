@@ -421,6 +421,7 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
+        seen_keys.add(key)
         content_raw = item.get('content') or ''
         # Defensive: some memory sources return nested dicts instead of strings
         if not isinstance(content_raw, str):
