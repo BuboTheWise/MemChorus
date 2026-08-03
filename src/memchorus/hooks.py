@@ -297,7 +297,7 @@ class MemChorusHooks:
             )
 
             turn_ctx = FeedbackTurnContext(
-                user_message=str(input_text)[:1024],
+                user_message=kwargs.get("user_message", str(input_text))[:1024],
                 conversation_length=kwargs.get("conversation_length", 0),
                 tool_calls_this_turn=kwargs.get("tool_calls_this_turn", 0),
                 empty_tool_responses=kwargs.get("empty_tool_responses", 0),
