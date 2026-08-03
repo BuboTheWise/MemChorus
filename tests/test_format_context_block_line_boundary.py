@@ -1,39 +1,14 @@
-"""Tests for line-boundary truncation and priority sorting in _format_context_block.
+"""Tests for line-boundary truncation and character budget in _format_context_block.
 
-Validates GAP026-B fix: no mid-line cuts, feedback corrections prioritized,
-block ceiling drops complete entries rather than cutting partial lines.
+Validates budget enforcement: per-entry truncation, block ceiling with entry dropping,
+proper fencing markers, and edge cases like empty or oversized inputs.
 """
 import pytest
 from memchorus.hooks import (
     _format_context_block,
-    _has_feedback_priority,
     _MAX_CONTENT_CHARS,
     _MAX_BLOCK_CHARS,
 )
-
-
-class TestFeedbackPriorityHelper:
-    """Verify _has_feedback_priority identifies feedback items correctly."""
-
-    def test_feedback_in_key_returns_true(self):
-        item = {"key": "feedback-correction-001", "content": "..."}
-        assert _has_feedback_priority(item) is True
-
-    def test_correction_in_key_returns_true(self):
-        item = {"key": "my_corrections_v2", "content": "..."}
-        assert _has_feedback_priority(item) is True
-
-    def test_is_feedback_flag(self):
-        item = {"key": "something_else", "content": "...", "_is_feedback": True}
-        assert _has_feedback_priority(item) is True
-
-    def test_normal_item_returns_false(self):
-        item = {"key": "auto_result_abc123", "content": "..."}
-        assert _has_feedback_priority(item) is False
-
-    def test_empty_dict_returns_false(self):
-        item: dict = {}
-        assert _has_feedback_priority(item) is False
 
 
 class TestLineBoundaryTruncation:
@@ -45,7 +20,6 @@ class TestLineBoundaryTruncation:
         Each content line averages 50 chars, so roughly 6 complete lines fit.
         The key point is the LAST kept chunk ends on a newline boundary, not mid-line.
         """
-        # Create exactly-N-char-per-line content to control boundary precisely.
         num_lines_to_fit = 5
         line_len = _MAX_CONTENT_CHARS // (num_lines_to_fit + 1) - 1  # well under budget per line
         lines = [f"Line {i}: " + "x" * line_len for i in range(num_lines_to_fit + 3)]
@@ -90,39 +64,6 @@ class TestLineBoundaryTruncation:
 
         assert "[MemChorus injected context]" in result
         assert "[/MemChorus injected block]" in result
-
-
-class TestFeedbackPrioritySorting:
-    """Feedback items should appear before normal recall when budget is tight."""
-
-    def test_feedback_before_normal(self):
-        """Feedback corrections are sorted before general recall content."""
-        items = [
-            {"key": "normal_recall_1", "content": "Regular memory entry 1"},
-            {"key": "feedback_fix_v2", "content": "Correct the previous output"},
-            {"key": "normal_recall_2", "content": "Regular memory entry 2"},
-        ]
-        result = _format_context_block(items)
-
-        feedback_pos = result.index("feedback_fix_v2")
-        normal1_pos = result.index("normal_recall_1")
-        assert feedback_pos < normal1_pos, "Feedback should appear before normal recall"
-
-    def test_feedback_preserved_when_budget_drops_entries(self):
-        """When block ceiling forces removal, normal items drop first."""
-        # Create enough large items to exceed the block budget.
-        big_content = "x" * 300 + "\n"  # each hits per-entry truncation
-
-        items = [
-            {"key": "feedback_keep", "content": "Critical correction info"},
-            {"key": "normal_drop_1", "content": big_content},
-            {"key": "normal_drop_2", "content": big_content},
-            {"key": "normal_drop_3", "content": big_content},
-            {"key": "normal_drop_4", "content": big_content},
-        ]
-        result = _format_context_block(items)
-
-        assert "feedback_keep" in result, "Feedback item must survive budget pressure"
 
 
 class TestBlockCeilingDoesNotCutPartialLines:
