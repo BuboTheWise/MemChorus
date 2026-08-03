@@ -29,12 +29,30 @@ dist/
 .coverage
 coverage.xml
 htmlcov/
+
+# Legacy test scripts at root (moved to tests/ or removed)
+test_memchorus.py
+test_graceful_degradation.py
+test_imports.py
+test_hermes_source.py
+verify_mempalace_impl.py
+
+# Test scripts (temporary)
 *_test.sh
 integration_test_*.py
 final_test.sh
+
+# Examples moved to examples/ or outside repo
+example_usage.py
+example_memchorus_usage.py
+example_memchorus_usage_improved.py
+
+# Dev setup scripts (not needed in repo)
+setup_dev.sh
+
+# Docs moved outside repo
+Level-Set-Summary.md
+
+# QA report artifacts (versioned reports live in Bubo_Wisdom, not here)
 QA-Reports/
 .worktrees/
-
-# Docs moved outside repo (Bubo_Wisdom only)
-Level-Set-Summary.md
-example_memchorus_usage_improved.py
