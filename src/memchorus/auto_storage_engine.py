@@ -612,6 +612,7 @@ class AutoStorageEngine:
             "text": text,
             "categories": provenance_cats,
             "category": category_str,
+            "significance": category_str,
             "outcome_type": outcome_type,
             "timestamp": _time_mod.time(),
             "importance_score": importance,
