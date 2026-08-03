@@ -108,7 +108,7 @@ class TestFeedbackCorrectionInjection:
                 )
 
                 assert result is not None, "Hook should return a result when recall+feedback fire"
-                injected = result.get("injected_context", "")
+                injected = result.get("context", "")
 
                 # Block ordering: MemChorus Memory Recall comes first, then feedback
                 recall_pos = injected.find("[MemChorus Memory Recall]")
@@ -197,7 +197,7 @@ class TestFeedbackCorrectionInjection:
                 )
 
                 assert result is not None, "Should still return recall results"
-                injected = result.get("injected_context", "")
+                injected = result.get("context", "")
 
                 # Recall block present
                 assert "[MemChorus Memory Recall]" in injected
