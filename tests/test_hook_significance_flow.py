@@ -194,6 +194,9 @@ class TestBugA_BatchPathRoutesThroughEngine:
                 "memchorus.auto_storage_engine.AutoStorageEngine",
                 return_value=mock_engine,
             ):
+                # Reset the global cache so _get_capture_batcher reconstructs
+                # with the patched mock engine (earlier tests populate it)
+                memchorus.hooks._CAPTURE_BATCHER = None
                 batcher = memchorus.hooks._get_capture_batcher(orch)
                 if batcher is not None:
                     # Force a flush by adding max_items+1 items
