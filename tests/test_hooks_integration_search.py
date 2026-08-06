@@ -24,32 +24,15 @@ from memchorus.hooks import MemChorusHooks
 from memchorus.orchestrator import MemoryOrchestrator
 
 
-@pytest.fixture(autouse=True)
-def _reset_hook_module_state():
-    """GAP045: Reset module-level global state before/after each test
-
-    The _CAPTURE_BATCHER singleton in memchorus.hooks holds orchestrator
-    references that leak across test boundaries. Without this fixture,
-    tests running later can inherit batcher state from earlier tests,
-    causing stale data or unexpected behavior.
-    """
-    import memchorus.hooks as hooks_module
-    hooks_module._CAPTURE_BATCHER = None
-    yield
-    hooks_module._CAPTURE_BATCHER = None
-
 @pytest.fixture
 def real_orchestrator(tmp_path):
-    """A real MemoryOrchestrator backed by a temporary hermes_default source (mempalace disabled for isolation - GAP045)."""
+    """A real MemoryOrchestrator backed by a temporary hermes_default source."""
     orch_config = {
         "hermes_default_config": {"memory_dir": str(tmp_path / "test_mem.json")},
         "enforce_on_read": False,
         "enforce_on_write": False,
     }
     orch = MemoryOrchestrator(config=orch_config)
-    # Disable mempalace to prevent contamination from live/stale memory data (GAP045)
-    if 'mempalace' in orch.memory_sources:
-        orch.disable_source('mempalace')
     return orch
 
 
@@ -116,10 +99,10 @@ class TestIntegrationPreLlmCallWithRealMemories:
                 "provides search terms"
             )
             assert "source" in result
-            assert "context" in result
+            assert "injected_context" in result
             # The injected context should contain the memory recall label
-            assert "[MemChorus Memory Recall]" in result["context"], (
-                f"Expected memory recall block in output, got: {result['context'][:200]}"
+            assert "[MemChorus Memory Recall]" in result["injected_context"], (
+                f"Expected memory recall block in output, got: {result['injected_context'][:200]}"
             )
 
     def test_integration_no_matching_memories_returns_none(self, real_orchestrator, hooks):
@@ -167,7 +150,7 @@ class TestIntegrationPreLlmCallWithRealMemories:
             assert result is not None, (
                 "Expected non-None when user_message search finds memories"
             )
-            assert "[MemChorus Memory Recall]" in result["context"]
+            assert "[MemChorus Memory Recall]" in result["injected_context"]
 
     def test_integration_search_limit_respects_decision_point_priority(self, real_orchestrator, hooks):
         """Verify that when BehavioralTrigger returns PLANNING_START decision point,
