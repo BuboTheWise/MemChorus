@@ -63,12 +63,9 @@ class TestRetrieveEnforcementHook:
 
     def test_retrieve_unknown_key_returns_none_with_enforce_on_read_true(self):
         """GAP044 regression: unknown keys must return None.
-        After GAP044, enforce() is never called on read paths so fabricated
-        recall_context hits cannot leak through."""
+
+        After GAP044, enforce() is never called on read paths so fabricated recall_context hits cannot leak through."""
         orch = _make_orch({'enforce_on_read': True, 'enforce_on_write': False})
-        # With enforce() removed from read paths, mock_manager is irrelevant for retrieval
-        # Just verify unknown keys return None through source iteration
-        orch.disable_source('mempalace')
         assert orch.retrieve("nonexistent_key_xyz123") is None
         assert orch.retrieve_with_source("nonexistent_key_xyz123") is None
 
