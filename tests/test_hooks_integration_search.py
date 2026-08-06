@@ -26,13 +26,18 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 @pytest.fixture
 def real_orchestrator(tmp_path):
-    """A real MemoryOrchestrator backed by a temporary hermes_default source."""
+    """A real MemoryOrchestrator backed by a temporary hermes_default source.
+    MemPalace is disabled to prevent live-palace data contamination (GAP045)."""
     orch_config = {
         "hermes_default_config": {"memory_dir": str(tmp_path / "test_mem.json")},
         "enforce_on_read": False,
         "enforce_on_write": False,
     }
     orch = MemoryOrchestrator(config=orch_config)
+    # Remove mempalace source contamination — tests must use only hermes_default
+    if "mempalace" in orch.memory_sources:
+        orch._source_enabled["mempalace"] = False
+        del orch.memory_sources["mempalace"]
     return orch
 
 
