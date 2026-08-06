@@ -1,5 +1,7 @@
 # MemChorus
 
+Current version: 1.6.0
+
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
 MemChorus treats memory not as a single store but as a **chorus of distinct sources** — each with different strengths, costs, and semantics. An orchestrator sits in front, deciding where to write and which sources to consult on reads so the agent gets the right context without wasting compute or tokens.
@@ -354,6 +356,24 @@ Verify the import works before using it:
 python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
 
+#### Optional Dependencies
+
+MemChorus splits its runtime dependencies into a lean core plus optional extras so that installation plays nicely alongside other packages (especially Hermes base environments with their own Pydantic version).
+
+| Extra | Command | What it adds |
+|---|---|---|
+| **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
+| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
+| **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
+
+You can combine extras: `"memchorus[mcp,dev]"` for full development.
+
+#### Version Compatibility Notes
+
+- **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
+- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
+- If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
+
 ### MemPalace backend
 
 For the MemPalace source to connect live, ensure `mempalace-server` is available as an MCP stdio server. Check with:
@@ -516,7 +536,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.5.10 – v1.5.12 (current — on `master`)
+### v1.6.0 (current — on `master`)
+
+- **Branch consolidation release:** Merged remaining unlanded feature branches (GapGuard, GAP026 hex ID skip, GAP015/GAP016 fixes, RecursionGuard accuracy improvements, dynamic source routing). Source version aligned with `__init__.py` = 1.6.0.
+- **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution.
+
+### v1.5.10 – v1.5.12
 
 **- RecursionGuard unified depth counter (GAP027):** Replaced fragile boolean recursion sentinels (`_REC_GUARD` module-level bool + instance-level `_in_enforcement_save`, `_in_enforcement_recall` flags) with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. All enforcement hooks in orchestrator.py now use the shared guard. Thread-safe under Python GIL.
 - **GAP026 hex Kanban ID skip:** Added detection and skip for t_[hex] Kanban IDs in project resolution, with comprehensive orientation test suite (58 tests). Also reduced cache TTL to 15s and added empty-result caching prevention.
@@ -588,4 +613,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.5.12 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.6.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
