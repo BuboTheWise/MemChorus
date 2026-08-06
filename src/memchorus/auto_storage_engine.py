@@ -566,6 +566,7 @@ class AutoStorageEngine:
         payload = {
             "text": text,
             "categories": provenance_cats,
+            "significance": category_str,       # hook tests + downstream consumers read this key
             "category": category_str,
             "outcome_type": outcome_type,
             "timestamp": _time_mod.time(),
