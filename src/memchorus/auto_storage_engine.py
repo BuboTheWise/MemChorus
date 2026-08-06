@@ -50,60 +50,28 @@ ALL_CATEGORIES: List[SignificanceCategory] = [
     SignificanceCategory.RESULT,
 ]
 
-# Mapping of category -> search strings (case-insensitive).
-# Each entry is (human_label, compiled_regex_string).
-# The original keyword list captured natural-language reasoning well but missed
-# technical documentation, code diffs, and infrastructure output entirely.
-# Expanded 2026-07-29 to catch architecture specs, API references, configuration
-# descriptions, error patterns, and design rationale that agents encounter when
-# reading codebases or tool output (t_dc2e44b9).
+# Mapping of category -> search strings (case-insensitive)
 _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
     SignificanceCategory.LEARNING: [
-        # Original natural-language learning indicators
         ("learned", r'\blearned\b'),
         ("realized", r'\brealized\b'),
         ("understood", r'\bunderstood\b'),
         ("found that", r'found\s+that'),
-        # Technical/architectural insight indicators (t_dc2e44b9)
-        ("learning:", r'\blear[nn]ing:?[:\s]\b'),
-        ("architecture", r'\barchitectur(e|al)(\s+(design|style|pattern))?\b'),
-        ("provides functionality", r'\bprovides\s+(functionality|capability|support)\b'),
-        ("handles", r'\bhandles?\s+(requests|calls|events|connections|operations|errors)\b'),
-        ("designed to", r'\bdesigned\s+to\b'),
-        ("pattern", r'\b(pat(tern|terns)|workflow)(\s+(design|convention))?\b'),
-        ("key insight", r'\b(key[\s_-]?insight|important[\s_-]?(finding|detail))\b'),
-        ("understanding of", r'\bunderstanding\s+of\b'),
     ],
     SignificanceCategory.MISTAKE: [
-        # Original natural-language mistake indicators
         ("went wrong", r'went\s+wrong'),
         ("wrong approach", r'wrong\s+approach'),
         ("should have", r'should\s+have\b'),
         ("mistake was", r'mistake\s+was\b'),
         ("incorrectly", r'\bincorrectly\b'),
-        # Technical error/bug/pitfall indicators (t_dc2e44b9)
-        ("fails when", r'\bfails?\s+(when|because)|\b(fail(?:ed|ure)s?)\s+(at|on)\b'),
-        ("bug in", r'\bbug[s]?\s+in\b'),
-        ("does not support", r'\b(does\s+not\s+support|cannot\s+handle|unsupported)\b'),
-        ("workaround", r'\bwork\s+around\b|\bworkaround\b|(?:fix|patch)[\s_-]?[Ff]or\b'),
-        ("gotcha", r'\b(got[ _]?cha|pitfall|trap|hazard)\b'),
-        ("causes", r'\b(causes?\s+(?:a\s+|an\s+)?(error|issue|problem|crash|failure))\b'),
-        ("known issue", r'\b(known[\s_-]?issue|limitation|constraint|edge\s+case)\b'),
     ],
     SignificanceCategory.DECISION: [
-        # Original natural-language decision indicators
         ("decided", r'\bdecided\b'),
         ("chose", r'\bchose\b'),
         ("go with", r'go\s+with'),
         ("settled on", r'settled\s+on'),
-        # Technical/architectural decision indicators (t_dc2e44b9)
-        ("default", r'\b(def(ault|aults)\s+(to|is|are|at))\b'),
-        ("fallback when", r'\bfallback[s]?\s+(when|to)|\b(default\s+behavior)\b'),
-        ("require", r'\brequ(ire|ires|ired)\s+(by|for|ing)|\brequires?\s+\b'),
-        ("must not", r'\b(must[\s_-]?not|cannot|must\s+never)\b'),
     ],
     SignificanceCategory.RESULT: [
-        # Original natural-language result indicators
         ("result", r'\bresult\b'),
         ("outcome", r'\boutcome\b'),
         ("achieved", r'\bachieved\b'),
@@ -256,7 +224,6 @@ _KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
     "post-action learnings outcomes results decisions made changes completed tasks progress milestones reviews improvements",
     "errors recovery patterns failure modes known issues bugs fixes troubleshooting diagnostic root cause debugging steps workarounds",
     "synthesis analysis findings insights patterns understanding conclusions research outcomes knowledge distillation key takeaways learnings",
-    "synthesis analysis findings key insight understanding learned important patterns review summary conclusions takeaways documentation research",
     # Truncated templates (pre-v1.5 legacy — still block echoes from older recall cycles)
     "past planning patterns architecture decisions strategy notes",
     "tool usage history command conventions domain-specific guidance",
@@ -342,39 +309,14 @@ class CaptureResult:
 
 
 def _detect_significance(text: str) -> List[SignificanceCategory]:
-    """Scan *text* for keywords across all categories; return matched list.
-
-    RESULT only fires as a fallback when no higher-value category (LEARNING,
-    MISTAKE, or DECISION) matched. This prevents generic tool-output words like
-    ``result``, ``success``, and ``outcome`` from inflating importance scores on
-    everything.  Corpus data showed RESULT matching 94.7% of stored items simply
-    because those words appear naturally in command output — not because the
-    content meaningfully describes a result.
-
-    Higher-value categories can still co-fire (e.g., a mistake that teaches
-    something returns both MISTAKE and LEARNING).
-
-    Priority hierarchy: LEARNING > MISTAKE > DECISION > RESULT (catch-all).
-    """
+    """Scan *text* for keywords across all categories; return matched list."""
     lower: str = text.lower()
     out: List[SignificanceCategory] = []
-
-    # High-value categories — checked first; they may co-fire legitimately.
-    for cat in (SignificanceCategory.LEARNING,
-                SignificanceCategory.MISTAKE,
-                SignificanceCategory.DECISION):
-        for label, pattern in _SIG_KEYWORDS[cat]:
+    for cat, entries in _SIG_KEYWORDS.items():
+        for label, pattern in entries:
             if re.search(pattern, lower):
                 out.append(cat)
                 break  # one match per category is enough
-
-    # RESULT only fires as fallback when nothing else matched
-    if not out:
-        for label, pattern in _SIG_KEYWORDS[SignificanceCategory.RESULT]:
-            if re.search(pattern, lower):
-                out.append(SignificanceCategory.RESULT)
-                break
-
     return out
 
 
@@ -612,7 +554,6 @@ class AutoStorageEngine:
             "text": text,
             "categories": provenance_cats,
             "category": category_str,
-            "significance": category_str,
             "outcome_type": outcome_type,
             "timestamp": _time_mod.time(),
             "importance_score": importance,
