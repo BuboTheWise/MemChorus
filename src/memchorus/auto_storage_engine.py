@@ -50,6 +50,11 @@ ALL_CATEGORIES: List[SignificanceCategory] = [
     SignificanceCategory.RESULT,
 ]
 
+# Priority order — higher index = lower priority.
+# RESULT is the fallback; it only fires when no higher-priority category matches.
+_SIGNIFICANCE_PRIORITY: List[SignificanceCategory] = list(ALL_CATEGORIES)
+
+
 # Mapping of category -> search strings (case-insensitive)
 _SIG_KEYWORDS: Dict[SignificanceCategory, List[Tuple[str, str]]] = {
     SignificanceCategory.LEARNING: [
@@ -309,7 +314,10 @@ class CaptureResult:
 
 
 def _detect_significance(text: str) -> List[SignificanceCategory]:
-    """Scan *text* for keywords across all categories; return matched list."""
+    """Scan *text* for keywords across all categories; return matched list.
+
+    RESULT only fires as fallback — suppressed when any higher-priority category matches.
+    """
     lower: str = text.lower()
     out: List[SignificanceCategory] = []
     for cat, entries in _SIG_KEYWORDS.items():
@@ -317,6 +325,10 @@ def _detect_significance(text: str) -> List[SignificanceCategory]:
             if re.search(pattern, lower):
                 out.append(cat)
                 break  # one match per category is enough
+    # Suppress RESULT when a higher-priority category also matched
+    if SignificanceCategory.RESULT in out and len(out) > 1:
+        result_index = _SIGNIFICANCE_PRIORITY.index(SignificanceCategory.RESULT)
+        out = [c for c in out if _SIGNIFICANCE_PRIORITY.index(c) < result_index]
     return out
 
 
