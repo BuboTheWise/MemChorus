@@ -122,8 +122,46 @@ class _McpTransportDetector:
         return None
 
     @staticmethod
+    def _fallback_to_path() -> Optional[Dict[str, Any]]:
+        """Fall back to shutil.which('mempalace-mcp') on PATH when config parsing fails."""
+        binary = None
+        try:
+            from shutil import which
+            binary = which("mempalace-mcp")
+        except Exception:
+            pass
+
+        if binary:
+            return {
+                "command": binary,
+                "args": [],
+                "resolved_from": f"PATH (shutil.which) -> {binary}",
+            }
+        return None
+
+    @staticmethod
+    def _log_config_guidance() -> None:
+        """Log actionable guidance when no MCP transport is found."""
+        yaml_snippet = (
+            "\n  mcp_servers:\n"
+            "    mempalace:\n"
+            "      command: /path/to/mempalace-mcp\n"
+            "\nTo enable it, add this to your config.yaml.\n"
+            "Alternatively, install the MCP transport via pip:\n"
+            "  pip install memchorus[mcp]"
+        )
+        logger.warning(
+            "_McpTransportDetector: no MCP transport found. Configure MemPalace in config.yaml:\n%s",
+            yaml_snippet,
+        )
+
+    @staticmethod
     def detect(config_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         """Parse config.yaml and return transport override, or None.
+
+        Falls back to ``shutil.which('mempalace-mcp')`` when config is missing,
+        invalid, or lacks the expected key path. Logs actionable guidance if
+        nothing can be found at all.
 
         Parameters
         ----------
@@ -131,31 +169,38 @@ class _McpTransportDetector:
             Explicit path to the Hermes config file.  When omitted, auto-locates
             via ``_find_config()``.
         """
-        goto_fallback = False
-        data = None
-        parts: List[str] = []
         target = config_path if config_path is not None else _McpTransportDetector._find_config()
 
         if target is None:
             logger.debug("_McpTransportDetector: no config.yaml found")
-            goto_fallback = True
-        else:
+
+        # Try to parse config — on any failure, fall through to PATH fallback
+        goto_fallback = target is None  # type: bool
+        data = None                     # typed so Pyright knows it's never unbound
+        parts: list[str] = []
+
+        if not goto_fallback:  # target is not None here
             try:
-                with open(target) as f:
+                with open(target) as f:   # ok – target proven Path above
                     data = yaml.safe_load(f)
             except Exception as exc:
                 logger.warning(
                     "_McpTransportDetector: failed to parse %s: %s", target, exc
                 )
                 goto_fallback = True
-            else:
-                if not isinstance(data, dict):
-                    logger.warning("_McpTransportDetector: config.yaml is not a mapping")
-                    goto_fallback = True
+
+        if not goto_fallback:
+            if not isinstance(data, dict):
+                logger.warning("_McpTransportDetector: config.yaml is not a mapping")
+                goto_fallback = True
 
         # Navigate mcp_servers -> mempalace -> command (only when data is valid).
+        mcp_servers: dict = {}
+        mempalace_cfg: dict = {}
+        command_raw: str | None = None
+
         if not goto_fallback:
-            mcp_servers = data.get("mcp_servers", {})
+            mcp_servers = data.get("mcp_servers", {})  # type: ignore[union-attr]
             if not isinstance(mcp_servers, dict):
                 goto_fallback = True
 
@@ -171,7 +216,7 @@ class _McpTransportDetector:
 
         if not goto_fallback:
             try:
-                parts = shlex.split(command_raw)
+                parts = shlex.split(command_raw)  # ok – proven str above
             except ValueError as exc:
                 logger.warning(
                     "_McpTransportDetector: invalid command string in config.yaml: %s", exc
@@ -198,31 +243,14 @@ class _McpTransportDetector:
 
             return resolved
 
-        # -- Fallback: check PATH for the mempalace-mcp binary --
-        binary_path = shutil.which("mempalace-mcp")
-        if binary_path:
-            logger.info(
-                "_McpTransportDetector: mempalace-mcp found on PATH (no override needed) -> %s",
-                binary_path,
-            )
-            return {
-                "command": binary_path,
-                "args": [],
-                "resolved_from": "PATH (mempalace-mcp)",
-            }
+        # Fallback: try PATH discovery
+        fallback = _McpTransportDetector._fallback_to_path()
+        if fallback:
+            logger.info("_McpTransportDetector: using PATH fallback -> %s", fallback["command"])
+            return fallback
 
-        # -- Actionable warning when no transport could be discovered --
-        logger.warning(
-            "_McpTransportDetector: no MemPalace MCP transport configuration found.\n"
-            "To enable it, add this to %s:\n"
-            "---\n"
-            "mcp_servers:\n"
-            "  mempalace:\n"
-            "    command: /path/to/mempalace-mcp-server\n"
-            "---",
-            target if target is not None else "~/.hermes/config.yaml",
-        )
-
+        # Nothing found — show actionable guidance before giving up
+        _McpTransportDetector._log_config_guidance()
         return None
 
 
@@ -296,16 +324,15 @@ class _McpClient:
     The cost is starting a Python subprocess for each operation, but MemChorus
     save/retrieve/search are not firehose operations -- the overhead is acceptable.
 
-    **Transport resolution chain (v2.3):**
+    **Transport resolution chain (v2.2):**
     0. ``config.yaml mcp_servers.mempalace.command`` — user override from Hermes config
        (highest priority, checked by ``_McpTransportDetector``)
-    1. ``mempalace-mcp`` binary discovered on PATH via ``shutil.which()``
-    2. ``config.get("python_bin")`` — explicit user override passed to the constructor
-    3. ``shutil.which("mempalace-python")`` — dedicated shim on PATH
-    4. pipx venv locations (existing)
-    5. ``sys.executable`` (existing)
-    6. ``python3`` on PATH (existing)
-    7. ``/usr/bin/python3`` fallback, lowest priority (existing)
+    1. ``config.get("python_bin")`` — explicit user override passed to the constructor
+    2. ``shutil.which("mempalace-python")`` — dedicated shim on PATH
+    3. pipx venv locations (existing)
+    4. ``sys.executable`` (existing)
+    5. ``python3`` on PATH (existing)
+    6. ``/usr/bin/python3`` fallback, lowest priority (existing)
     """
 
     def __init__(self, timeout: float = 30.0, config: Optional[Dict[str, Any]] = None):
@@ -328,8 +355,7 @@ class _McpClient:
     def _get_transport(self) -> tuple[str, list]:
         """Return (command, args) for launching the MCP subprocess.
 
-        Priority 0: config.yaml override from ``_McpTransportDetector``
-            (includes the auto-discovered ``mempalace-mcp`` on PATH).
+        Priority 0: config.yaml override from ``_McpTransportDetector``.
         Fallback: self._python_bin + standard module path.
         """
         if self._transport_override:
@@ -419,21 +445,9 @@ class _McpClient:
         return py
 
     def connect(self) -> bool:
-        """Start server subprocess, run initialize handshake, return True/False.
-
-        Returns False gracefully when the mcp package is not installed
-        (i.e. MemChorus was installed without the [mcp] extra).
-        """
-        try:
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-            from mcp.client.session import ClientSession
-        except ImportError:
-            logger.warning(
-                "connect: MCP package not installed — cannot connect to MemPalace. "
-                "Install with: pip install memchorus[mcp]"
-            )
-            self._connected = False
-            return False
+        """Start server subprocess, run initialize handshake, return True/False."""
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.session import ClientSession
 
         cmd, args = self._get_transport()
         if not Path(cmd).exists():
@@ -807,66 +821,32 @@ class MemPalaceMemorySource(MemorySource):
         return bool(self._cache_locally(key, value))
 
     def retrieve(self, key: str) -> Optional[Any]:
-        """Look up the memory.  Tries MCP first; falls back to local cache.
+        """Look up the memory.  Returns cached value when available; None otherwise.
 
-        GAP044 fix: require local proof-of-storage before touching MCP.
+        GAP044 fix: The local JSON cache is authoritative — it stores the exact
+        value that ``save()`` received via ``self._cache_locally(key, value)``.
+        Since ``save()`` mirrors to both MCP and local cache, a cached JSON file
+        is definitive proof the key was genuinely stored through MemChorus.
 
-        Broadened semantic search for an arbitrary key matches unrelated
-        content elsewhere in the wing and returns fabricated false-positive
-        results.  save() writes to BOTH MCP and local cache, so a cached
-        JSON file is definitive proof the key was genuinely stored.
+        We return the cached value directly without querying MCP, which eliminates:
+
+        - **Fabricated data:** MCP returning semantically similar but wrong hits.
+        - **Type corruption (dict→string):** MCP ``_from_str`` on non-JSON content
+          producing a raw string instead of the original dict type.
+
+        The only path to None is when the key was never saved through this source
+        (no cache file). This preserves graceful degradation while guaranteeing
+        type and content fidelity on every successful round-trip.
         """
-        # Proof-of-storage guard: if no local cache entry exists for this key,
-        # the key was never saved through MemChorus — skip MCP semantic search
-        # entirely to avoid false-positive matches on unrelated content.
         filepath = self._cache_dir / f"{key}.json"
-        has_local_proof = filepath.exists()
-
-        if not has_local_proof:
+        if not filepath.exists():
             return None
 
-        if self._ensure_connected() and self._client.is_alive:
-            # Load cached value for category metadata (§6).
-            cached_value = None
-            try:
-                with open(filepath) as f:
-                    cached_value = json.load(f)
-            except Exception:
-                pass
-
-            # Derive wing and room from cached category info
-            wing = self._resolve_wing_from_payload(cached_value)
-            cat_room = self._categorize_room(
-                cached_value, room_map=self._room_map
-            ) if cached_value else None
-
-            # Primary search: targeted wing + room when we have category
-            found_results = None
-            if cat_room:
-                found_results = self._client.search(
-                    query="", wing=wing, room=cat_room, limit=1
-                )
-
-            results = found_results
-            if results:
-                for r in results:
-                    # MCP search returns hit dicts with a 'text' field.
-                    r_content = (
-                        r.get("text", "") or r.get("content", "")
-                        if isinstance(r, dict)
-                        else str(r)
-                    )
-                    if r_content:
-                        return self._from_str(str(r_content))
-
-        # Local cache fallback.
         try:
             with open(filepath) as f:
                 return json.load(f)
         except Exception:
-            pass
-
-        return None
+            return None
 
     def search(self, query: str, limit: int = 10, *, wing: Optional[str] = None, room: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search across MCP + local cache, deduplicating by key.
