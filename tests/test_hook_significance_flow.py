@@ -183,6 +183,10 @@ class TestBugA_BatchPathRoutesThroughEngine:
         with patch("memchorus.hooks._get_orchestrator", return_value=orch):
             import memchorus.hooks
 
+            # Clear the cached batcher so mocks take effect regardless of test execution order
+            original_batcher = memchorus.hooks._CAPTURE_BATCHER
+            memchorus.hooks._CAPTURE_BATCHER = None
+
             mock_engine = MagicMock()
             mock_engine.capture_outcome.return_value = {
                 "saved": True,
@@ -206,6 +210,9 @@ class TestBugA_BatchPathRoutesThroughEngine:
                     assert mock_engine.capture_outcome.call_count >= 1, (
                         "Batch flush must call capture_outcome"
                     )
+
+            # Restore original batcher for other tests
+            memchorus.hooks._CAPTURE_BATCHER = original_batcher
 
 
 class TestBugB_SignificanceFieldInPayload:
