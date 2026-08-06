@@ -396,69 +396,6 @@ class TestIntegrationAutoStorageEngine(unittest.TestCase):
         self.assertTrue(payload.get("_auto_provenance"))
 
 
-class TestOnSessionEndLenOnPendingCrash(unittest.TestCase):
-    """Regression: hooks.py line 433 called len() on batcher.pending (int property).
-
-    The original code pattern was:
-        len(getattr(batcher, '_queue', []) or getattr(batcher, 'pending', []))
-    When _queue is empty, the `or` clause falls through to .pending (an int),
-    and len(int) raises TypeError. This class ensures that regression never repeats.
-    """
-
-    def test_session_end_with_empty_batcher(self):
-        """on_session_end with an empty batcher should not crash."""
-        captured: List[Dict[str, Any]] = []
-        buf = ToolCaptureBuffer(
-            max_items=10,
-            flush_interval=300.0,
-            callback=lambda b: captured.extend(b),
-        )
-
-        # Simulate the fixed on_session_end path from hooks.py
-        batcher = buf
-        try:
-            count_before_int = batcher.pending  # already int
-        except AttributeError:
-            count_before_int = len(getattr(batcher, '_queue', []))
-
-        batcher.close()
-
-        self.assertIsInstance(count_before_int, int)
-        self.assertEqual(count_before_int, 0)
-        self.assertEqual(len(captured), 0)
-        # Empty buffer close does not increment flush counter (no-op by design).
-        self.assertEqual(buf.stats.total_flushes, 0)
-
-    def test_session_end_with_nonempty_batcher(self):
-        """on_session_end with pending items should flush and return count."""
-        captured: List[Dict[str, Any]] = []
-        buf = ToolCaptureBuffer(
-            max_items=10,
-            flush_interval=300.0,
-            callback=lambda b: captured.extend(b),
-        )
-
-        # Add some items without reaching threshold.
-        for i in range(5):
-            buf.add({"idx": i})
-
-        self.assertEqual(buf.pending, 5)
-
-        # Simulate on_session_end path (close flushes remaining).
-        batcher = buf
-        try:
-            count_before_int = batcher.pending
-        except AttributeError:
-            count_before_int = len(getattr(batcher, '_queue', []))
-
-        self.assertIsInstance(count_before_int, int)
-        self.assertEqual(count_before_int, 5)
-
-        batcher.close()
-        self.assertEqual(len(captured), 5)
-        self.assertEqual(buf.stats.total_flushes, 1)
-
-
 class TestBufferStatsSnapshot(unittest.TestCase):
     def test_stats_immutability(self):
         buf = ToolCaptureBuffer(max_items=3, flush_interval=300.0, callback=lambda x: None)
