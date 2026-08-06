@@ -224,11 +224,12 @@ def _has_minimum_signal(text: str, threshold_entropy: float = 1.5) -> bool:
 
 _KNOWN_QUERY_TEMPLATES: frozenset[str] = frozenset({
     # Expanded templates (current _QUERY_MAP values — GAP P0-3 fix, 2026-07-19)
+    # Updated 2026-08-05 to match current CONTEXTUAL_SYNTHESIS_COMPLETION template in _QUERY_MAP
     "past planning patterns architecture decisions strategy notes project organization conventions documentation standards workflow",
     "tool usage history command conventions domain-specific guidance preferences user context setup configuration environment debug findings verification testing procedures scripts",
     "post-action learnings outcomes results decisions made changes completed tasks progress milestones reviews improvements",
     "errors recovery patterns failure modes known issues bugs fixes troubleshooting diagnostic root cause debugging steps workarounds",
-    "synthesis analysis findings insights patterns understanding conclusions research outcomes knowledge distillation key takeaways learnings",
+    "synthesis analysis findings key insight understanding learned important patterns review summary conclusions takeaways documentation research",
     # Truncated templates (pre-v1.5 legacy — still block echoes from older recall cycles)
     "past planning patterns architecture decisions strategy notes",
     "tool usage history command conventions domain-specific guidance",
