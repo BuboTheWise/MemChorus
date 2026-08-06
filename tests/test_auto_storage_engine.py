@@ -233,6 +233,8 @@ class TestSignificanceDetection(unittest.TestCase):
         self.assertIn(SC.LEARNING, cats)
         self.assertIn(SC.MISTAKE, cats)
 
+    # ---- Technical/architectural keyword detection (t_dc2e44b9) ----
+
 
 
 # ---------------------------------------------------------------------------
