@@ -279,6 +279,30 @@ class MemoryOrchestrator:
                 "continuing with hermes_default only. "
                 "If you want MemPalace, check ~/.hermes/config.yaml for mcp_servers.mempalace.command or ensure mempalace-mcp binary is on PATH. Error: %s", exc
             )
+
+        # Add Session History as a fallback recall source — queries Hermes session DB
+        # via FTS5 for relevant past conversations, decisions, and patterns captured
+        # in session transcripts. Tolerates failure so orchestrator remains usable
+        # even when the session DB is missing or lacks FTS5 tables (AC-1 compliance).
+        try:
+            from memchorus.session_search_memory_source import SessionSearchMemorySource
+            session_source = SessionSearchMemorySource(
+                name='session_history',
+                config=self.config.get('session_history_config', {})
+            )
+            self.memory_sources['session_history'] = session_source
+            self._source_enabled['session_history'] = True
+            self._source_priority['session_history'] = 0
+        except ImportError as exc:
+            logger.warning(
+                "SessionHistory source unavailable (missing module). "
+                "Continuing with existing sources. Error: %s", exc
+            )
+        except Exception as exc:
+            logger.warning(
+                "SessionHistory source unavailable during orchestrator init — "
+                "continuing with existing sources. Error: %s", exc
+            )
     
     def register_source(self, source: MemorySource, priority: int = 10) -> bool:
         """
