@@ -283,10 +283,9 @@ class TestSafetyNetFallback(unittest.TestCase):
 
     def test_all_sources_down_returns_false(self):
         orch = _make_orch(self.hermes_dir)
-        mock_hd = _MockSource("hermes_default", available=False)
-        mock_mp = _MockSource("mempalace", available=False)
-        orch.memory_sources["hermes_default"] = mock_hd
-        orch.memory_sources["mempalace"] = mock_mp
+        # Replace ALL source values with unavailable mocks
+        for src_name in list(orch.memory_sources):
+            orch.memory_sources[src_name] = _MockSource(src_name, available=False)
 
         result = orch.save("x", "v")
         assert result is False
