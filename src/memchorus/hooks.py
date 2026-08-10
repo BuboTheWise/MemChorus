@@ -902,9 +902,12 @@ def on_session_end(**kwargs: Any) -> Optional[Dict[str, Any]]:
 
 
 def _get_module_hooks() -> "MemChorusHooks":
-    """Return the registered hooks instance (if register() ran), or create a fallback."""
+    """Return the registered hooks instance (if register() ran), or create a lazy fallback.
+
+    The fallback is cached so repeated calls still return the same singleton.
+    """
     inst = _instance_holder[0]
-    if inst is not None:
-        return inst
-    # Fallback for direct import without going through Hermes plugin system.
-    return MemChorusHooks()
+    if inst is None:
+        # Lazy fallback for direct import without going through Hermes plugin system.
+        _instance_holder[0] = inst = MemChorusHooks()
+    return inst
