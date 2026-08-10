@@ -226,6 +226,23 @@ class _McpTransportDetector:
         if not goto_fallback and not parts:
             goto_fallback = True
 
+        # Expand tilde paths (~ to $HOME) so Path.exists() checks work.
+        if not goto_fallback:
+            parts[0] = os.path.expanduser(parts[0])
+
+        # Validate the resolved command actually exists on disk before trusting
+        # the config override. If it doesn't, fall through to PATH discovery so
+        # we don't return a dead path that crashes subprocess launch.
+        if not goto_fallback:
+            cmd_path = Path(parts[0])
+            if not (cmd_path.exists() and os.access(cmd_path, os.X_OK)):
+                logger.warning(
+                    "_McpTransportDetector: config override points to non-existent or "
+                    "non-executable file: %s — falling back to PATH discovery",
+                    parts[0],
+                )
+                goto_fallback = True
+
         # If we found a valid override, return immediately.
         if not goto_fallback:
             resolved = {
