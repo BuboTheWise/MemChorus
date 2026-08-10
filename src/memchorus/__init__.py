@@ -31,7 +31,21 @@ def _resolve_active_profile(profile_name: str | None = None) -> str:
         return str(profile_name)
     from_env = os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_DEFAULT_PROFILE")
     if from_env:
-        return str(from_env)
+        return _sanitize_profile(str(from_env))
+    return "default"
+
+
+def _sanitize_profile(raw: str) -> str:
+    """Sanitize a profile name for safe use in filesystem paths.
+
+    Prevents OSError 36 (File name too long) when the env var is corrupted.
+    Valid profile names are 1-48 chars of [a-zA-Z0-9_-].
+    """
+    if not raw:
+        return "default"
+    import re as _re
+    if _re.fullmatch(r'[A-Za-z0-9_-]{1,48}', raw):
+        return raw
     return "default"
 
 
@@ -64,6 +78,7 @@ _attr_cache: dict[str, object] = {}
 _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
     "MemorySource": ("memchorus.memory_source", "MemorySource"),
     "HermesDefaultMemorySource": ("memchorus.hermes_memory_source", "HermesDefaultMemorySource"),
+    "SessionSearchMemorySource": ("memchorus.session_search_memory_source", "SessionSearchMemorySource"),
     "MemPalaceMemorySource": ("memchorus.mempalace_memory_source", "MemPalaceMemorySource"),
     "MemoryOrchestrator": ("memchorus.orchestrator", "MemoryOrchestrator"),
     "BehavioralTrigger": ("memchorus.behavioral_trigger", "BehavioralTrigger"),
@@ -88,6 +103,7 @@ _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
 __all__ = [
     "MemorySource",
     "HermesDefaultMemorySource",
+    "SessionSearchMemorySource",
     "MemPalaceMemorySource",
     "MemoryOrchestrator",
     "BehavioralTrigger",
