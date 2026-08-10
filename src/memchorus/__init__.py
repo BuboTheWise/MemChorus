@@ -4,10 +4,44 @@ __version__ = "1.6.0"
 __author__ = "BuboTheWise"
 __email__ = "bubo@nous.systems"
 
+import logging
+import os
+import re
 import sys  # loaded early for __getattr__ / sys.modules access
+
+logger = logging.getLogger(__name__)
 
 # Lazy bootstrap guard (set to True by __getattr__ after first trigger).
 _bootstrap_done: bool = False
+
+# --- Profile name sanitization -------------------------------------------
+_VALID_PROFILE_RE = re.compile(r'[A-Za-z0-9_-]{1,48}')
+
+
+def _sanitize_profile(raw: str | None) -> str:
+    """Sanitize a profile name for safe use in filesystem paths.
+
+    Prevents OSError 36 (File name too long) when the env var is corrupted.
+    Valid profile names are 1-48 chars of [a-zA-Z0-9_-].
+
+    Returns ``"default"`` for empty/None input and any value that fails the
+    regex check. Logs a warning when falling back so the problem surfaces in
+    logs rather than silently vanishing.
+
+    This is the **single canonical implementation** — do not duplicate it
+    elsewhere.  Import from ``memchorus`` instead.
+    """
+    if not raw:
+        return "default"
+    sanitized = str(raw) if not isinstance(raw, str) else raw
+    if _VALID_PROFILE_RE.fullmatch(sanitized):
+        return sanitized
+    logger.warning(
+        "HERMES_PROFILE contained invalid value %r — falling back to 'default' "
+        "to prevent path corruption (was %d chars)",
+        raw[:80], len(raw),
+    )
+    return "default"
 
 # --- Per-profile instance registry (AC2) -----------------------------------
 # Each Hermes profile gets its own MemoryOrchestrator so memories saved by one
@@ -32,20 +66,6 @@ def _resolve_active_profile(profile_name: str | None = None) -> str:
     from_env = os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_DEFAULT_PROFILE")
     if from_env:
         return _sanitize_profile(str(from_env))
-    return "default"
-
-
-def _sanitize_profile(raw: str) -> str:
-    """Sanitize a profile name for safe use in filesystem paths.
-
-    Prevents OSError 36 (File name too long) when the env var is corrupted.
-    Valid profile names are 1-48 chars of [a-zA-Z0-9_-].
-    """
-    if not raw:
-        return "default"
-    import re as _re
-    if _re.fullmatch(r'[A-Za-z0-9_-]{1,48}', raw):
-        return raw
     return "default"
 
 
