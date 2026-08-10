@@ -139,8 +139,10 @@ def test_single_source_operations_work_through_that_path_only():
         }
         orch = MemoryOrchestrator(config)
 
-        # Remove mempalace; only hermes_default remains
-        orch.unregister_source('mempalace')
+        # Remove non-hermes sources; only hermes_default remains
+        for src_name in list(orch.memory_sources):
+            if src_name != 'hermes_default':
+                orch.unregister_source(src_name)
         assert len(orch.memory_sources) == 1
         assert 'hermes_default' in orch.memory_sources
 

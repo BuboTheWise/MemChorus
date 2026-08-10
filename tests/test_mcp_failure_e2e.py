@@ -110,8 +110,10 @@ def test_full_orchestrator_lifecycle_with_one_source():
         }
         orch = MemoryOrchestrator(config)
 
-        if 'mempalace' in orch.memory_sources:
-            orch.unregister_source('mempalace')
+        # Remove non-hermes sources; only hermes_default remains
+        for src_name in list(orch.memory_sources):
+            if src_name != 'hermes_default':
+                orch.unregister_source(src_name)
 
         source_names = list(orch.memory_sources.keys())
         assert len(source_names) == 1
