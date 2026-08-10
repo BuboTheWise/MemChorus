@@ -863,3 +863,51 @@ def register(ctx: Any) -> None:
         "MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start, on_session_end",
         __import__('memchorus').__version__,
     )
+
+
+# ---------------------------------------------------------------------------
+# Module-level hook functions — Hermes plugin loader expects these at package.
+# Delegates to the singleton MemChorusHooks instance created during register().
+# Falls back gracefully when register() hasn't run yet (e.g., direct import).
+# ---------------------------------------------------------------------------
+
+def pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias for on_pre_llm_call."""
+    return _get_module_hooks().on_pre_llm_call(**kwargs)
+
+
+def post_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias for on_post_tool_call."""
+    return _get_module_hooks().on_post_tool_call(**kwargs)
+
+
+def on_pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias — delegates to MemChorusHooks.on_pre_llm_call."""
+    return pre_llm_call(**kwargs)
+
+
+def on_post_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias — delegates to MemChorusHooks.on_post_tool_call."""
+    return post_tool_call(**kwargs)
+
+
+def on_session_start(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias — delegates to MemChorusHooks.on_session_start."""
+    return _get_module_hooks().on_session_start(**kwargs)
+
+
+def on_session_end(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias — delegates to MemChorusHooks.on_session_end."""
+    return _get_module_hooks().on_session_end(**kwargs)
+
+
+def _get_module_hooks() -> "MemChorusHooks":
+    """Return the registered hooks instance (if register() ran), or create a lazy fallback.
+
+    The fallback is cached so repeated calls still return the same singleton.
+    """
+    inst = _instance_holder[0]
+    if inst is None:
+        # Lazy fallback for direct import without going through Hermes plugin system.
+        _instance_holder[0] = inst = MemChorusHooks()
+    return inst
