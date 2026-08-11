@@ -7,6 +7,10 @@ import types as _types
 import pytest
 
 
+# Counter for batched gc - only collect every N tests to reduce overhead
+_gc_counter = [0]
+_GC_BATCH_INTERVAL = 50  # Only do expensive gc.collect every 50 tests
+
 @pytest.fixture(autouse=True, scope="module")
 def _cleanup_asyncio_between_modules():
     """Cleanup asyncio state when switching between test modules."""
@@ -22,8 +26,11 @@ def _teardown_sweep_coroutines(request):
     hook = _install_unraisable_suppressor(request.node.name)
     yield
     _restore_unraisable_hook(hook)
-    gc.collect()
     _close_all_coros()
+    # Batch gc.collect instead of every single test - reduces overhead ~2s for 1249 tests
+    _gc_counter[0] += 1
+    if _gc_counter[0] % _GC_BATCH_INTERVAL == 0:
+        gc.collect()
 
 
 _KNOWN_LEAK_PATTERNS = [
