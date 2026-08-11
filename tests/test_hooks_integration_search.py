@@ -34,10 +34,15 @@ def real_orchestrator(tmp_path):
         "enforce_on_write": False,
     }
     orch = MemoryOrchestrator(config=orch_config)
-    # Remove mempalace source contamination — tests must use only hermes_default
+    # Remove mempalace source contamination — tests must use only hermes_default (GAP045)
     if "mempalace" in orch.memory_sources:
         orch._source_enabled["mempalace"] = False
         del orch.memory_sources["mempalace"]
+    # Remove session_history source contamination (GAP-057) — SessionSearchMemorySource
+    # is auto-registered during init; real FTS5 data from user state.db contaminates tests
+    if "session_history" in orch.memory_sources:
+        orch._source_enabled["session_history"] = False
+        del orch.memory_sources["session_history"]
     return orch
 
 
