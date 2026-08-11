@@ -48,6 +48,8 @@ setup(
         ],
         "dev": [
             "pytest>=7.0",
+            "pytest-xdist>=3.0",    # parallel test execution for CI speed
+            "pytest-timeout>=2.0",   # per-test timeout to prevent hangs
         ],
     },
     entry_points={
