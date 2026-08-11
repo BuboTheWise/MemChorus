@@ -38,7 +38,14 @@ def _make_orch(hermes_dir: str, **extra_config):
     }
     config["mempalace_config"].update(extra_config.pop("mempalace_config", {}))
     config.update(extra_config)
-    return MemoryOrchestrator(config)
+    orch = MemoryOrchestrator(config)
+    # Neutralize session_history source (GAP-057) — SessionSearchMemorySource is
+    # auto-registered during init; leave it active and real FTS5 data from the
+    # user's state.db contaminates deterministic test results.
+    if "session_history" in orch.memory_sources:
+        orch._source_enabled["session_history"] = False
+        del orch.memory_sources["session_history"]
+    return orch
 
 
 class TestGAP010_SourceEnableDisable(unittest.TestCase):
