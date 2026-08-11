@@ -7,6 +7,7 @@ Covers:
 - detect() falls back to shutil.which("mempalace-mcp") binary on PATH
 - detect() logs actionable YAML guidance when no transport found
 - detect() with missing/invalid config files
+- Caching: module-level cache suppresses repeated detection/warnings (GAP-021)
 """
 
 import os
@@ -18,6 +19,20 @@ from unittest.mock import patch, mock_open
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from memchorus.mempalace_memory_source import _McpTransportDetector
+
+
+# --- Autouse fixture: clear cache before every test to avoid cross-test pollution ---
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mcp_detector_cache_reset():
+    """Reset module-level cache and warning flag before each test."""
+    _McpTransportDetector.clear_cache()
+    yield
+    # Also clear after, so lingering state doesn't affect later tests
+    _McpTransportDetector.clear_cache()
 
 
 class TestMcpTransportDetectorPathDiscovery:
@@ -200,3 +215,158 @@ class TestMcpTransportDetectorLogging:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("command:" in r.message for r in warnings)
         assert any("/path/to/mempalace-mcp" in r.message for r in warnings)
+
+
+class TestMcpTransportDetectorCaching:
+    """Verify module-level caching of detection results (GAP-021 fix).
+
+    Ensures that:
+    - The first detect() call runs the full chain and caches its result.
+    - Subsequent calls within TTL return the cached value without re-running.
+    - clear_cache() resets everything so the next detect() is a fresh scan.
+    - The 'no transport found' warning is emitted at most once per cache window.
+    """
+
+    def _reset_cache(self):
+        """Helper: wipe cache + warning flag before each test."""
+        _McpTransportDetector.clear_cache()
+
+    def test_first_call_caches_result(self, tmp_path):
+        """First detect() should populate the module-level cache."""
+        self._reset_cache()
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+        )
+
+        result = _McpTransportDetector.detect(config_path=config_file)
+
+        cached_result, cached_ts = _McpTransportDetector._DETECTION_CACHE
+        assert cached_result is result
+        assert cached_result is not None
+        assert cached_ts > 0.0
+
+    def test_second_call_returns_cached_value_without_detection(self, tmp_path):
+        """Second detect() within TTL should return cache immediately."""
+        self._reset_cache()
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+        )
+
+        first = _McpTransportDetector.detect(config_path=config_file)
+        # Modify the config after first call — should be invisible due to cache
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /fake/path/python -m other\n"
+        )
+
+        second = _McpTransportDetector.detect(config_path=config_file)
+
+        assert first is not None
+        # Should return the cached result, not the modified config
+        assert second["command"] == "/usr/bin/python3"
+
+    def test_clear_cache_resets_everything(self, tmp_path):
+        """clear_cache() should reset both cache and warning flag."""
+        self._reset_cache()
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+        )
+
+        _McpTransportDetector.detect(config_path=config_file)
+
+        # Verify cache was populated
+        _, ts = _McpTransportDetector._DETECTION_CACHE
+        assert ts > 0.0
+
+        # Clear everything
+        _McpTransportDetector.clear_cache()
+
+        cached_result, cached_ts = _McpTransportDetector._DETECTION_CACHE
+        assert cached_result is None
+        assert cached_ts == 0.0
+        assert _McpTransportDetector._WARNING_EMITTED is False
+
+    def test_warning_emitted_only_once_per_session(self, tmp_path, caplog):
+        """The 'no transport found' warning should fire at most once."""
+        import logging
+        self._reset_cache()
+        caplog.set_level(logging.WARNING)
+
+        with patch("shutil.which", return_value=None):
+            _McpTransportDetector.detect(config_path=tmp_path / "nonexistent.yaml")
+            _McpTransportDetector.detect(config_path=tmp_path / "nonexistent2.yaml")
+            _McpTransportDetector.detect(config_path=tmp_path / "nonexistent3.yaml")
+
+        warning_count = sum(
+            1 for r in caplog.records
+            if r.levelno == logging.WARNING and "no MCP transport found" in r.message
+        )
+        assert warning_count == 1, f"Expected 1 warning, got {warning_count}"
+
+    def test_cached_none_result_suppresses_further_warnings(self, tmp_path, caplog):
+        """Once detect() returns None (no transport), repeated calls add no warnings."""
+        import logging
+        self._reset_cache()
+        caplog.set_level(logging.WARNING)
+
+        with patch("shutil.which", return_value=None):
+            _McpTransportDetector.detect(config_path=tmp_path / "nonexistent.yaml")
+
+        first_warning_count = sum(
+            1 for r in caplog.records
+            if r.levelno == logging.WARNING and "no MCP transport found" in r.message
+        )
+
+        # Clear log and call again — should hit cache, produce no new warnings
+        caplog.clear()
+        with patch("shutil.which", return_value=None):
+            _McpTransportDetector.detect(config_path=tmp_path / "nonexistent.yaml")
+
+        second_warning_count = sum(
+            1 for r in caplog.records
+            if r.levelno == logging.WARNING and "no MCP transport found" in r.message
+        )
+
+        assert first_warning_count == 1
+        assert second_warning_count == 0, "Cached None should suppress duplicate warning"
+
+    def test_ttl_expiry_causes_redetection(self, tmp_path):
+        """After TTL expires, detect() re-runs the full detection chain."""
+        self._reset_cache()
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+        )
+
+        first = _McpTransportDetector.detect(config_path=config_file)
+        assert first is not None
+        assert first["command"] == "/usr/bin/python3"
+
+        # Modify config and fake TTL expiry
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  mempalace:\n"
+            "    command: /bin/sh -m other\n"
+        )
+        _McpTransportDetector._DETECTION_CACHE = (first, -1000.0)  # force expiry
+
+        second = _McpTransportDetector.detect(config_path=config_file)
+        # /bin/sh should exist on Linux; guard against None from failed parse
+        assert second is not None, "detect() returned None after TTL expiry"
+        assert second["command"] == "/bin/sh"
