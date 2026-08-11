@@ -686,23 +686,9 @@ def _build_search_terms(kwargs: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _sanitize_profile(raw: str) -> str:
-    """Sanitize HERMES_PROFILE for safe filesystem path use.
-
-    Prevents OSError 36 (File name too long) when profile env var contains
-    Korrupted content (e.g. Kanban task body text). Returns 'default' on any
-    invalid value.
-    """
-    if not raw:
-        return "default"
-    if re.fullmatch(r'[A-Za-z0-9_-]{1,48}', raw):
-        return raw
-    return "default"
-
-
-# Per-profile override: reads config.yaml memchorus.hook_char_limit before global default
 def _resolve_char_limit() -> int:
     """Return per-profile char budget if set, else global default."""
+    from memchorus import _sanitize_profile
     try:
         profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
         cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")

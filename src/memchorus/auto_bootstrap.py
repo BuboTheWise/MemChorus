@@ -61,31 +61,6 @@ _DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
 
 # --- helpers ----------------------------------------------------------------
 
-def _sanitize_profile_name(raw: str) -> str:
-    """Sanitize a profile name for safe use in filesystem paths.
-
-    Profile names become directory components under ~/.hermes/profiles/.
-    If HERMES_PROFILE env var is corrupted (e.g. containing Kanban task body
-    text), allowing the raw value into path construction produces OSError 36
-    "File name too long". This function enforces valid profile name semantics:
-
-      - Must be 1-48 chars of [a-zA-Z0-9_-] only.
-      - Anything else falls back to 'default'.
-
-    Prevents both excessively long paths and path traversal.
-    """
-    if not raw:
-        return "default"
-    import re as _re
-    if _re.fullmatch(r'[A-Za-z0-9_-]{1,48}', raw):
-        return raw
-    logger.warning(
-        "HERMES_PROFILE contained invalid value %r — falling back to 'default' "
-        "to prevent path corruption (was %d chars)", raw[:80], len(raw)
-    )
-    return "default"
-
-
 def _resolve_hermes_profile() -> str:
     """Return the active Hermes profile name.
 
@@ -95,7 +70,8 @@ def _resolve_hermes_profile() -> str:
 
     Returns a sanitized profile string safe for use in filesystem paths.
     """
-    return _sanitize_profile_name(os.environ.get("HERMES_PROFILE", "default"))
+    from memchorus import _sanitize_profile
+    return _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
 
 
 def _load_yaml_config() -> Dict[str, Any]:

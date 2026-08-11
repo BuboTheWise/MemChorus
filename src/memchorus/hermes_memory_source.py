@@ -25,24 +25,14 @@ def _resolve_hermes_memory_dir(default: str = "~/.hermes/memories") -> str:
     The caller can always override via config['data_dir'] — this function
     only supplies the default path.
     """
-    profile = _sanitize_profile(os.environ.get("HERMES_PROFILE"))
-    if profile:
+    from memchorus import _sanitize_profile
+    raw = os.environ.get("HERMES_PROFILE")
+    if not raw:
+        return os.path.expanduser(default)
+    profile = _sanitize_profile(raw)
+    if profile != "default":
         return os.path.expanduser(f"~/.hermes/profiles/{profile}/memories")
     return os.path.expanduser(default)
-
-
-def _sanitize_profile(raw):
-    """Sanitize a profile name for safe use in filesystem paths.
-
-    Prevents OSError 36 (File name too long) when the env var is corrupted.
-    Valid profile names are 1-48 chars of [a-zA-Z0-9_-].
-    """
-    if not raw:
-        return None
-    import re as _re
-    if _re.fullmatch(r'[A-Za-z0-9_-]{1,48}', raw):
-        return raw
-    return "default"
 
 
 class HermesDefaultMemorySource(MemorySource):
