@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import sys
+import time
 import asyncio
 from datetime import timedelta
 from pathlib import Path
@@ -101,7 +102,20 @@ class _McpTransportDetector:
 
     or ``None`` when no override is configured, allowing the caller to fall
     through to the existing discovery chain.
+
+    **Caching (v2.3):** Results are cached at module level for 60 seconds to
+    avoid redundant config.yaml parsing, PATH lookups, and warning spam when
+    multiple ``MemoryOrchestrator`` instances are created in the same process.
+    The cache can be cleared manually via ``_McpTransportDetector.clear_cache()``
+    if the user changes config between runs.
     """
+
+    # Module-level cache: (result_dict_or_None, timestamp) with 60s TTL.
+    _DETECTION_CACHE: tuple[Optional[Dict[str, Any]], float] = (None, 0.0)
+    _CACHE_TTL: float = 60.0
+    # Track whether the "no transport found" warning has already been emitted
+    # so we don't spam the user across multiple orchestrator instances.
+    _WARNING_EMITTED: bool = False
 
     @staticmethod
     def _find_config() -> Optional[Path]:
@@ -142,6 +156,9 @@ class _McpTransportDetector:
     @staticmethod
     def _log_config_guidance() -> None:
         """Log actionable guidance when no MCP transport is found."""
+        if _McpTransportDetector._WARNING_EMITTED:
+            return  # suppress repeated warnings across orchestrator instances
+        _McpTransportDetector._WARNING_EMITTED = True
         yaml_snippet = (
             "\n  mcp_servers:\n"
             "    mempalace:\n"
@@ -156,6 +173,17 @@ class _McpTransportDetector:
         )
 
     @staticmethod
+    def clear_cache() -> None:
+        """Clear the detection cache and warning flag.
+
+        Call this if you change Hermes config.yaml between orchestrator runs
+        or during tests.  Resets both the result cache and the one-shot
+        warning guard so the next ``detect()`` re-runs the full scan.
+        """
+        _McpTransportDetector._DETECTION_CACHE = (None, 0.0)
+        _McpTransportDetector._WARNING_EMITTED = False
+
+    @staticmethod
     def detect(config_path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         """Parse config.yaml and return transport override, or None.
 
@@ -163,12 +191,24 @@ class _McpTransportDetector:
         invalid, or lacks the expected key path. Logs actionable guidance if
         nothing can be found at all.
 
+        **Caching:** On the first call (or after TTL expiry) this runs the full
+        detection chain.  The result and a timestamp are stored in
+        ``_DETECTION_CACHE`` for ``_CACHE_TTL`` seconds (default 60 s).
+        Subsequent calls within the window return the cached value without
+        re-parsing config.yaml or spawning subprocesses.
+
         Parameters
         ----------
         config_path :
             Explicit path to the Hermes config file.  When omitted, auto-locates
             via ``_find_config()``.
         """
+        now = time.monotonic()
+        cached_result, cached_ts = _McpTransportDetector._DETECTION_CACHE
+        if (now - cached_ts) < _McpTransportDetector._CACHE_TTL:
+            return cached_result
+
+        # --- cache miss or expired — run full detection -------------------
         target = config_path if config_path is not None else _McpTransportDetector._find_config()
 
         if target is None:
@@ -258,16 +298,19 @@ class _McpTransportDetector:
                 resolved["resolved_from"],
             )
 
+            _McpTransportDetector._DETECTION_CACHE = (resolved, now)
             return resolved
 
         # Fallback: try PATH discovery
         fallback = _McpTransportDetector._fallback_to_path()
         if fallback:
             logger.info("_McpTransportDetector: using PATH fallback -> %s", fallback["command"])
+            _McpTransportDetector._DETECTION_CACHE = (fallback, now)
             return fallback
 
         # Nothing found — show actionable guidance before giving up
         _McpTransportDetector._log_config_guidance()
+        _McpTransportDetector._DETECTION_CACHE = (None, now)
         return None
 
 
