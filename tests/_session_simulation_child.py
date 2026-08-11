@@ -21,6 +21,9 @@ def _make_orch(store_dir: str):
         "enforce_on_read": False,
         "enforce_on_write": False,
     })
+    # Disable mempalace to avoid spawning MCP server in subprocess (performance + isolation)
+    if 'mempalace' in orch.memory_sources:
+        orch.disable_source('mempalace')
     orch.register_source(
         HermesDefaultMemorySource(name="hermes_default", config={"memory_dir": store_dir}),
     )
