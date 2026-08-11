@@ -8,7 +8,7 @@ def get_version():
     with open(init_file, "r") as f:
         for line in f:
             if line.startswith("__version__"):
-                return line.split("=")[1].strip().strip("\"'")
+                return line.split("=")[1].strip().strip("'\"")
     return "0.0.0"
 
 

@@ -2,7 +2,14 @@
 import asyncio
 import gc
 import inspect as _inspect
+import os
 import sys
+
+# Ensure src/ is on sys.path so xdist workers can import memchorus regardless of CWD.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_src_path = os.path.join(_repo_root, "src")
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
 import types as _types
 import pytest
 

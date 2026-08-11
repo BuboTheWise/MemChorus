@@ -17,6 +17,8 @@ Provides-Extra: mcp
 Requires-Dist: mcp<2.0,>=1.0; extra == "mcp"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-xdist>=3.0; extra == "dev"
+Requires-Dist: pytest-timeout>=2.0; extra == "dev"
 Dynamic: author
 Dynamic: classifier
 Dynamic: description

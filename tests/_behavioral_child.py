@@ -107,6 +107,10 @@ orch_config = {
 
 orch = MemoryOrchestrator(config=orch_config)
 
+# Disable mempalace to avoid spawning MCP server in subprocess (performance + isolation)
+if 'mempalace' in orch.memory_sources:
+    orch.disable_source('mempalace')
+
 # Point hermes_default source at shared temp directory
 src = orch.memory_sources.get("hermes_default")
 if src is None:

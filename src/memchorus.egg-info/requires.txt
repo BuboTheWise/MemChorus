@@ -3,6 +3,8 @@ pyyaml>=5.4
 
 [dev]
 pytest>=7.0
+pytest-xdist>=3.0
+pytest-timeout>=2.0
 
 [mcp]
 mcp<2.0,>=1.0
