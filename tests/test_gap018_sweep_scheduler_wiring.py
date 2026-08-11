@@ -100,11 +100,13 @@ class TestSchedulersweepExecution(unittest.TestCase):
         lm = LifecycleManager(config=cfg, orchestrator=orch)
 
         sweep_count = [0]  # closure counter
+        sweep_done = threading.Event()
 
         original_sweep = lm.sweep
 
         def counted_sweep(*args, **kwargs):
             sweep_count[0] += 1
+            sweep_done.set()
             try:
                 return original_sweep(*args, **kwargs)
             except Exception as e:
@@ -116,8 +118,7 @@ class TestSchedulersweepExecution(unittest.TestCase):
         scheduler.start()
 
         try:
-            time.sleep(3)
-
+            sweep_done.wait(timeout=10)
             self.assertGreater(
                 sweep_count[0], 0,
                 "At least one sweep cycle should have triggered."
@@ -143,12 +144,16 @@ class TestSchedulersweepExecution(unittest.TestCase):
         lm = LifecycleManager(config=cfg, orchestrator=orch)
 
         sweep_calls = [0]
-        block_event = threading.Event()
+        first_sweep_start = threading.Event()
+        first_sweep_finished = threading.Event()
+        stop_event = threading.Event()
 
         def blocking_sweep(*a, **kw):
             sweep_calls[0] += 1
-            # Hold for 4 seconds so the second tick hits _overlapping_sweep=True
-            time.sleep(4)
+            if sweep_calls[0] == 1:
+                first_sweep_start.set()
+                # Hold briefly so the second tick hits _overlapping_sweep=True
+                first_sweep_finished.wait(timeout=5)
 
         lm.sweep = blocking_sweep  # type: ignore[attr-defined]
 
@@ -156,10 +161,11 @@ class TestSchedulersweepExecution(unittest.TestCase):
         scheduler.start()
 
         try:
-            # Wait 7 seconds (~7 intervals). First sweep starts, second tick hits
-            # the overlap guard. After first sweep finishes (4s), subsequent ticks
-            # run but find no overlap again. We only care that the first one ran at all.
-            time.sleep(7)
+            # Wait for first sweep to start, then let it finish after a short delay
+            first_sweep_start.wait(timeout=10)
+            time.sleep(1)  # brief hold so second tick can hit overlap guard
+            first_sweep_finished.set()
+
             self.assertGreaterEqual(
                 sweep_calls[0], 1,
                 "At least one sweep must complete."
@@ -200,6 +206,7 @@ class TestSchedulershutdownGraceful(unittest.TestCase):
     """SweepScheduler.stop() can be called without exception."""
 
     def test_stop_twice_is_safe(self):
+        """Calling stop() twice must not raise."""
         from memchorus.lifecycle_manager import (
             LifecycleManager,
             SweepScheduler,
@@ -208,12 +215,27 @@ class TestSchedulershutdownGraceful(unittest.TestCase):
 
         orch = mock.MagicMock()
         orch.memory_sources = {}
-        cfg = _resolve_lifecycle_config({"enabled": True})
+        cfg = _resolve_lifecycle_config({
+            "enabled": True,
+            "sweep_interval_hours": 1 / 3600,  # ~1 second interval
+        })
         lm = LifecycleManager(config=cfg, orchestrator=orch)
         scheduler = SweepScheduler(manager=lm)
         scheduler.start()
 
-        scheduler.stop()
+        first_stop_ok = threading.Event()
+
+        # Verify stop returns within reasonable time (not blocked for hours)
+        def stop_in_thread():
+            scheduler.stop()
+            first_stop_ok.set()
+
+        t = threading.Thread(target=stop_in_thread)
+        t.start()
+        ok = first_stop_ok.wait(timeout=5)
+        self.assertTrue(ok, "First stop() should return within 5 seconds (was blocked for too long)")
+        t.join(timeout=5)
+
         scheduler.stop()  # Must not raise
 
 

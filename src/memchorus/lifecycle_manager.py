@@ -589,6 +589,7 @@ class SweepScheduler:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._overlapping_sweep = False
+        self._stop_event = threading.Event()
 
     @property
     def is_running(self) -> bool:
@@ -601,6 +602,7 @@ class SweepScheduler:
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="memchorus-sweep")
         self._thread.start()
         logger.info("SweepScheduler: started (interval=%ds)", self._interval_secs)
@@ -608,8 +610,9 @@ class SweepScheduler:
     def stop(self) -> None:
         """Stop the scheduler and wait for any in-progress sweep."""
         self._running = False
+        self._stop_event.set()
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=60)
         self._thread = None
         logger.info("SweepScheduler: stopped")
 
@@ -617,8 +620,7 @@ class SweepScheduler:
 
     def _run_loop(self) -> None:
         while self._running:
-            time.sleep(self._interval_secs)
-            if not self._running:
+            if self._stop_event.wait(self._interval_secs):
                 break
             with self._lock:
                 if self._overlapping_sweep:
