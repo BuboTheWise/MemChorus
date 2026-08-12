@@ -1,0 +1,136 @@
+# Third-Party Agent Onboarding — MemChorus v1.6.0
+
+Self-contained installation guide for external agents pointing at this repository.
+
+## What You Are Installing
+
+MemChorus is a memory orchestration layer that sits between an AI agent and multiple underlying knowledge stores. It routes, scores, deduplicates, and caches memory operations across pluggable backends so the agent gets relevant context without wasting tokens or compute on every read.
+
+---
+
+## System Requirements (minimum)
+
+| Item |
+|------|
+| Python 3.8+ with `pip` or alternative package manager |
+| An isolated virtual environment for the install (venv, pipx, conda — your choice) |
+
+Optional: If you have [MemPalace](https://github.com/MemPalace/mempalace) installed as an MCP server, MemChorus will connect to it automatically and gain knowledge graph storage plus vector-backed semantic search. Everything still works without MemPalace — the system falls back to local file cache transparently.
+
+---
+
+## Installation Recipes
+
+### 1. Quick install (core orchestrator only)
+
+```bash
+python -m venv /path/to/your-venv
+source /path/to/your-venv/bin/activate  # Linux/macOS; use 'activate' on Windows
+pip install "memchorus @ git+https://github.com/BuboTheise/MemChorus.git@master"
+```
+
+Verify the import works:
+```python
+python -c "from memchorus.orchestrator import MemoryOrchestrator; print('OK')"
+```
+
+### 2. Full MCP connectivity (recommended)
+
+Requires MemPalace installed in your environment. Install via pipx or into your venv whichever you prefer:
+
+```bash
+pip install "memchorus[mcp] @ git+https://github.com/BuboTheWise/MemChorus.git@master"
+```
+
+MemPalace itself is a separate package:
+
+```bash
+pipx install mempalace        # if pipx is available, OR
+pip install mempalace         # into an isolated venv, OR
+hermes mcp add mempalace      # if your orchestration platform has built-in MCP config management
+```
+
+You'll need a `~/.hermes/config.yaml` (or equivalent) with MemPalace command resolution so the MCP stdio transport can find it:
+
+```yaml
+mcp_servers:
+  mempalace:
+    command: /path/to/python
+    args: ["-m", "mempalace.mcp_server"]
+```
+
+### 3. Development install
+
+```bash
+git clone https://github.com/BuboTheWise/MemChorus.git
+cd MemChorus
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,mcp]"    # editable mode for active development
+```
+
+---
+
+## Configuration (optional)
+
+MemChorus works without any configuration file — HermesDefaultMemorySource is always available because it maps directly to local disk. To tune behaviour, drop a `~/.hermes/memchorus_config.yaml` with the sections you need:
+
+```yaml
+# Source priority and scoring
+priority_order:
+  - mempalace          # try MemPalace first on reads (if available)
+  - hermes_default     # fall back to local files always
+
+lifecycle:
+  enabled: false                     # master toggle — default false preserves write-only mode
+
+```
+
+All remaining sub-keys are optional with documented defaults. See [LIFECYCLE.md](./LIFECYCLE.md) for the full retention and eviction spec if you want automatic sweep behaviour.
+
+---
+
+## Verifying Installation Against MemPalace Backend
+
+Once both packages are installed, you can run the synthetic natural test included in this repo:
+
+```python
+# Requires a live MemPalace database with at least some content indexed
+cd tests
+python3 test_synthetic_natural_e2e.py
+```
+
+Expected output shows ten tests covering persistent MCP session liveness, save + retrieve roundtrip, semantic search against pre-existing vector store data, stability under load and profile isolation. All passing confirms production readiness.
+
+---
+
+## Data Isolation Model
+
+Each agent profile should use its own MemPalace database path. The `profile` parameter in the MemChorus config maps to `<base>/profiles/<profile_name>` under your mempalace home directory:
+
+```yaml
+sources:
+  mempalace:
+    name: my_agent_profile
+    mcp_timeout: 90
+```
+
+MemPalace will store all vectors under that resolved path so data cannot leak between agents sharing the same host.
+
+## Dependencies And Version Constraints
+
+| Dependency | Allowed Version Range | Notes |
+|---|---|---|
+| Pydantic | `>=2.0, <3.0` | Core orchestrator types rely on V2 schema validation |
+| MCP SDK (optional `[mcp]`) | `>=1.0, <2.0` | Pins out breaking client API and transport changes | 
+
+---
+
+## Troubleshooting Common Issues
+
+- **"No such file or directory: config.yaml"** → HermesDefaultMemorySource works without it. Only MemPalace needs the mcp_servers block.
+- **MemPalace vector store returns zero results on initial load** → This is normal — semantic search indexes need at least one drawer saved before ChromaDB creates embeddings. Run a save operation then query again.
+- **`ChromaInternalError` during saves** → Usually indicates an inherited database state with corrupt metadata segments. Restoring a clean checkpoint or starting a new profile path resolves it.
+
+---
+
+## License — see root directory LICENSE file
