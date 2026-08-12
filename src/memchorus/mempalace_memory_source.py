@@ -415,20 +415,53 @@ class _McpClient:
         # Always discover python_bin as a fallback so _python_bin attribute exists.
         self._python_bin = self._discover_python()
 
+    # Patterns in MemPalace stderr that are informational noise, not errors.
+    _NOISE_PATTERNS = [
+        "HNSW mtime gap",
+        "MemPalace MCP Server starting",
+        "Embedding function initialized",
+        "stdin EOF -- client disconnected",
+    ]
+
+    @classmethod
+    def _filter_command(cls, python: str) -> tuple[str, list]:
+        """Return a command that runs MemPalace MCP server via a thin stderr filter.
+
+        Spawns a tiny Python -c wrapper that starts mempalace.mcp_server and
+        filters out repetitive informational noise from stderr while letting
+        real errors / warnings pass through untouched.
+        """
+        # Build the filter script as plain string to avoid f-string escaping issues.
+        filtered_patterns = [repr(p) for p in cls._NOISE_PATTERNS]
+        patterns_str = ", ".join(filtered_patterns)
+        script_lines = [
+            'import subprocess, sys;',
+            "p=subprocess.Popen(" + repr([python, "-m", "mempalace.mcp_server"]) +
+            ", stderr=subprocess.PIPE);",
+            "for line in p.stderr:",
+            "  s=line.decode('utf-8','replace').strip();",
+            f"  if not any(pat in s for pat in [{patterns_str}]):",
+            "    print(s, file=sys.stderr);",
+            "rc=p.wait(); sys.exit(rc)",
+        ]
+        wrapper = "\n".join(script_lines)
+        return (python, ["-c", wrapper])
+
     def _get_transport(self) -> tuple[str, list]:
         """Return (command, args) for launching the MCP subprocess.
 
         Priority 0: config.yaml override from ``_McpTransportDetector``.
-        Fallback: self._python_bin + standard module path.
+        Fallback: filtered python command via :meth:`_filter_command` that suppresses
+        informational noise while letting real errors through.
         """
         if self._transport_override:
             return (self._transport_override["command"], list(self._transport_override["args"]))
-        return (self._python_bin, ["-m", "mempalace.mcp_server"])
+        return self._filter_command(self._python_bin)
 
     def _discover_python(self) -> str:
         """Discover a Python interpreter for the MCP subprocess.
 
-        Discovery chain (highest → lowest priority):
+        Discovery chain (highest to lowest priority):
         1. ``config.get("python_bin")`` -- explicit user override
         2. ``shutil.which("mempalace-python")`` -- dedicated shim on PATH
         3. pipx venv locations:
