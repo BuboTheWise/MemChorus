@@ -400,6 +400,9 @@ class _McpClient:
         self._connected = False
         self._config = config or {}
 
+        # Persistent session (avoids per-call subprocess death that crashes ChromaDB)
+        self._persistent_session = None
+
         # Step 0: Check Hermes config.yaml for mcp_servers.mempalace.command override
         self._transport_override: Optional[Dict[str, Any]] = _McpTransportDetector.detect()
 
@@ -505,26 +508,46 @@ class _McpClient:
         return py
 
     def connect(self) -> bool:
-        """Start server subprocess, run initialize handshake, return True/False."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp.client.session import ClientSession
+        """Start server subprocess via persistent session (avoids per-call death).
 
+        Returns True when a live, initialized persistent session is ready for tool calls.
+
+        Falls back to the legacy one-shot probe model if persistent mode fails.
+        """
         cmd, args = self._get_transport()
         if not Path(cmd).exists():
             logger.warning("MCP transport command does not exist: %s", cmd)
             return False
 
         is_override = bool(self._transport_override)
-        server_params = StdioServerParameters(
-            command=cmd,
-            args=args,
-        )
-
         if is_override:
             logger.info(
-                "connect: using config.yaml transport override (command=%r, args=%r)",
+                "connect: using config.yaml override (command=%r, args=%r)",
                 cmd, args,
             )
+
+        # ---- Persistent session mode: one subprocess stays alive across calls ----
+        try:
+            from memchorus.mempalace_persistent_session import PersistentMcpSession
+            self._persistent_session = PersistentMcpSession(
+                command=cmd, args=args, timeout=self.timeout
+            )
+            started = self._persistent_session.start()
+            if started:
+                logger.info("connect: persistent MCP session initialized (timeout=%ss)",
+                            self.timeout)
+                self._connected = True
+                return True
+        except Exception as exc:
+            logger.warning(
+                "connect: persistent session failed (%s:%s) falling back to per-call model",
+                type(exc).__name__, exc,
+            )
+
+        # ---- Legacy one-shot probe + per-call subprocess fallback ----
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp.client.session import ClientSession
+        server_params = StdioServerParameters(command=cmd, args=args)
 
         async def _do_init():
             async with stdio_client(server_params) as (r_stream, w_stream):
@@ -538,19 +561,10 @@ class _McpClient:
 
         try:
             result = _run_async(asyncio.wait_for(_do_init(), timeout=self.timeout))
-            # When _do_init completes without error it returns True explicitly.
-            # _run_async returns None only when it catches an internal
-            # BaseExceptionGroup (anyio TaskGroup teardown).  Distinguish the two:
             if result is not True:
-                if result is None:
-                    logger.warning(
-                        "connect: MCP probe returned None — likely anyio "
-                        "BaseExceptionGroup during teardown; server may have "
-                        "started but cleaned up before initialise finished"
-                    )
                 self._connected = False
                 return False
-            logger.info("connect: MCP handshake successful (timeout=%ss)", self.timeout)
+            logger.info("connect: legacy per-call probe succeeded (persistent unavailable)")
             self._connected = True
             return True
         except BaseExceptionGroup as exc:
@@ -562,25 +576,38 @@ class _McpClient:
             self._connected = False
             return False
         except Exception as exc:
-            logger.warning(
-                "connect: MCP init failed with %s: %s",
-                type(exc).__name__,
-                exc,
-            )
+            logger.warning("connect: legacy probe failed with %s: %s",
+                           type(exc).__name__, exc)
             self._connected = False
             return False
 
     # -- tool calling ---------------------------------------------------------------
 
     def _call(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Open subprocess + session, run one tool call, clean up.
+        """Route through persistent session or fall back to per-call subprocess.
 
-        Handles broken-pipe / OSError via graceful degradation: if a previously‑alive
-        connection dies mid‑flight we reset ``_connected`` so the next call triggers a
-        fresh connect attempt and avoids repeatedly hammering a dead child process.
+        When a live persistent session exists (its ``alive`` flag is True), the
+        call goes through that session so ChromaDB gets a stable connection and
+        can flush its WAL between operations.  If the persistent session dies
+        mid-flight, we tear it down and fall back to the legacy one-shot model
+        so the operation still completes.
         """
-        cmd, args = self._get_transport()
+        # ---- Persistent session path ----
+        if self._persistent_session is not None and self._persistent_session.alive:
+            result = self._persistent_session.call_tool(name, arguments)
+            if result is not None:
+                return result
+            logger.warning("_call: persistent session died mid-flight — tearing down for reconnect")
+            try:
+                self._persistent_session.stop()
+            except Exception as exc:
+                logger.warning("_call: stop persistent session failed: %s", exc)
+            finally:
+                self._persistent_session = None
+                self._connected = False
 
+        # ---- Legacy per-call subprocess fallback ----
+        cmd, args = self._get_transport()
         if not Path(cmd).exists():
             return None
 
@@ -733,11 +760,22 @@ class _McpClient:
             [data] if isinstance(data, dict) else []
         )
 
+    def close(self):
+        """Shut down the persistent session if one exists."""
+        if self._persistent_session is not None:
+            try:
+                self._persistent_session.stop()
+            except Exception as exc:
+                logger.warning("_McpClient.close: stop failed: %s", exc)
+            finally:
+                self._persistent_session = None
+                self._connected = False
+
     @property
     def is_alive(self) -> bool:
-        # With per-call subprocess model, `is_alive` means the connection was
-        # probed successfully at init time.  Individual calls may still fail,
-        # which is handled by returning None / triggering fallback.
+        """Return True when either persistent session or legacy probe is live."""
+        if self._persistent_session is not None:
+            return self._persistent_session.alive
         return self._connected
 
 
