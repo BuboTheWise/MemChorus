@@ -141,6 +141,16 @@ class HitRateTracker:
             self._index[entry_key] = _default_entry_stats()
         return self._index[entry_key]
 
+    def register_save(self, entry_key: str) -> None:
+        """Register that *entry_key* was saved (initialises counters if new).
+
+        Called from the orchestrator save() hot path. ≤ 15 µs — no I/O."""
+        try:
+            with self._dir_lock:
+                self._ensure_entry(entry_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("register_save failed for %r: %s", entry_key, exc)
+
     def record_recallhit(self, entry_key: str) -> None:
         """Record that *entry_key* was returned in a recall result (+1 total_recalls)."""
         try:
