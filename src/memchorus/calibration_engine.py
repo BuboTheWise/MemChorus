@@ -181,11 +181,9 @@ class CalibrationEngine:
             )
             return dict(_DEFAULT_PARAMS)
 
-        # Feed observed counts into AdaptiveThreshold so it can compute hit_ratio.
-        for _ in range(max(saves, 1)):
-            self._adaptive.record_save()
-        for _ in range(recalls):
-            self._adaptive.record_recall()
+        # Feed observed counts directly into AdaptiveThreshold stats.
+        self._adaptive.stats.total_saves = max(saves, 1)
+        self._adaptive.stats.total_recalls = recalls
 
         current: Dict[str, float] = {
             "min_relevance_score": self.state.min_relevance_score,

@@ -73,50 +73,29 @@ class AdaptiveThreshold:
     EMA_ALPHA = 0.3              # exponential moving average dampening factor
 
     def __init__(self, calibration_window: int | None = None) -> None:
-        self.stats = HitRateStats(
-            calibration_window_size=calibration_window or HitRateStats.calibration_window_size.fget(HitRateStats())  # type: ignore[attr-defined]
-        )
-        if calibration_window is not None:
-            self.stats.calibration_window_size = max(10, min(100, calibration_window))
+        window_size = max(10, min(100, calibration_window)) if calibration_window is not None else 50
+        self.stats = HitRateStats(calibration_window_size=window_size)
 
     # -- public API -------------------------------------------------------
 
-    def record_save(self) -> None:
-        """Called inline during memory save — bookkeeping only."""
-        self.stats.total_saves += 1
-        if len(self.stats.recent_entries) >= self.stats.calibration_window_size:
-            self.stats.recent_entries.pop(0)
-        self.stats.recent_entries.append(0)
-
     def record_recall(self, entry_key_id: int | None = None) -> None:
-        """Increment recall counter for one successfully retrieved entry."""
         self.stats.total_recalls += 1
 
     def compute_adjustments(self, current: Dict[str, float],
                            writes_per_day: float | None = None) -> Dict[str, float]:
-        """Return adjusted parameter values bounded per-cycle.
-
-        Args:
-            current: Mapping of parameter names to their current values.
-            writes_per_day: Profile volume observable; used to scale thresholds.
-
-        Returns:
-            Updated mapping with all three parameters possibly adjusted.
-        """
+        """Return adjusted parameter values bounded per-cycle."""
         ratio = self.stats.hit_ratio
         ema_adjustment = self._ema_direction(ratio)
 
-        # Normalize for profile volume — high-volume profiles tolerate lower ratios,
-        # low-volume profiles need more aggressive thresholds
         volume_factor = 1.0
         if writes_per_day is not None:
             volume_factor = self._volume_normalization(writes_per_day)
 
         adjusted: Dict[str, float] = {}
         for param, bounds in PARAM_BOUNDS.items():
-            new_val = current.get(param, bounds.default)
+            old_val = current.get(param, bounds.default)
             delta = self._compute_delta(param, ratio, ema_adjustment, volume_factor)
-            new_val = max(bounds.minimum, min(bounds.maximum, new_val + delta))
+            new_val = max(bounds.minimum, min(bounds.maximum, old_val + delta))
             new_val = self._apply_per_cycle_cap(new_val, current.get(param, bounds.default), param)
             adjusted[param] = round(new_val, 4)
             logger.debug("adjusted %s: %.4f → %.4f (delta=%.4f)",
