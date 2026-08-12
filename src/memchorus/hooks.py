@@ -445,6 +445,9 @@ class MemChorusHooks:
         the process exits. Also deregisters the atexit handler so we don't double-flush
         if both on_session_end and atexit fire.
 
+        Auto-tuning: scans conversation history for user correction signals via
+        MistakeDetector and feeds noise/useful flags back to HitRateTracker (§10.2).
+
         Returns dict with flush confirmation or None if nothing to flush.
         """
         global _CAPTURE_BATCHER
@@ -474,6 +477,44 @@ class MemChorusHooks:
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_session_end failed — atexit still active. %s", exc, exc_info=True)
             return None
+
+        # Auto-tuning: session-end mistake detection (§10.2 turn-retrospective)
+        try:
+            orchestrator = _get_orchestrator()
+            if orchestrator is not None:
+                from memchorus.mistake_detector import MistakeDetector as _MD
+                from memchorus.hit_rate_tracker import HitRateTracker as _HRT
+
+                detector = _MD.get_instance()
+                tracker = _HRT.get_instance()
+
+                # Gather all user text from this session's conversation history
+                history = kwargs.get("conversation_history") or []
+                user_texts: List[str] = []
+                for m in history:
+                    if isinstance(m, dict):
+                        role = m.get("role", "")
+                        if role in ("user", "human"):
+                            text = m.get("content", "") or m.get("text", "")
+                            if text:
+                                user_texts.append(str(text))
+                    elif isinstance(m, str):
+                        user_texts.append(m)
+
+                total_noise = 0
+                total_useful = 0
+                for ut in user_texts:
+                    noise, useful = detector.classify_and_flag(ut)
+                    total_noise += noise
+                    total_useful += useful
+
+                if total_noise or total_useful:
+                    logger.info(
+                        "hooks: on_session_end auto-tuning — noise=%d useful=%d from %d user messages",
+                        total_noise, total_useful, len(user_texts),
+                    )
+        except Exception:  # pragma: no cover - graceful degradation
+            pass  # tracking failures never interrupt session teardown
 
         return {
             "source": "memchorus_session_end",

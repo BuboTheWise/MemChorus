@@ -36,6 +36,28 @@ from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
 
+# Auto-tuning: lazy imports to avoid hard dependency when modules are unavailable
+_HITRATE_TRACKER = None
+_MISTAKE_DETECTOR = None
+
+def _ensure_hit_rate_tracker():
+    global _HITRATE_TRACKER
+    if _HITRATE_TRACKER is None:
+        try:
+            from memchorus.hit_rate_tracker import HitRateTracker
+            _HITRATE_TRACKER = HitRateTracker.get_instance()
+        except (ImportError, ModuleNotFoundError):
+            pass  # graceful degradation - no hit rate tracking
+
+def _ensure_mistake_detector():
+    global _MISTAKE_DETECTOR
+    if _MISTAKE_DETECTOR is None:
+        try:
+            from memchorus.mistake_detector import MistakeDetector
+            _MISTAKE_DETECTOR = MistakeDetector.get_instance()
+        except (ImportError, ModuleNotFoundError):
+            pass  # graceful degradation - no mistake detection
+
 logger = logging.getLogger(__name__)
 
 
@@ -707,8 +729,29 @@ class MemoryOrchestrator:
                 # enrichment metadata.
                 logger.debug("Post-action enforcement failed for save('%s') — degrading gracefully", key)
         
+        # Auto-tuning: record successful save for hit-rate tracking (§10.2)
+        if saved:
+            _ensure_hit_rate_tracker()
+            if _HITRATE_TRACKER is not None:
+                try:
+                    _HITRATE_TRACKER.register_save(key)
+                except Exception:
+                    pass  # never fail a save due to tracking
+
         return saved
-    
+
+    def get_hit_rate_stats(self):
+        """Return current hit-rate statistics for the orchestrator instance.
+
+        Returns None if hit-rate tracking is unavailable."""
+        _ensure_hit_rate_tracker()
+        if _HITRATE_TRACKER is not None:
+            try:
+                return _HITRATE_TRACKER.get_all_stats()
+            except Exception:
+                pass
+        return None
+
     def retrieve(self, key: str) -> Optional[Any]:
         """
         Retrieve a memory from the most relevant source.
@@ -1031,6 +1074,14 @@ class MemoryOrchestrator:
             else:
                 dupes_removed += 1
         ranked = pruned_ranked
+
+        # Auto-tuning: track recall hits for returned entries (§10.2)
+        if ranked and _HITRATE_TRACKER is not None:
+            try:
+                for r in ranked[:effective_limit]:
+                    _HITRATE_TRACKER.record_recallhit(r.key)
+            except Exception:
+                pass  # never fail a search due to tracking
 
         # Convert RankedResult -> plain dict with score field — use original limit
         results = [
