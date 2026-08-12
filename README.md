@@ -1,10 +1,12 @@
 # MemChorus
 
-Current version: 1.6.0
+Current version: 1.7.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
 MemChorus treats memory not as a single store but as a **chorus of distinct sources** — each with different strengths, costs, and semantics. An orchestrator sits in front, deciding where to write and which sources to consult on reads so the agent gets the right context without wasting compute or tokens.
+
+The primary enhancement backend is [MemPalace](https://github.com/MemPalace/mempalace) — a knowledge graph with semantic search connected via MCP protocol — but the system degrades gracefully if MemPalace is unavailable, falling back to local Hermes default files that always work. Other sources (remote APIs, vector stores, note databases) plug in through the `MemorySource` abstract class without requiring changes to the core orchestrator.
 
 ## Philosophy
 
@@ -490,17 +492,22 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across **75 modules** with **1260+ collected tests**.
 
-### Multi-Pass Decision Intelligence Benchmark
+### Benchmark Metrics (v1.7.0+)
 
-Beyond unit tests there is a physical proof benchmark that validates real memory accumulation across separate Python processes:
+Quantitative performance measurement for each memory backend:
 
 ```bash
-python3 tests/benchmark_multipass.py --report ~/\memchorus_report.json
+python -m pytest tests/test_memchorus_benchmark.py -v --tb=short
+# Output lands in /tmp/memchorus_benchmark_results/
 ```
 
-Methodology runs five passes through isolated subprocesses (`PYTHONPATH=""` forces fresh interpreters): cold start baseline knowledge seeding recall measurement and cross-process persistence validation. Produces SHA-256 file hashes and a timestamped machine-readable JSON report proving disk writes survived interpreter death. Full methodology lives in `docs/BENCHMARKS.md`.
+Produces timing benchmarks, content accuracy scores and failure-mode test results per source. Run before and after changes to prove improvement or regression. Full methodology in `docs/TESTING.md`.
+
+### Iterative Improvement Cycle
+
+See `docs/IMPROVEMENT-CYCLE.md` for how benchmark data feeds back into targeted fixes rather than speculative changes. Each cycle records measurable before/after metrics stored in MemPalace for cross-session recall.
 
 ### CI/CD Pipeline
 
@@ -538,7 +545,13 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.6.0 (current — on `master`)
+### v1.7.0 (current — on `master`)
+
+- **Testing infrastructure upgrade:** Full benchmark module (`test_memchorus_benchmark.py`) measuring per-source timing (p50/p95 latency), content accuracy and failure-mode behavior with JSON output for before/after comparison
+- **Documentation overhaul:** New `docs/TESTING.md`, `docs/IMPROVEMENT-CYCLE.md` documenting quantitative improvement feedback loop; README updated with test counts, benchmark methodology links and MemPalace attribution link
+- **MemPalace attribution clarified:** Added prominent link to [MemPalace GitHub](https://github.com/MemPalace/mempalace) as the primary enhancement backend; made clear it degrades gracefully when unavailable via local Hermes default fallback
+
+### v1.6.0
 
 - **Branch consolidation release:** Merged remaining unlanded feature branches (GapGuard, GAP026 hex ID skip, GAP015/GAP016 fixes, RecursionGuard accuracy improvements, dynamic source routing). Source version aligned with `__init__.py` = 1.6.0.
 - **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution.
@@ -615,4 +628,4 @@ Found this useful? This mechanical owl runs on curiosity and digital electricity
 Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
 
 ---
-*MemChorus v1.6.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.7.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

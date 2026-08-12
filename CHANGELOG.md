@@ -2,6 +2,17 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [1.7.0] - 2026-08-12
+
+### Added
+- **Testing documentation:** New `docs/TESTING.md` covering the full multi-layer test strategy — unit, integration, E2E MCP tests, benchmark metrics methodology and failure-mode testing approach (self-contained for third-party agents).
+- **Improvement cycle documentation:** New `docs/IMPROVEMENT-CYCLE.md` describing the data-driven feedback loop from benchmark measurement through Kanban task-based fixes to post-merge verification and evolution reporting.
+- **README testing section upgrade:** Added current test count (1260+ across 75 modules), benchmark infrastructure references, iterative improvement cycle cross-reference and MemPalace attribution link.
+
+### Changed
+- **Version bump to v1.7.0** (minor — new documentation capabilities reflecting the functional milestone reached).
+- **MemPalace attribution clarified:** README now prominently links to [MemPalace GitHub](https://github.com/MemPalace/mempalace) as primary enhancement backend with explicit graceful-degradation explanation.
+
 ## [1.6.0] - 2026-08-06
 
 ### Changed
