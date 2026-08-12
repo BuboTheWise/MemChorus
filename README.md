@@ -368,6 +368,8 @@ MemChorus splits its runtime dependencies into a lean core plus optional extras 
 
 You can combine extras: `"memchorus[mcp,dev]"` for full development.
 
+**For third-party agents or automated installers:** See [docs/ONBOARDING.md](docs/ONBOARDING.md) for a self-contained installation manual that requires no prior local environment assumptions — covers clean venv setup, MemPalace dependency resolution, config paths and data isolation without implicit workspace knowledge.
+
 #### Version Compatibility Notes
 
 - **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
