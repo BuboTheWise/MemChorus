@@ -388,6 +388,14 @@ class MemChorusHooks:
             # dedup — results are buffered via ToolCaptureBatcher to avoid
             # hammering storage on every tool call (GAP026-C / GAP026-D).
             _try_save_with_batch(orchestrator, output_str)
+
+            # Workflow compliance check: fire non-blocking verification when
+            # kanban_complete is being called — see workflow_compliance module.
+            try:
+                _check_workflow_compliance_if_kanban_complete(output_str)
+            except Exception as wexc:
+                logger.debug("workflow compliance check skipped: %s", wexc, exc_info=True)
+
             return None
 
         except Exception as exc:  # pragma: no cover - graceful degradation
@@ -752,6 +760,48 @@ def _has_feedback_priority(item: Dict[str, Any]) -> bool:
     key = str(item.get("key") or "").lower()
     return ("feedback" in key or "correction" in key or
             item.get("_is_feedback", False))
+
+
+def _check_workflow_compliance_if_kanban_complete(tool_output: str) -> None:
+    """Non-blocking compliance check triggered by on_post_tool_call.
+
+    Detects whether the tool output mentions a ``kanban_complete`` invocation,
+    runs ``_verify_feedback_loop_complete()`` under its own try/except, and
+    logs violations to stdout / logger for downstream metadata injection.
+
+    This is intentionally non-blocking: failures, import errors, missing repos,
+    or any other issue degrade to a silent debug log line.
+    """
+    # Quick string match — if kanban_complete isn't in output, skip entirely
+    lower = tool_output.lower()
+    if "kanban_complete" not in lower:
+        return
+
+    try:
+        from memchorus.workflow_compliance import (
+            _verify_feedback_loop_complete,
+            get_violation_list,
+            has_critical,
+        )
+    except ImportError as ie:
+        logger.debug("workflow compliance module not available: %s", ie)
+        return
+
+    report = _verify_feedback_loop_complete()
+    if report.is_clean:
+        logger.info("hooks: workflow compliance clean — all 3 steps verified")
+        return
+
+    # Surface violations at INFO level so the agent and operator see them
+    lines = get_violation_list(report)
+    for line in lines:
+        logger.info("hooks: violation — %s", line)
+
+    if has_critical(report):
+        logger.warning(
+            "hooks: CRITICAL workflow compliance failure detected — "
+            "kanban_complete may proceed but metadata was not fully verified"
+        )
 
 
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
