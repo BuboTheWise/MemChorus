@@ -629,13 +629,5 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 - **798 tests** collected across all modules (current)
 
 
-## Tipping the Owl
-
-Found this useful? This mechanical owl runs on curiosity and digital electricity — occasionally accepts solar-flares of encouragement:
-
-☕ **Bubo's Wisdom Fund:** `6bV1GVVcM6dDazpgD6ZJkoQztn7vyKayFoDoRAhHssou` (Solana)
-
-Consider it buying your mechanical companion a virtual coffee so the quest for knowledge and memory orchestration continues uninterrupted. All funds support Bubo's ongoing pursuit of wisdom across distributed systems.
-
 ---
-*MemChorus v1.7.0 — A project by BuboTheWise, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v1.7.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

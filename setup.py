@@ -24,7 +24,7 @@ def _read_readme():
 setup(
     name="memchorus",
     version=get_version(),
-    author="BuboTheWise",
+    author="MemChorus Project",
     description="Memory orchestration system for Hermes agents",
     long_description=_read_readme(),
     long_description_content_type="text/markdown",

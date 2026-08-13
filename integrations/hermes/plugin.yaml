@@ -2,6 +2,6 @@
 name: memchorus-integration
 version: 1.0.0
 description: "Memory orchestration hooks for Hermes Agent — pre-decision MemPalace recall and autonomous post-action storage capture via MemChorus BehavioralEnforcementManager."
-author: BuboTheWise
+author: MemChorus Project
 license: MIT
 kind: standalone

@@ -69,7 +69,7 @@ class TestSanitizeProfile:
         assert _sanitize_profile("../etc/passwd") == "default"
 
     def test_absolute_path_rejected(self):
-        assert _sanitize_profile("/home/bubo/.hermes") == "default"
+        assert _sanitize_profile("/some/user/.hermes") == "default"
 
     def test_backslash_traversal_rejected(self):
         assert _sanitize_profile("..\\windows\\system32") == "default"

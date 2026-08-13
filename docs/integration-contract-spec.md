@@ -1,6 +1,6 @@
 # MemChorus-Hermes Integration Specification
 
-**Version:** 1.0.2 | **Status:** Implementation Complete (P0 fixes merged) | **Author:** Bubo
+**Version:** 1.0.2 | **Status:** Implementation Complete (P0 fixes merged) | **Author:** project lead
 **Created:** 2026-07-17 | **Last updated:** 2026-07-18
 **Verified against:** Hermes source HEAD, MemChorus master (3d7f82f) installed via pip
 **Tracked via:** PR #27 (merged as e3f4f89), simulation harness commit 3d7f82f
@@ -11,7 +11,7 @@
 
 MemChorus lifecycle hooks (`pre_llm_call`, `post_tool_call`, `on_session_start`) are correctly registered and discovered by Hermes at runtime — plugin entry points work, hooks fire repeatedly — but memory auto-capture and recall never actually function because of parameter contract mismatches between what Hermes passes and what MemChorus reads. The result: zero memories saved from tool execution, zero context recalled before LLM calls, despite the pipeline looking complete in documentation.
 
-### Evidence Summary (2026-07-16/17 Bubo verification)
+### Evidence Summary (2026-07-16/17 verification)
 
 | Symptom | Root Cause | Status | Verified By |
 |---------|------------|--------|-------------|
@@ -30,7 +30,7 @@ A previous analysis hypothesized that Hermes does not scan entry points and that
 
 ### 2.1 Hermes Hook Invocation Signature — post_tool_call
 
-**Source:** `/home/bubo/hermes-agent/model_tools.py:974-1025`
+**Source:** `hermes-agent/model_tools.py:974-1025`
 
 ```python
 invoke_hook(
@@ -57,7 +57,7 @@ invoke_hook(
 
 ### 2.2 Hermes Hook Invocation Signature — pre_llm_call
 
-**Source:** `/home/bubo/hermes-agent/agent/turn_context.py:522-570`
+**Source:** `hermes-agent/agent/turn_context.py:522-570`
 
 ```python
 _invoke_hook(
@@ -253,6 +253,6 @@ mcp mempalace_status
 
 | Version | Date | Author | Change |
 |---------|------|--------|--------|
-| 1.0.0 Draft | 2026-07-17 | Bubo | Initial spec from empirical verification |
-| 1.0.1 Updated | 2026-07-18 | Bubo | Added noise filter patterns (4.3), updated test plan with pytest automation, added simulation harness coverage table |
-| 1.0.2 Final | 2026-07-18 | Bubo | Marked P0 fixes as resolved (PR #27), corrected section numbering, aligned acceptance criteria with merged reality |
+| 1.0.0 Draft | 2026-07-17 | project lead | Initial spec from empirical verification |
+| 1.0.1 Updated | 2026-07-18 | project lead | Added noise filter patterns (4.3), updated test plan with pytest automation, added simulation harness coverage table |
+| 1.0.2 Final | 2026-07-18 | project lead | Marked P0 fixes as resolved (PR #27), corrected section numbering, aligned acceptance criteria with merged reality |

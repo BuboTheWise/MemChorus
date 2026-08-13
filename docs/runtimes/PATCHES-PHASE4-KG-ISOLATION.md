@@ -2,11 +2,11 @@
 
 ## Problem
 
-ChromaDB isolation was correct (each profile got its own ChromaDB via `MEMPALACE_PALACE_PATH`), but the KnowledgeGraph SQLite DB was shared across all profiles at `~/.mempalace/knowledge_graph.sqlite3`. This caused knowledge-fact cross-contamination between Bubo, Cthugha, and Grok-Reasoner.
+ChromaDB isolation was correct (each profile got its own ChromaDB via `MEMPALACE_PALACE_PATH`), but the KnowledgeGraph SQLite DB was shared across all profiles at `~/.mempalace/knowledge_graph.sqlite3`. This caused knowledge-fact cross-contamination between agent profiles.
 
 ## Fix
 
-Patch `mcp_server.py` (pipx-installed mempalace package at `/home/bubo/.local/share/pipx/venvs/mempalace/lib/python3.14/site-packages/mempalace/mcp_server.py`, line 31):
+Patch `mcp_server.py` (pipx-installed mempalace package at `$HOME/.local/share/pipx/venvs/mempalace/lib/python3.14/site-packages/mempalace/mcp_server.py`, line 31):
 
 **Before:**
 ```python
@@ -36,15 +36,13 @@ Each profile's KG now lives at `~/.mempalace/<profile>/knowledge_graph.sqlite3` 
 
 | Check | Result |
 |---|---|
-| palace_path resolves from env var | `/home/bubo/.mempalace/cthugha` ✅ |
-| _kg.db_path is profile-specific | `/home/bubo/.mempalace/cthugha/knowledge_graph.sqlite3` ✅ |
+| palace_path resolves from env var | `~/.mempalace/<profile>` ✅ |
+| _kg.db_path is profile-specific | `~/.mempalace/<profile>/knowledge_graph.sqlite3` ✅ |
 | KG is NOT global shared DB | Confirmed separate paths ✅ |
 
 ## Wrapper Scripts (Unchanged - Already Correct)
 
-- `~/.hermes/profiles/cthugha/scripts/run-mempalace-mcp-server.sh` — sets `MEMPALACE_PALACE_PATH=~/.mempalace/cthugha`
-- `~/.hermes/profiles/default/scripts/run-mempalace-mcp-server.sh` — sets `MEMPALACE_PALACE_PATH=~/.mempalace/bubo`
-- `~/.hermes/profiles/grok-reasoner/scripts/run-mempalace-mcp-server.sh` — sets `MEMPALACE_PALACE_PATH=~/.mempalace/grok-reasoner`
+- `~/.hermes/profiles/<profile>/scripts/run-mempalace-mcp-server.sh` — sets `MEMPALACE_PALACE_PATH=~/.mempalace/<profile>` for each agent profile
 
 ## Notes
 
