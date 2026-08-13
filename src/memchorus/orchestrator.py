@@ -481,8 +481,21 @@ class MemoryOrchestrator:
         return MemoryProfile.EPHEMERAL
 
     @staticmethod
-    def _try_save_to(source: MemorySource, key: str, value: Any) -> bool:
-        """Attempt to save to a source, returning success status."""
+    @staticmethod
+    def _try_save_to(source_name: str, source: MemorySource, key: str, value: Any) -> bool:
+        """Attempt to save to a source with targeted resilience for mempalace.
+
+        MemPalace wraps saves in retry+backoff (ChromaDB compactor crashes under load).
+        Other sources get direct save with exception catching.
+        Returns True if the memory was persisted at this target."""
+        if source_name == "mempalace":
+            from memchorus.storage_resilience import wrap_save_operation
+            ok, _ = wrap_save_operation(
+                fn=lambda: source.save(key, value),
+                drawer_id=key,
+            )
+            return ok
+
         try:
             return source.save(key, value)
         except Exception:
@@ -651,7 +664,8 @@ class MemoryOrchestrator:
                     merge_result = self._merge_engine.pre_save_check(key, value, source_name)
                     if not merge_result.should_proceed:
                         value = merge_result.final_value
-                saved = self.memory_sources[source_name].save(key, value)
+                src_obj = self.memory_sources[source_name]
+                saved = self._try_save_to(source_name, src_obj, key, value)
             # GAP008: invalidate cache on explicit-source write too -----
             if saved and key in self._retrieve_cache:
                 del self._retrieve_cache[key]
@@ -689,8 +703,8 @@ class MemoryOrchestrator:
         # ---- preferred targets first (skip disabled) -----------
         for t in final_targets:
             src = self.memory_sources.get(t)
-            if _check_source_available(src) and self.is_source_enabled(t):
-                saved = self._try_save_to(src, key, value)
+            if src and _check_source_available(src) and self.is_source_enabled(t):
+                saved = self._try_save_to(t, src, key, value)
                 if saved:
                     break
 
@@ -698,7 +712,7 @@ class MemoryOrchestrator:
         if not saved:
             for n, src in self.memory_sources.items():
                 if src and _check_source_available(src) and self.is_source_enabled(n):
-                    saved = self._try_save_to(src, key, value)
+                    saved = self._try_save_to(n, src, key, value)
                     if saved:
                         break
 
