@@ -45,7 +45,7 @@ LOW_SIGNAL_ENTRIES = [
 
 MEANINGFUL_DECISIONS = [
     {"key": "api_versioning_policy",
-     "value": "Adopt URL-based versioning with deprecation headers (v1→v2). Decision made on 2026-07-15 by BuboTheWise."},
+     "value": "Adopt URL-based versioning with deprecation headers (v1→v2). Decision made on 2026-07-15 by project lead."},
     {"key": "rollback_strategy",
      "value": "Blue-green deployment with automated rollback on health-check failure. Context: production incident post-mortem."},
 ]

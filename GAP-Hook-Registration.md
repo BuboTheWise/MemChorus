@@ -1,7 +1,7 @@
 # MemChorus Hook Registration Audit
 
 **Date:** 2026-07-26
-**Auditor:** Cthugha (implementer)
+**Auditor:** implementer profile
 **Status:** ✅ PASS — Hooks registered correctly via entry point, wiring confirmed in source
 
 ---
@@ -14,7 +14,7 @@ Do the MemChorus lifecycle hooks (`pre_llm_call`, `post_tool_call`, `on_session_
 
 ## 2. Entry Point Registration
 
-**File:** `/home/bubo/.hermes/workspace/Code/MemChorus/setup.py` (line 58–59)
+**File:** `$HERMES/workspace/Code/MemChorus/setup.py` (line 58–59)
 ```python
 entry_points={
     'hermes_agent.plugins': [                             # ← line 57: entry point GROUP = hermes_agent.plugins
@@ -24,11 +24,11 @@ entry_points={
 ```
 
 **Verification — Entry points in installed package:**
-```
-$ /home/bubo/.hermes/hermes-agent/venv/bin/python3 -c "
+```bash
+$ $(hermes venv)/bin/python3 -c "
 import importlib.metadata as m
 for ep in m.entry_points(group='hermes_agent.plugins'):
-    if 'memchorus' in str(ep): print(f'{ep.name} -> {ep.value}')"
+    if 'memchorus' in str(ep): print(f'{ep.name} -> {ep.value}')\""
 ```
 Result: ✅ `memchorus = memchorus.hooks` found under `hermes_agent.plugins`.
 
@@ -40,7 +40,7 @@ Result: ✅ `memchorus = memchorus.hooks` found under `hermes_agent.plugins`.
 
 ### How Hermes Gateway discovers plugins
 
-Source: `/home/bubo/hermes-agent/hermes_cli/plugins.py`
+Source: `hermes_agent/hermes_cli/plugins.py`
 
 - Line 217: `ENTRY_POINTS_GROUP = "hermes_agent.plugins"` — the authoritative group name.
 - Line 1662–1680: `_scan_entry_points()` queries this exact group via `importlib.metadata.entry_points()`.
@@ -71,7 +71,7 @@ _load_plugin(manifest)   → _load_entrypoint_module(manifest)
 ## 3. Plugin Registration Status
 
 ```
-$ /home/bubo/.hermes/hermes-agent/venv/bin/hermes plugins list | grep memchorus
+$ $(hermes venv)/bin/hermes plugins list | grep memchorus
 │ memchorus          │ enabled     │ 1.5.10  │ Memory orchestration system for Hermes agents │ entrypoint │
 ```
 
@@ -85,7 +85,7 @@ $ /home/bubo/.hermes/hermes-agent/venv/bin/hermes plugins list | grep memchorus
 
 ### Module API surface
 
-**Location:** `/home/bubo/.hermes/hermes-agent/venv/lib/python3.11/site-packages/memchorus/hooks.py`
+**Location:** `$(hermes venv)/lib/pythonX.Y/site-packages/memchorus/hooks.py`
 
 Key symbols at module level:
 - `class MemChorusHooks` — the actual hook implementation with lifecycle methods
@@ -180,7 +180,7 @@ def invoke_hook(self, hook_name: str, **kwargs) -> List[Any]:
 ### How to verify runtime hooks fire (for future)
 ```bash
 # Enable plugin debug mode + check for hook registration line
-$ HERMES_PLUGINS_DEBUG=1 /home/bubo/.hermes/hermes-agent/venv/bin/hermes plugins list
+$ HERMES_PLUGINS_DEBUG=1 $(hermes venv)/bin/hermes plugins list
 # Then during a chat, watch for:
 $ hermes gateway logs 2>&1 | grep "MemChorus.*registered hooks\|on_pre_llm_call ENTRY"
 ```
