@@ -545,7 +545,17 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.7.0 (current — on `master`)
+### v1.8.0 (current — auto-tuning framework)
+
+- **HitRateTracker:** Singleton that logs save/recall events per memory key, computes empirical hit-rate and decay curves, feeds downstream utility metrics to retention engine
+- **MistakeDetector:** Pattern-based classification engine for user corrections/rejections vs transient failures; flags errors for penalty adjustments on low-value saves
+- **AdaptiveThreshold:** Consumes hit-rate + mistake signals, adjusts retention cutoffs dynamically using EMA smoothing with 15% drift guard limits
+- **CalibrationEngine:** Async calibration scheduler running during sweep cycles; YAML persistence per profile at `~/.hermes/data/memchorus/_tuning/`; CLI entry point `memchorus recalibrate`
+- **Lifecycle wiring:** HitRateTracker fires on orchestrator save/recall paths; MistakeDetector runs in on_session_end hook (§10.2); CalibrationEngine integrates into LifecycleManager._do_sweep() step 4
+- **Forty-eight tests** covering: bounded adjustments, EMA direction, hit-rate pipeline, CLI entry verification, graceful degradation per unregistered profile bounds enforcement
+- Spec documented in `docs/AUTOTUNING.md` — three-config-lever design (recall_frequency, importance_threshold, cleanup_interval), no opaque ML
+
+### v1.7.0
 
 - **Testing infrastructure upgrade:** Full benchmark module (`test_memchorus_benchmark.py`) measuring per-source timing (p50/p95 latency), content accuracy and failure-mode behavior with JSON output for before/after comparison
 - **Documentation overhaul:** New `docs/TESTING.md`, `docs/IMPROVEMENT-CYCLE.md` documenting quantitative improvement feedback loop; README updated with test counts, benchmark methodology links and MemPalace attribution link
