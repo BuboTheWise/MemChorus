@@ -194,20 +194,22 @@ class TestCalibrationEnginePipeline:
 
     def test_full_pipeline_integration(self):
         """Complete end-to-end: save -> recall -> recalibrate -> persist."""
-        class MockTracker:
-            total_saves = 200
-            total_recalls = 150
+        from memchorus.hit_rate_tracker import HitRateTracker
 
-            @classmethod
-            def get_instance(cls):
-                return cls()
+        # Save and restore real instance _index to prevent cross-test pollution.
+        real_instance = HitRateTracker.get_instance()
+        saved_index = real_instance._index.copy()
 
-        with patch.dict(
-            sys.modules,
-            {"memchorus.hit_rate_tracker": type(sys)("mock_module")},
-        ):
-            import memchorus.hit_rate_tracker as mtr
-            mtr.HitRateTracker = MockTracker
+        try:
+            # Populate with exactly 200 entries, each carrying 0.75 recall count.
+            # → total_saves == len(_index) == 200
+            # → total_recalls == sum(0.75 × 200) == 150 ✓
+            real_instance._index = {
+                f"entry_{i:03d}": {"total_recalls": 0.75, "useful_flags": 0,
+                                   "noise_flags": 0, "first_saved_at": 0.0,
+                                   "last_seen_at": 0.0}
+                for i in range(200)
+            }
 
             engine = CalibrationEngine(profile_name="full_pipeline")
             saves, recalls = engine.aggregate_hit_rate_stats()
@@ -221,6 +223,9 @@ class TestCalibrationEnginePipeline:
                 from memchorus.adaptive_threshold import PARAM_BOUNDS
                 bounds = PARAM_BOUNDS[param]
                 assert bounds.minimum <= adjusted[param] <= bounds.maximum + 1e-9
+
+        finally:
+            real_instance._index = saved_index
 
         engine._save_state()
 
