@@ -181,6 +181,7 @@ def test_03_save_round_trip(env: _SynthEnv):
     t("T03 string retrieve matches saved value", found_str)
 
 
+@pytest.mark.timeout(60)
 def test_04_semantic_search(env: _SynthEnv):
     """Search finds terms already in MemPalace (pre-existing content only)."""
     # The ChromaDB idempotency pre-check blocks writes on the restored DB.
@@ -201,6 +202,7 @@ def test_04_semantic_search(env: _SynthEnv):
     t(f"T04 search returned {count} result(s) from vector store with text content", found_text and count > 0)
 
 
+@pytest.mark.timeout(60)
 def test_05_stability_under_load(env: _SynthEnv):
     """Multiple save + retrieve cycles don't drop the connection."""
     ok = True
