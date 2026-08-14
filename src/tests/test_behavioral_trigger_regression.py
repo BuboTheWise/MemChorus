@@ -142,7 +142,7 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_noisy_traceback_does_not_fire_post_complete(self):
         text = """Traceback (most recent call last):
-  File "/home/bubo/.local/lib/python3.14/site-packages/memchorus/__init__.py", line 42, in _bootstrap
+  File "/home/user/.local/lib/python3.14/site-packages/memchorus/__init__.py", line 42, in _bootstrap
     raise RuntimeError("Failed to initialize")
 RuntimeError: Failed to initialize"""
         results = self.bt.detect(text)
