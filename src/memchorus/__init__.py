@@ -1,8 +1,8 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
 __version__ = "1.8.0"
-__author__ = "BuboTheWise"
-__email__ = "bubo@nous.systems"
+__author__ = "MemChorus Project"
+__email__ = "memchorus@nous.systems"
 
 import logging
 import os
