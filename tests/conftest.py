@@ -162,8 +162,8 @@ def _close_all_coros():
             try:
                 obj.close()
                 seen.add(obj)
-            except RuntimeError:
-                pass
+            except (RuntimeError, ValueError):
+                pass  # already closed, awaited, or executing
 
 
 def _asyncio_cleanup():
