@@ -283,38 +283,8 @@ class MemChorusHooks:
             return None
 
     def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
-        """Evaluate feedback loop corrections and return formatted block(s).
-
-        Returns a list of labelled feedback strings suitable for appending to the
-        injected context blocks. Gracefully degrades to an empty list if the
-        feedback subsystem is unavailable or raises internally.
-        """
-        try:
-            from memchorus.feedback_loop.integration import (
-                TurnContext as FeedbackTurnContext,
-                TriggerEvent,
-                inject_feedback_corrections,
-            )
-
-            turn_ctx = FeedbackTurnContext(
-                user_message=kwargs.get("user_message", str(input_text))[:1024],
-                conversation_length=kwargs.get("conversation_length", 0),
-                tool_calls_this_turn=kwargs.get("tool_calls_this_turn", 0),
-                empty_tool_responses=kwargs.get("empty_tool_responses", 0),
-                recent_messages=list(kwargs.get("recent_messages", [])),
-            )
-
-            feedback_text = inject_feedback_corrections(
-                turn_context=turn_ctx,
-                trigger_event=TriggerEvent.PRE_LLM_CALL,
-            )
-
-            if feedback_text:
-                return [feedback_text]
-            return []
-        except Exception as fexc:  # graceful degradation for feedback loops
-            logger.warning("Feedback loop evaluation skipped: %s", fexc)
-            return []
+        """No-op — feedback_loop module removed in v1.9.0."""
+        return []
 
     def on_post_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         logger.info("MemChorus on_post_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
@@ -388,13 +358,6 @@ class MemChorusHooks:
             # dedup — results are buffered via ToolCaptureBatcher to avoid
             # hammering storage on every tool call (GAP026-C / GAP026-D).
             _try_save_with_batch(orchestrator, output_str)
-
-            # Workflow compliance check: fire non-blocking verification when
-            # kanban_complete is being called — see workflow_compliance module.
-            try:
-                _check_workflow_compliance_if_kanban_complete(output_str)
-            except Exception as wexc:
-                logger.debug("workflow compliance check skipped: %s", wexc, exc_info=True)
 
             return None
 
@@ -751,76 +714,17 @@ def _resolve_char_limit() -> int:
         pass
     return _MAX_BLOCK_CHARS
 
-def _has_feedback_priority(item: Dict[str, Any]) -> bool:
-    """Check if an item carries feedback-correction priority.
-
-    Feedback corrections are more actionable than raw recall and should be
-    preserved first when the context budget is tight.
-    """
-    key = str(item.get("key") or "").lower()
-    return ("feedback" in key or "correction" in key or
-            item.get("_is_feedback", False))
-
-
-def _check_workflow_compliance_if_kanban_complete(tool_output: str) -> None:
-    """Non-blocking compliance check triggered by on_post_tool_call.
-
-    Detects whether the tool output mentions a ``kanban_complete`` invocation,
-    runs ``_verify_feedback_loop_complete()`` under its own try/except, and
-    logs violations to stdout / logger for downstream metadata injection.
-
-    This is intentionally non-blocking: failures, import errors, missing repos,
-    or any other issue degrade to a silent debug log line.
-    """
-    # Quick string match — if kanban_complete isn't in output, skip entirely
-    lower = tool_output.lower()
-    if "kanban_complete" not in lower:
-        return
-
-    try:
-        from memchorus.workflow_compliance import (
-            _verify_feedback_loop_complete,
-            get_violation_list,
-            has_critical,
-        )
-    except ImportError as ie:
-        logger.debug("workflow compliance module not available: %s", ie)
-        return
-
-    report = _verify_feedback_loop_complete()
-    if report.is_clean:
-        logger.info("hooks: workflow compliance clean — all 3 steps verified")
-        return
-
-    # Surface violations at INFO level so the agent and operator see them
-    lines = get_violation_list(report)
-    for line in lines:
-        logger.info("hooks: violation — %s", line)
-
-    if has_critical(report):
-        logger.warning(
-            "hooks: CRITICAL workflow compliance failure detected — "
-            "kanban_complete may proceed but metadata was not fully verified"
-        )
-
-
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
 
     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
     Truncation respects line boundaries — partial lines are dropped rather than cut,
-    ensuring markdown formatting stays intact. When budget is tight, feedback-correction
-    items take priority over raw recall results (higher-priority items kept last).
+    ensuring markdown formatting stays intact.
     """
     if not items:
         return ""
 
-    # --- Priority sort: feedback corrections before raw recall ---------------
-    # So that when the block ceiling forces item removal (below), lower-value
-    # recall entries are dropped first.
-    priority_items = [i for i in items if _has_feedback_priority(i)]
-    normal_items   = [i for i in items if not _has_feedback_priority(i)]
-    ordered        = priority_items + normal_items
+    ordered = items
 
     lines: List[str] = []
     seen_keys: set = set()

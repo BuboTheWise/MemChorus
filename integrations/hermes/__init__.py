@@ -30,9 +30,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Feedback loop integration -- injected alongside memory recall in pre_llm_call.
-# Lazy import to avoid hard failures if the feedback_loop module is absent.
-_feedback_mod_available = False
+# Feedback loop integration removed in v1.9.0.
 
 
 # ---------------------------------------------------------------------------
@@ -100,26 +98,8 @@ def _bootstrap() -> Optional["MemoryOrchestrator"]:  # noqa: F821
 # ---------------------------------------------------------------------------
 
 def _try_load_feedback_module() -> bool:
-    """Import feedback_loop integration from the live-installed memchorus package.
-
-    Returns True if the module loaded successfully. The globals
-    `inject_feedback_corrections`, `TurnContext` and `TriggerEvent` become
-    available only while ``_feedback_mod_available`` is True, so callers must
-    check that flag before using them.
-    """
-    global _feedback_mod_available
-    if not _feedback_mod_available:
-        try:
-            from memchorus.feedback_loop.integration import (  # noqa: F401, E402
-                inject_feedback_corrections,
-                TurnContext,
-                TriggerEvent,
-            )
-            _feedback_mod_available = True
-        except Exception as exc:
-            logger.debug("Feedback loop module not available (non-fatal): %s", exc)
-
-    return _feedback_mod_available
+    """Removed in v1.9.0 — feedback_loop module no longer exists."""
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -161,48 +141,21 @@ def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict
     except Exception as exc:
         logger.warning("pre_llm_call hook error (non-fatal): %s", exc)
 
-    # --- Feedback loop corrections ---
-    feedback_block = None
-    if _try_load_feedback_module():
-        try:
-            from memchorus.feedback_loop.integration import (  # noqa: E402, RUF100
-                inject_feedback_corrections,
-                TurnContext,
-                TriggerEvent,
-            )
-            turn_ctx = TurnContext(user_message=user_message)
-            feedback_block = inject_feedback_corrections(
-                turn_ctx, trigger_event=TriggerEvent.PRE_LLM_CALL
-            )
-        except Exception as exc:
-            logger.warning("Feedback injection failed (non-fatal): %s", exc)
-
-    if not context_parts and not feedback_block:
+    if not context_parts:
         return None
 
-    # --- Build return dict ---
+    # Build memory recall injection string
     injected_lines: List[str] = []
     indicators: List[Dict[str, str]] = []
 
-    if context_parts:
-        injected_lines.append("-- Pre-decision Memory Recall --")
-        injected_lines.extend(context_parts)
-        indicators.append(
-            {
-                "name": "memory_search",
-                "label": "MemChorus recall",
-            }
-        )
-
-    # Merge memory block and feedback loop blocks into a single injection string
-    if feedback_block:
-        injected_lines.append(feedback_block)
-        indicators.append(
-            {
-                "name": "feedback_steering",
-                "label": "Feedback loop active",
-            }
-        )
+    injected_lines.append("-- Pre-decision Memory Recall --")
+    injected_lines.extend(context_parts)
+    indicators.append(
+        {
+            "name": "memory_search",
+            "label": "MemChorus recall",
+        }
+    )
 
     return {
         "context": "\n".join(injected_lines),

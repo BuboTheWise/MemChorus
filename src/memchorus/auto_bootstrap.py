@@ -36,7 +36,6 @@ _DEFAULTS: Dict[str, Any] = {
     "default_source": "hermes_default",
     "half_life_days": 30.0,
     "cache_ttl_seconds": 60,
-    "custom_loops_dir": str(Path.home() / ".hermes" / "custom_loops"),
 }
 
 # Wing/room routing defaults (§1 + §3 of spec).  Mirrored here so that
@@ -239,11 +238,6 @@ def _bootstrap() -> Optional[Any]:
     if env_ttl is not None:
         config["cache_ttl_seconds"] = _resolve_int(env_ttl)
 
-    # custom_loops_dir from env var (highest priority — overrides YAML + default)
-    env_loops = os.environ.get("MEMCHORUS_CUSTOM_LOOPS_DIR")
-    if env_loops is not None:
-        config["custom_loops_dir"] = os.path.expanduser(env_loops)
-
     # Log resolved profile and layered config for debugging
     logger.info(
         "MemChorus bootstrap: profile=%s, global_cfg=%d keys, profile_cfg=%d keys",
@@ -285,12 +279,10 @@ def _bootstrap() -> Optional[Any]:
     default_source = config.pop("default_source")
     half_life_days = config.pop("half_life_days")
     cache_ttl_seconds = config.pop("cache_ttl_seconds")
-    custom_loops_dir = config.pop("custom_loops_dir")
 
     logger.debug(
-        "Bootstrap config resolved: sources=%s, half_life=%.1f, ttl=%ss, "
-        "loops_dir=%s",
-        default_source, half_life_days, cache_ttl_seconds, custom_loops_dir,
+        "Bootstrap config resolved: sources=%s, half_life=%.1f, ttl=%ss",
+        default_source, half_life_days, cache_ttl_seconds,
     )
 
     # Log enforcement toggle state so the user knows what is active at startup.
@@ -376,23 +368,5 @@ def _bootstrap() -> Optional[Any]:
         # Orientation not installed yet → harmless
         pass
 
-    # --- Step 6: feedback loop auto-load ----------------------------------
-    try:
-        from memchorus.feedback_loop.integration import auto_load_custom_loops
-
-        _loop_diag = auto_load_custom_loops(loop_dir=custom_loops_dir)
-        logger.info(
-            "Feedback loops loaded: %d definitions, %d skipped files, "
-            "%d warnings, errors=%s (dir=%s)",
-            _loop_diag.get("loaded", 0),
-            _loop_diag.get("skipped_files", 0),
-            len(_loop_diag.get("warnings", [])),
-            _loop_diag.get("error") or "none",
-            custom_loops_dir,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Feedback loop auto-load failed (non-fatal; hooks degrade gracefully): %s",
-            exc,
-        )
+    # --- Step 6: removed feedback_loop auto-load (v1.9.0) ------------------
     return orchestrator
