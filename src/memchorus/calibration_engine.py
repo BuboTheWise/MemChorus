@@ -79,6 +79,8 @@ class CalibrationEngine:
     Falls back to v1.7.0 static defaults when optional dependencies are unavailable.
     """
 
+    MIN_OBSERVATIONS = 3  # AC-RTB-MIN — minimum feedback events before boosting
+
     def __init__(self, profile_name: str = "default") -> None:
         self.profile_name = profile_name
         self.tuning_path = DEFAULT_TUNING_DIR / f"{profile_name}.yaml"
@@ -222,6 +224,62 @@ class CalibrationEngine:
         )
 
         return adjusted
+
+    @staticmethod
+    def _compute_boost_from_flags(useful: int, noise: int) -> float:
+        """Core boost computation for useful/noise flag counts (AC-RTB-1.x).
+
+        Returns the multiplicative score factor in [0.5, 3.0].
+        Requires >= MIN_OBSERVATIONS combined flags to deviate from baseline (1.0).
+        """
+        total = useful + noise
+
+        # Not enough data — no adjustment
+        if total < CalibrationEngine.MIN_OBSERVATIONS:
+            return 1.0
+
+        hit_rate = useful / total
+
+        # Piecewise mapping from [0, 1] to [0.5, 3.0]:
+        if hit_rate >= 0.8:
+            boost = 2.0 + (hit_rate - 0.8) * 5.0  # 2.0 at 0.8 -> 3.0 at 1.0
+        elif hit_rate < 0.3:
+            boost = max(0.5, min(0.6, 0.5 + hit_rate * 2.0))
+        else:
+            # [0.3, 0.8) -> [0.6, 2.0) — linear interpolation
+            boost = 0.6 + (hit_rate - 0.3) * (2.0 - 0.6) / (0.8 - 0.3)
+
+        return float(max(0.5, min(3.0, boost)))
+
+    def boost_factor_for_key(self, key: str) -> float:
+        """Recall-time relevance boost multiplier for a single memory key (v1.9).
+
+        Reads HitRateTracker utility signals and returns a score multiplier
+        that ranks proven high-utility memories above unproven or low-utility ones.
+
+        Mapping (piecewise, continuous at boundaries):
+            hit_rate >= 0.8  -> [2.0, 3.0]   (high utility)
+            hit_rate in [0.3, 0.8) -> [0.6, 2.0) (neutral zone)
+            hit_rate < 0.3    -> [0.5, 0.6]   (mistake / confirmed waste)
+
+        Falls back to exactly 1.0 when calibration data is absent or unavailable.
+        """
+        try:
+            from memchorus.hit_rate_tracker import HitRateTracker
+            tracker = HitRateTracker.get_instance()
+            stats = tracker._index.get(key)
+
+            # No history for this key -> unchanged scoring
+            if not stats:
+                return 1.0
+
+            useful = stats.get("useful_flags", 0)
+            noise = stats.get("noise_flags", 0)
+
+            return self._compute_boost_from_flags(useful, noise)
+        except Exception:
+            logger.debug("boost_factor_for_key unavailable for key %r — returning 1.0", key)
+            return 1.0
 
     @classmethod
     def get_adjusted_params(cls, profile_name: str = "default") -> Dict[str, float]:
