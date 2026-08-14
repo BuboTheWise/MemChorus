@@ -338,6 +338,20 @@ class RelevanceScorer:
 
         raw = qw_n * quality + rw_n * recency + sw_n * src_prior
 
+        # v1.9 recall-time relevance boosting (AC-RTB-1.x): multiply by calibration
+        # engine boost factor so high-utility memories outrank unproven ones.
+        # Graceful degradation: falls back to 1.0 on any error or missing tracker.
+        try:
+            entry_key = result.get("key", "")
+            from memchorus.calibration_engine import CalibrationEngine
+            boost = CalibrationEngine.boost_factor_for_key(CalibrationEngine(), entry_key)
+            raw *= boost
+        except Exception:
+            logger.debug(
+                "boost_factor unavailable for key %r — standard scoring path",
+                result.get("key"),
+            )
+
         # Bug 3 AC4: provenance penalty -- auto-captured content gets a multiplicative
         # factor (default 0.3) so it ranks below deliberately stored memories.
         if result.get("_auto_provenance") is True:
