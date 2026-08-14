@@ -1,6 +1,6 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 __author__ = "MemChorus Project"
 __email__ = "memchorus@nous.systems"
 
@@ -106,14 +106,6 @@ _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
     "AutoStorageEngine": ("memchorus.auto_storage_engine", "AutoStorageEngine"),
     "BehavioralEnforcementManager": ("memchorus.enforcement_manager", "BehavioralEnforcementManager"),
     # Feedback loop detection + escalation v1.1.03
-    "ConditionSignal": ("memchorus.feedback_loop.schema_v1", "ConditionSignal"),
-    "FeedbackLoopDefinition": ("memchorus.feedback_loop.schema_v1", "FeedbackLoopDefinition"),
-    "SUPPORTED_VERSIONS": ("memchorus.feedback_loop.schema_v1", "SUPPORTED_VERSIONS"),
-    "TriggerEvent": ("memchorus.feedback_loop.schema_v1", "TriggerEvent"),
-    "validate_schema_v1": ("memchorus.feedback_loop.schema_v1", "validate_schema_v1"),
-    "load_feedback_loops": ("memchorus.feedback_loop.loader", "load_feedback_loops"),
-    "LoadSummary": ("memchorus.feedback_loop.loader", "LoadSummary"),
-    "FeedbackLoopDetector": ("memchorus.feedback_loop.detector", "FeedbackLoopDetector"),
     # Lifecycle management — Phase 1 (§6.2 / §8)
     "AuditLogger": ("memchorus.lifecycle_manager", "AuditLogger"),
     "LifecycleManager": ("memchorus.lifecycle_manager", "LifecycleManager"),
@@ -130,14 +122,6 @@ __all__ = [
     "AutoRecallEngine",
     "AutoStorageEngine",
     "BehavioralEnforcementManager",
-    "ConditionSignal",
-    "FeedbackLoopDefinition",
-    "SUPPORTED_VERSIONS",
-    "TriggerEvent",
-    "validate_schema_v1",
-    "load_feedback_loops",
-    "LoadSummary",
-    "FeedbackLoopDetector",
     # Lifecycle management
     "AuditLogger",
     "LifecycleManager",
