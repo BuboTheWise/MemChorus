@@ -1,6 +1,6 @@
 # MemChorus
 
-Current version: 1.7.0
+Current version: 1.9.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -39,7 +39,6 @@ The system must stay functional even if every enhancement source disappears. The
     │  └───────────────┘  │   │  ├─────────────────────────┤  │
     │                     │   │  │   AutoStorageEngine     │  │
     │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
-    │  │ Profile       │  │   │  │   FeedbackLoopDetector  │  │
     │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
     │  └───────────────┘  │   │  └─────────────────────────┘  │
     └────┬──────────┬─────────────┬───────────────────────────┘
@@ -69,7 +68,6 @@ The system must stay functional even if every enhancement source disappears. The
 | `AutoRecallEngine` | Automatically queries relevant memories at detected decision points before the agent acts |
 | `AutoStorageEngine` | Captures significant outcomes after actions complete with deduplication guards |
 | `BehavioralEnforcementManager` | Wires Trigger → Recall → Storage into a unified pipeline; returns structured results per call |
-| `FeedbackLoopDetector` | Monitors for recursive/repetitive agent behavior patterns and escalates corrections |
 | `MemoryProfile` | Classification enum guiding smart placement decisions at write time |
 
 ## How It Works
@@ -355,7 +353,6 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 Verify the import works before using it:
 
 ```bash
-python -c "from memchorus import MemoryOrchestrator, FeedbackLoopDetector; print('OK')"
 ```
 
 #### Optional Dependencies
