@@ -104,13 +104,16 @@ class HermesDefaultMemorySource(MemorySource):
         """Score how well *query* matches *content_text*.
 
         Algorithm:
-          1. Split the query into individual terms (lowercased).
-          2. For each term, count substring occurrences in the content text.
+          1. Normalize underscores and spaces to hyphens in both query and
+             content so that e.g. 'project_python_version' matches the
+             sanitized filename 'project-python-version'.
+          2. Split the (normalized) query into individual terms (lowercased).
+          3. For each term, count substring occurrences in the content text.
              Each distinct term found contributes to the score (substring
              matching is deliberately permissive — 'fix' does match 'suffix').
-          3. Bonus: add +0.5 for every extra occurrence beyond the first per term
+          4. Bonus: add +0.5 for every extra occurrence beyond the first per term
              (term frequency bonus, capped at +2 bonus to avoid runaway scoring).
-          4. Self-match penalty: if the content is essentially identical to
+          5. Self-match penalty: if the content is essentially identical to
              the query (SequenceMatcher ratio > 0.9), halve the final score
              so that query-echo artifacts don't dominate results.
 
@@ -121,20 +124,23 @@ class HermesDefaultMemorySource(MemorySource):
         Returns:
             float: Relevance score >= 0.  Zero means no match terms found.
         """
-        q_lower = query.lower()
-        c_lower = content_text.lower()
-        terms = [t for t in q_lower.split() if len(t) > 1]
+        # Normalize underscores/spaces to hyphens so queries like
+        # 'project_python_version' match sanitized keys like
+        # 'project-python-version'.
+        q_norm = _re.sub(r'[_ ]+', '-', query).lower()
+        c_norm = _re.sub(r'[_ ]+', '-', content_text).lower()
+        terms = [t for t in q_norm.split('-') if len(t) > 1]
         if not terms:
             return 0.0
 
         score = 0.0
         for term in terms:
-            count = c_lower.count(term)
+            count = c_norm.count(term)
             if count > 0:
                 score += 2.0 + min(count - 1, 4) * 0.5
 
         # Self-match / query-echo penalty
-        ratio = _difflib.SequenceMatcher(None, q_lower, c_lower).ratio()
+        ratio = _difflib.SequenceMatcher(None, q_norm, c_norm).ratio()
         if ratio > 0.9:
             score *= 0.5
 
