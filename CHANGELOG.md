@@ -2,6 +2,36 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [Unreleased]
+
+### Planned
+- **v2.0.0 preparation:** Recall-time relevance boosting shipped in v1.9.0 validated and stabilized. Next cycle will expand on calibration-driven scoring and test resilience improvements.
+
+## [1.9.0] - 2026-08-14
+
+### Added
+- **Recall-time relevance boosting via CalibrationEngine:** `boost_factor_for_key()` computes per-key boosts from HitRateTracker history (frequency bonus + signal quality ratio). `RelevanceScorer.weighted_score()` applies multiplicative boost to recall results, producing 3x scores for high-value keys vs. baseline. New `MIN_OBSERVATIONS=3` sentinel prevents boosting on insufficient data.
+- **Workflow compliance feedback loop verification:** Added verification tests ensuring behavioral enforcement hooks fire correctly across decision points and lifecycle events.
+
+### Changed
+- **OPSEC hardening:** Removed all hardcoded personal paths, PII, and sensitive identifiers from source code and documentation. Paths normalized to `~/.hermes/` or `$HOME` equivalents throughout. License header compliance fixed.
+- **Storage resilience for ChromaDB compactor failures:** Vector store operations now tolerate ChromaDB internal state errors (compaction failures, checkpoint corruption) with graceful fallback instead of cascading crashes.
+
+### Fixed
+- **CI xdist singleton isolation:** Replaced fragile `sys.modules` mocking in `test_full_pipeline_integration` with direct singleton `_index` population wrapped in try/finally — eliminates cross-test pollution under parallel execution, restores all 16 tests green.
+
+### Removed
+- **feedback_loop module removed:** Legacy feedback loop code deprecated and fully extracted. Workflows simplified while preserving existing functionality through enforcement hooks.
+
+## [1.8.0] - 2026-08-13
+
+### Added
+- **Auto-tuning framework (HitRateTracker + MistakeDetector + AdaptiveThreshold + CalibrationEngine):** Full pipeline from recall outcome data → hit-rate tracking → mistake detection → adaptive threshold adjustment → YAML write-back. Includes `graceful_degradation` for unregistered profiles returning default confidence thresholds.
+- **Memory benchmark module** with quantifiable metrics for recall accuracy and precision measurements.
+
+### Changed
+- **MemPalace subprocess optimization:** stderr noise suppression via filter wrapper, reducing console clutter during background operations.
+
 ## [1.7.0] - 2026-08-12
 
 ### Added
