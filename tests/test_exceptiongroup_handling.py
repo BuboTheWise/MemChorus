@@ -77,11 +77,11 @@ class TestMcpClientGracedegradation:
         _run_async catches ExceptionGroup and returns None, so connect() treats that
         as failure (not success).
         """
-        # Make sure the transport command exists so we hit _run_async path
-        import shutil
         client = _McpClient(timeout=2)
 
-        with patch('memchorus.mempalace_memory_source._run_async',
+        # Force persistent session to fail so we hit the legacy path where _run_async is called
+        with patch('memchorus.mempalace_persistent_session.PersistentMcpSession.start', return_value=False), \
+             patch('memchorus.mempalace_memory_source._run_async',
                    side_effect=safe_return_value(None)):
             result = client.connect()
 
