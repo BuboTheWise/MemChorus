@@ -160,24 +160,16 @@ class TestCalibrationEnginePipeline:
 
     def test_compute_adjustments_with_tracker(self):
         """Aggregate HitRateTracker stats, feed to AdaptiveThreshold, compute adjustments."""
+        from memchorus.hit_rate_tracker import HitRateTracker
+
         engine = CalibrationEngine(profile_name="pipeline_test")
 
-        # Simulate tracker data by mocking
+        # Simulate tracker data by mocking the singleton
         class MockTracker:
             total_saves = 100
             total_recalls = 50
 
-            @classmethod
-            def get_instance(cls):
-                return cls()
-
-        with patch.dict(
-            sys.modules,
-            {"memchorus.hit_rate_tracker": type(sys)("mock_module")},
-        ):
-            import memchorus.hit_rate_tracker as mtr
-            mtr.HitRateTracker = MockTracker
-
+        with patch.object(HitRateTracker, 'get_instance', return_value=MockTracker()):
             saves, recalls = engine.aggregate_hit_rate_stats()
             assert saves == 100
             assert recalls == 50
