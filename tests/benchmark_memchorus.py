@@ -50,7 +50,7 @@ FACTS = [
 ]
 
 # Queries search by key names (which actually match in this source) so we get
-# non-zero baseline recall. After orch integration with multi-source fan-out, 
+# non-zero baseline recall. After orch integration with multi-source fan-out,
 # even broader semantic queries become possible and should be added here later.
 QUERIES = [
     ("project_python_version",      ["project_python_version"]),
@@ -182,7 +182,11 @@ class TestBaseline:
         self.source = HermesDefaultMemorySource(
             config={"data_dir": str(tmp_path / "hermes_data")}
         )
-        # Seed data here so every test method has access regardless of xdist worker assignment.
+        # Pre-seed known facts so benchmarks always have data to search.
+        # Seeding must happen in the fixture rather than a separate test method
+        # because pytest-xdist distributes methods across workers, each with
+        # its own tmp_path instance -- a seed test on worker A wouldn't affect
+        # the benchmark on worker B.
         _seed_source(self.source, FACTS)
 
     def test_benchmark_search_latency_and_recall(self):
@@ -240,11 +244,12 @@ class TestPostIntegration:
             "mempalace_config": {"skip_mcp": True, "cache_dir": str(tmp_path / "mp_cache")},
         }
         self.orch = MemoryOrchestrator(config=config)
-        # Seed both sources here so every test method has data regardless of xdist worker.
+        # Pre-seed both sources so benchmarks always have data to search.
+        # Must happen in fixture -- see TestBaseline notes regarding xdist.
         h_src = self.orch.memory_sources.get("hermes_default")
+        assert h_src is not None, "hermes_default source not registered"
+        _seed_source(h_src, FACTS)
         m_src = self.orch.memory_sources.get("mempalace")
-        if h_src:
-            _seed_source(h_src, FACTS)
         if m_src:
             _seed_source(m_src, FACTS)
 
