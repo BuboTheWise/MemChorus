@@ -81,41 +81,81 @@ class HitRateTracker:
     persists to a sidecar JSON file so that the hot path stays ≤ 15 µs.
 
     Singleton access via `HitRateTracker.get_instance()`.
+
+    xdist safety: the class-level lock is recreated after fork because
+    inherited locks from the parent process may be held by now-dead threads.
     """
 
     _instance: Optional["HitRateTracker"] = None
-    _lock_cls = threading.Lock()
+    _lock_cls: threading.Lock = threading.Lock()
 
     def __init__(self, memory_dir: str):
         self.memory_dir = os.path.expanduser(memory_dir)
         self._index: Dict[str, Dict[str, Any]] = _load_index(self.memory_dir)
-        self._dir_lock = threading.Lock()
+        self._dir_lock: threading.RLock = threading.RLock()  # reentrant — allows nested calls (e.g. flush during save) without deadlock
 
     # -- singleton ---------------------------------------------------------
 
     @classmethod
-    def get_instance(cls) -> "HitRateTracker":
-        """Return (creating if necessary) the global HitRateTracker."""
+    def _ensure_lock(cls) -> None:
+        """Ensure the class-level lock is usable (recreate after fork)."""
+        try:
+            cls._lock_cls.acquire()
+            cls._lock_cls.release()
+        except OSError:
+            # Stale lock inherited from parent after fork — replace it
+            cls._lock_cls = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, memory_dir: str | None = None) -> "HitRateTracker":
+        """Return (creating if necessary) the global HitRateTracker.
+
+        Args:
+            memory_dir: When provided and no instance exists yet, initialise
+                the singleton with this directory instead of the default
+                profile path.  Useful for per-worker isolation under xdist.
+        """
+        cls._ensure_lock()
         if cls._instance is None:
             with cls._lock_cls:
                 if cls._instance is None:
-                    # Resolve memory dir from environment or config
-                    try:
-                        raw_profile = os.environ.get("HERMES_PROFILE", "default")
-                        if raw_profile != "default":
-                            md = f"~/.hermes/profiles/{raw_profile}/memories"
-                        else:
+                    md = memory_dir
+                    if md is None:
+                        try:
+                            raw_profile = os.environ.get("HERMES_PROFILE", "default")
+                            if raw_profile != "default":
+                                md = f"~/.hermes/profiles/{raw_profile}/memories"
+                            else:
+                                md = "~/.hermes/memories"
+                        except Exception:
                             md = "~/.hermes/memories"
-                    except Exception:
-                        md = "~/.hermes/memories"
                     cls._instance = cls(md)
         return cls._instance
 
     @classmethod
-    def reset(cls) -> None:
-        """Clear the singleton (test convenience)."""
+    def reset(cls, memory_dir: str | None = None) -> None:
+        """Clear the singleton (test convenience).
+
+        Wipes the in-memory index so stale data cannot leak into the next
+        test run.  When *memory_dir* is supplied, also deletes the persisted
+        sidecar JSON to prevent on-disk pollution between runs.
+
+        Args:
+            memory_dir: Directory containing a sidecar file to delete.
+        """
+        cls._ensure_lock()
         with cls._lock_cls:
+            if cls._instance is not None:
+                cls._instance._index.clear()
+            old_instance = cls._instance
             cls._instance = None
+            # Delete persisted sidecar when a directory is supplied
+            if memory_dir is not None:
+                sidecar = _resolve_hit_rate_file(memory_dir)
+                try:
+                    sidecar.unlink(missing_ok=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("could not delete sidecar %s: %s", sidecar, exc)
 
     # -- aggregate counters ------------------------------------------------
 
@@ -192,9 +232,10 @@ class HitRateTracker:
 
     def flush(self) -> None:
         """Persist the in-memory index to disk."""
+        # Snapshot under lock, persist outside to avoid nested-lock issues
+        snapshot = self.get_all_stats()
         try:
-            with self._dir_lock:
-                _save_index(self.memory_dir, self._index)
+            _save_index(self.memory_dir, snapshot)
             logger.debug("hit-rate index flushed (%d entries)", len(self._index))
         except Exception as exc:  # noqa: BLE001
             logger.warning("flush failed: %s", exc)
