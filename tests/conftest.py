@@ -107,8 +107,11 @@ def safe_side_effect(exc_factory):
                 except RuntimeError:
                     pass  # already closed or awaited
 
-        gc.collect()
+        # Close inner coroutines (e.g. _do_init nested inside wait_for) while they're
+        # still alive in gc.get_objects() — if we gc.collect() first, Python would
+        # finalize them as garbage and emit RuntimeWarning before this runs.
         _close_all_coros_by_name(_KNOWN_LEAK_PATTERNS)
+        gc.collect()
         raise exc_factory(*args, **kwargs)
     return wrapper
 
@@ -131,8 +134,11 @@ def safe_return_value(value):
                 except RuntimeError:
                     pass  # already closed or awaited
 
-        gc.collect()
+        # Close inner coroutines (e.g. _do_init nested inside wait_for) while they're
+        # still alive in gc.get_objects() — if we gc.collect() first, Python would
+        # finalize them as garbage and emit RuntimeWarning before this runs.
         _close_all_coros_by_name(_KNOWN_LEAK_PATTERNS)
+        gc.collect()
         return value
     return wrapper
 
