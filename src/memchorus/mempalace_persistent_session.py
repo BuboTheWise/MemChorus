@@ -139,6 +139,7 @@ class PersistentMcpSession:
         # pollute test output even when graceful degradation works in the main process.
         if "PYTEST_CURRENT_TEST" in os.environ:
             self._state.alive = False
+            self._state.ready_event.set()
             return
 
         # Wrap stdio imports so a missing mcp package does not crash the thread either.
