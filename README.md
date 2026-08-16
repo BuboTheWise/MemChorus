@@ -8,23 +8,6 @@ MemChorus treats memory not as a single store but as a **chorus of distinct sour
 
 The primary enhancement backend is [MemPalace](https://github.com/MemPalace/mempalace) — a knowledge graph with semantic search connected via MCP protocol — but the system degrades gracefully if MemPalace is unavailable, falling back to local Hermes default files that always work. Other sources (remote APIs, vector stores, note databases) plug in through the `MemorySource` abstract class without requiring changes to the core orchestrator.
 
-### About MemPalace
-
-MemChorus uses [**MemPalace**](https://github.com/MemPalace/mempalace)
-([project website](https://mempalace.github.io), licensed under MIT) as its
-primary enhancement memory backend.  MemPalace provides a structured knowledge
-graph with semantic search, diary journals, and an extensible "wing" model for
-organising memories by domain.  It is reached through the MCP (Model Context
-Protocol) stdio transport so that MemChorus can treat it as just another
-`MemorySource` — pluggable at runtime without compile-time bindings.
-
-MemPalace is **not required** for MemChorus to function.  If the MCP server is
-unreachable or the `[mcp]` extra is not installed, MemChorus falls back to
-local Hermes default files transparently.  Full attribution and copyright for
-the MemPalace project belongs to its authors; MemChorus simply provides the
-orchestration layer that routes reads/writes across it alongside any other
-registered source.
-
 ## Philosophy
 
 The design is driven by two questions:
@@ -367,26 +350,9 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.1)
-
-Once installed, run the bundled bootstrap command to generate a working
-routing configuration in one step — no manual YAML editing required:
-
-```bash
-memchorus-init --profile my_agent     # generates ~/.hermes/profiles/my_agent/memchorus.yaml
-memchorus-init                        # defaults to $HERMES_KANBAN_PROFILE or "default"
-memchorus-init --dry-run              # preview the generated YAML without writing
-```
-
-The command creates a routing config with namespaced wing maps, sets
-``skip_mcp: false`` for live MemPalace transport, and optionally adds
-``memchorus`` to your ``plugins.enabled`` list.  Run it once after install
-and you are ready.
-
 Verify the import works before using it:
 
 ```bash
-python -c "from memchorus.auto_bootstrap import _bootstrap; print('OK')"
 ```
 
 #### Optional Dependencies

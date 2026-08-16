@@ -53,9 +53,6 @@ setup(
         ],
     },
     entry_points={
-        "console_scripts": [
-            "memchorus-init=memchorus.auto_init:cli_main",
-        ],
         "hermes_agent.plugins": [
             "memchorus = memchorus.hooks",
         ],
