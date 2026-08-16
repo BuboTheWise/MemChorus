@@ -11,6 +11,7 @@ loop, so it integrates cleanly with MemChorus's synchronous API surface.
 import asyncio
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -130,8 +131,20 @@ class PersistentMcpSession:
 
     def _worker(self):
         """Async event loop running in a background thread."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: F401
-        from mcp.client.session import ClientSession  # noqa: F401
+
+        # Wrap stdio imports so a missing mcp package does not crash the thread
+        # (and thereby pollute every unrelated test with PytestUnhandledThreadExceptionWarning).
+        try:
+            from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: F401
+            from mcp.client.session import ClientSession  # noqa: F401
+        except ImportError as exc:
+            logger.warning(
+                "PersistentMcpSession worker: mcp.client not available — "
+                "persistent session will not start (%s)", exc
+            )
+            self._state.alive = False
+            self._state.ready_event.set()
+            return
 
         server_params = StdioServerParameters(command=self.command, args=self.args)
 
