@@ -245,7 +245,10 @@ class MemChorusHooks:
             # when a merge, commit, or process-trigger word is detected, the
             # recall actually searches for matching process/protocol memories.
             if detected_points:
-                matched_kw = " ".join(dp.matched_keyword for dp in detected_points)
+                matched_kw = " ".join(
+                    str(dp.matched_keyword) for dp in detected_points
+                    if dp.matched_keyword
+                )
                 if matched_kw:
                     enriched_terms = f"{matched_kw} {input_text}"
 
