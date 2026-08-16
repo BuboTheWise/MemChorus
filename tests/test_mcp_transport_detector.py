@@ -40,16 +40,19 @@ class TestMcpTransportDetectorPathDiscovery:
 
     def test_detect_uses_config_yaml_when_present(self, tmp_path):
         """Config.yaml with valid mcp_servers.mempalace.command should be used."""
+        # Use a real executable (sys.executable) instead of /usr/bin/python3
+        # which may not exist on all CI runner images.
+        real_python = sys.executable
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+            f"    command: {real_python} -m mempalace.mcp_server\n"
         )
 
         result = _McpTransportDetector.detect(config_path=config_file)
         assert result is not None
-        assert result["command"] == "/usr/bin/python3"
+        assert result["command"] == real_python
         assert result["args"] == ["-m", "mempalace.mcp_server"]
         assert "config.yaml" in result["resolved_from"]
 
@@ -193,11 +196,12 @@ class TestMcpTransportDetectorLogging:
         import logging
         caplog.set_level(logging.INFO)
 
+        real_python = sys.executable
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+            f"    command: {real_python} -m mempalace.mcp_server\n"
         )
 
         result = _McpTransportDetector.detect(config_path=config_file)
@@ -235,11 +239,12 @@ class TestMcpTransportDetectorCaching:
         """First detect() should populate the module-level cache."""
         self._reset_cache()
 
+        real_python = sys.executable
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+            f"    command: {real_python} -m mempalace.mcp_server\n"
         )
 
         result = _McpTransportDetector.detect(config_path=config_file)
@@ -253,11 +258,13 @@ class TestMcpTransportDetectorCaching:
         """Second detect() within TTL should return cache immediately."""
         self._reset_cache()
 
+        real_python = sys.executable
+        other_cmd = "/fake/path/python"
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+            f"    command: {real_python} -m mempalace.mcp_server\n"
         )
 
         first = _McpTransportDetector.detect(config_path=config_file)
@@ -265,14 +272,14 @@ class TestMcpTransportDetectorCaching:
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /fake/path/python -m other\n"
+            f"    command: {other_cmd} -m other\n"
         )
 
         second = _McpTransportDetector.detect(config_path=config_file)
 
         assert first is not None
         # Should return the cached result, not the modified config
-        assert second["command"] == "/usr/bin/python3"
+        assert second["command"] == real_python
 
     def test_clear_cache_resets_everything(self, tmp_path):
         """clear_cache() should reset both cache and warning flag."""
@@ -347,22 +354,23 @@ class TestMcpTransportDetectorCaching:
         """After TTL expires, detect() re-runs the full detection chain."""
         self._reset_cache()
 
+        real_python = sys.executable
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /usr/bin/python3 -m mempalace.mcp_server\n"
+            f"    command: {real_python} -m mempalace.mcp_server\n"
         )
 
         first = _McpTransportDetector.detect(config_path=config_file)
         assert first is not None
-        assert first["command"] == "/usr/bin/python3"
+        assert first["command"] == real_python
 
-        # Modify config and fake TTL expiry
+        # Use /bin/sh for second config — exists on Linux CI runners
         config_file.write_text(
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: /bin/sh -m other\n"
+            "    command: /bin/sh -c echo hi\n"
         )
         _McpTransportDetector._DETECTION_CACHE = (first, -1000.0)  # force expiry
 
