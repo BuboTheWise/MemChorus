@@ -237,6 +237,16 @@ class TestGracefulDegradation:
         yield
         shutil.rmtree(str(self.tmp_root), ignore_errors=True)
 
+    @pytest.fixture(autouse=True)
+    def _reset_tracker(self):
+        """Clear the HitRateTracker singleton before and after each test
+        so cross-test pollution (evidenced by total_saves > 0) never leaks."""
+        from memchorus.hit_rate_tracker import HitRateTracker
+
+        HitRateTracker.reset()
+        yield
+        HitRateTracker.reset()
+
     def test_no_adaptive_returns_v170_defaults(self):
         """When AdaptiveThreshold is not importable, compute_adjustments returns v1.7.0 defaults."""
         engine = CalibrationEngine(profile_name="no_adaptive")
