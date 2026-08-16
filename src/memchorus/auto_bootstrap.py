@@ -331,9 +331,18 @@ def _bootstrap() -> Optional[Any]:
     if isinstance(routing_override, dict):
         orchestrator_cfg["mempalace_config"]["mempalace_routing"] = routing_override
 
-    # Forward any remaining adapter-specific config through to the orchestrator
-    # so keys like 'hermes_default_config' propagate from MEMCHORUS_CONFIG env var
-    # or YAML. This is essential for test isolation and runtime overrides.
+    # Merge user adapter overrides into the auto-computed dicts instead of
+    # clobbering them entirely. A shallow `orchestrator_cfg.update(config)` would
+    # replace `mempalace_config` (which carries auto-computed fields like
+    # `skip_mcp`) with whatever the user YAML provided, silently dropping those
+    # computed defaults. So we pop adapter sections and merge them in place.
+    for adapter_key in ("mempalace_config", "hermes_default_config"):
+        user_override = config.pop(adapter_key, None)
+        if isinstance(user_override, dict):
+            existing = orchestrator_cfg.setdefault(adapter_key, {})
+            existing.update(user_override)
+
+    # Forward any remaining non-adapter config through to the orchestrator.
     orchestrator_cfg.update(config)
 
     # --- Step 5: Orchestrator creation & return ---
