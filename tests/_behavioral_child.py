@@ -81,7 +81,7 @@ class FileAccessCounter:
 # ---------------------------------------------------------------------------
 
 mode = os.environ.get("MODE", "store")
-store_dir = os.environ["STORE_DIR"]
+store_dir = os.environ.get("STORE_DIR") or os.environ.get("MEMORY_STORE_DIR") or "."
 run_id = os.environ.get("RUN_ID", "0")
 items_json = os.environ.get("ITEMS_JSON", "[]")   # [{"key":"...", "content":"..."}, ...]
 query_text = os.environ.get("QUERY", "")
