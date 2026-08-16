@@ -578,8 +578,15 @@ class _McpClient:
             )
 
         # ---- Legacy one-shot probe + per-call subprocess fallback ----
-        from mcp.client.stdio import StdioServerParameters, stdio_client
-        from mcp.client.session import ClientSession
+        try:
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+            from mcp.client.session import ClientSession
+        except ImportError as exc:
+            logger.warning(
+                "connect: MCP SDK not installed (missing %s) — legacy probe skipped", exc
+            )
+            self._connected = False
+            return False
         server_params = StdioServerParameters(command=cmd, args=args)
 
         async def _do_init():
