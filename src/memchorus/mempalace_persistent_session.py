@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os  # noqa: F401 — needed for PYTEST_CURRENT_TEST env check in _worker
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -133,20 +133,26 @@ class PersistentMcpSession:
 
     def _worker(self):
         """Async event loop running in a background thread."""
-        # Do not start the MCP persistence thread during pytest runs — mcp.client.stdio
-        # may not be installed, and letting it raise here creates unhandled thread exceptions
-        # that pollute test output even when graceful degradation works in the main process.
+
+        # Do not start the MCP persistence thread during pytest runs — mcp.client.stdio may
+        # not be installed, and letting it raise here creates unhandled thread exceptions that
+        # pollute test output even when graceful degradation works in the main process.
         if "PYTEST_CURRENT_TEST" in os.environ:
             self._state.alive = False
             return
 
+        # Wrap stdio imports so a missing mcp package does not crash the thread either.
         try:
             from mcp.client.stdio import StdioServerParameters, stdio_client  # noqa: F401
             from mcp.client.session import ClientSession  # noqa: F401
-        except ImportError as e:
-            logger.debug("PersistentMcpSession worker: MCP not available (%s)", e)
+        except ImportError as exc:
+            logger.warning(
+                "PersistentMcpSession worker: mcp.client not available — "
+                "persistent session will not start (%s)", exc
+            )
             self._state.alive = False
-            return
+            self._state.ready_event.set()
+
 
         server_params = StdioServerParameters(command=self.command, args=self.args)
 
