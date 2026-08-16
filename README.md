@@ -86,6 +86,11 @@ The system must stay functional even if every enhancement source disappears. The
 | `AutoStorageEngine` | Captures significant outcomes after actions complete with deduplication guards |
 | `BehavioralEnforcementManager` | Wires Trigger → Recall → Storage into a unified pipeline; returns structured results per call |
 | `MemoryProfile` | Classification enum guiding smart placement decisions at write time |
+| `SessionSearchMemorySource` | Fallback recall via FTS5 full-text search over Hermes session history, surfacing past mistakes/decisions from conversation transcripts |
+| `StorageResilience` | Retry-with-backoff and per-drawer isolation layer for ChromaDB/MemPalace saves; prevents transient failures from aborting entire batches |
+| `MemPalacePersistentSession` | Long-lived MCP session keeping the server alive across calls to prevent ChromaDB compactor crashes from repeated spawn-and-kill cycles |
+| `Orientation` | Session-start recall that injects project context (KG triples + semantic search, limited to 5 items) with 15s cache TTL |
+| `WorkflowCompliance` | Automated verification that dev feedback loops (squash-merge -> push -> install-from-SHA -> verify) completed; surfaces gaps as metadata |
 
 ## How It Works
 
@@ -373,10 +378,21 @@ Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
 
 ```bash
-memchorus-init --profile my_agent     # generates ~/.hermes/profiles/my_agent/memchorus.yaml
-memchorus-init                        # defaults to $HERMES_KANBAN_PROFILE or "default"
-memchorus-init --dry-run              # preview the generated YAML without writing
+memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_agent/memchorus.yaml
+memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
+memchorus-init --dry-run                      # preview the generated YAML without writing
+memchorus-init -p cthugha -d /opt/data        # custom data directory
+memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
 ```
+
+**Options:**
+
+| Flag | Shorthand | Description |
+|---|---|---|
+| `--profile <slug>` | `-p <slug>` | Agent/human profile slug. Defaults to `$HERMES_KANBAN_PROFILE` or `"default"` |
+| `--data-dir <path>` | `-d <path>` | Absolute data directory. Defaults to `{DEFAULT_DATA_DIR}/<profile>` |
+| `--dry-run` | — | Print generated YAML to stdout without writing a file |
+| `--enable-plugin` | — | Add `memchorus` to `plugins.enabled`. Default: `yes` |
 
 The command creates a routing config with namespaced wing maps, sets
 ``skip_mcp: false`` for live MemPalace transport, and optionally adds
