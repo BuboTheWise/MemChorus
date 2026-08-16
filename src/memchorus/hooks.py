@@ -236,9 +236,18 @@ class MemChorusHooks:
                 return None
 
             detected_points = []
+            enriched_terms = input_text
             if self._btrigger is not None:
                 input_str = str(input_text)[:4096]  # cap for performance
                 detected_points = self._btrigger.detect(input_str)
+
+            # Enrich search query with matched decision-point keywords so that
+            # when a merge, commit, or process-trigger word is detected, the
+            # recall actually searches for matching process/protocol memories.
+            if detected_points:
+                matched_kw = " ".join(dp.matched_keyword for dp in detected_points)
+                if matched_kw:
+                    enriched_terms = f"{matched_kw} {input_text}"
 
             # Determine search limit based on decision point priority:
             # PLANNING_START / CONTEXTUAL_SYNTHESIS -> broader recall (limit=5)
@@ -254,7 +263,7 @@ class MemChorusHooks:
 
             # Use search() (not retrieve()) for pre-decision recall — retrieve(key)
             # only does exact-key lookup and doesn't accept a limit param.
-            context_items = orchestrator.search(input_text, limit=search_limit)
+            context_items = orchestrator.search(enriched_terms, limit=search_limit)
 
             injected_blocks: List[str] = []
 
