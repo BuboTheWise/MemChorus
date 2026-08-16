@@ -152,7 +152,7 @@ class PersistentMcpSession:
             )
             self._state.alive = False
             self._state.ready_event.set()
-
+            return
 
         server_params = StdioServerParameters(command=self.command, args=self.args)
 
