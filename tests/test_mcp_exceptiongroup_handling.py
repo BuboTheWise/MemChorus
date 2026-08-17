@@ -26,6 +26,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+# Gate for mcp-dependent tests — the `mcp` package is an optional [mcp] extra.
+_has_mcp = False
+try:
+    import mcp.client.stdio  # noqa: F401
+    _has_mcp = True
+except ImportError:
+    pass  # mcp not installed, skip those tests
+
 # Import the module object itself so we can patch it by reference (not string).
 # This avoids namespace divergence under pytest-xdist where a string path may
 # resolve to a different copy of the module than what _McpClient._call already
@@ -213,6 +221,7 @@ class TestAllOriginalExceptionPaths:
                 assert client._call("x", {}) is None
 
 
+@pytest.mark.skipif(not _has_mcp, reason="mcp package not installed (optional [mcp] extra)")
 class TestCallToolAsyncBaseExceptionGroup:
     """_call_tool_async itself has a try/BaseExceptionGroup handler now."""
 
