@@ -204,6 +204,20 @@ class PersistentMcpSession:
                                 self._state.result_ready.set()
                                 self._state.last_activity = time.time()
 
+                            except BaseExceptionGroup as exc:
+                                # anyio TaskGroups raise BaseExceptionGroup (NOT Exception)
+                                # during teardown when internal reader/flusher tasks are
+                                # cancelled.  Catch it HERE so a single tool call failure
+                                # doesn't kill the entire persistent session.  Unwrap to
+                                # log the actual underlying error, then signal failure + continue.
+                                sub_exc = exc.exceptions[0] if exc.exceptions else exc
+                                logger.warning(
+                                    "PersistentMcpSession worker: call_tool(%s) raised ExceptionGroup — %s",
+                                    tool_name, sub_exc,
+                                )
+                                self._state.result = None
+                                self._state.result_ready.set()
+
                             except Exception as exc:
                                 logger.error(
                                     "PersistentMcpSession worker: call_tool(%s) failed: %s",
@@ -213,8 +227,10 @@ class PersistentMcpSession:
                                 self._state.result_ready.set()
 
             except BaseExceptionGroup as exc:
+                # Outer catch: only fires during session-level teardown
+                # (stdio_client/ ClientSession context manager exit), not per-call.
                 logger.warning(
-                    "PersistentMcpSession worker: BaseExceptionGroup (%d): %s",
+                    "PersistentMcpSession worker: session-level BaseExceptionGroup (%d): %s",
                     len(exc.exceptions),
                     ", ".join(type(e).__name__ for e in exc.exceptions),
                 )
