@@ -113,6 +113,9 @@ class _McpTransportDetector:
     # Module-level cache: (result_dict_or_None, timestamp) with 60s TTL.
     _DETECTION_CACHE: tuple[Optional[Dict[str, Any]], float] = (None, 0.0)
     _CACHE_TTL: float = 60.0
+    # Tracks the resolved target path that the cached result was computed for,
+    # so repeated calls with a *different* config_path still trigger a fresh scan.
+    _CACHED_TARGET: Optional[str] = None
     # Track whether the "no transport found" warning has already been emitted
     # so we don't spam the user across multiple orchestrator instances.
     _WARNING_EMITTED: bool = False
@@ -181,6 +184,7 @@ class _McpTransportDetector:
         warning guard so the next ``detect()`` re-runs the full scan.
         """
         _McpTransportDetector._DETECTION_CACHE = (None, 0.0)
+        _McpTransportDetector._CACHED_TARGET = None
         _McpTransportDetector._WARNING_EMITTED = False
 
     @staticmethod
@@ -204,12 +208,20 @@ class _McpTransportDetector:
             via ``_find_config()``.
         """
         now = time.monotonic()
+
+        # Resolve the target path BEFORE checking the cache so we can compare
+        # it with the previously cached target.  This way repeated calls with the
+        # SAME config get a fast cached return, but calls that pass a different
+        # config_path always trigger a fresh scan (fixes CI ordering issues).
+        target = config_path if config_path is not None else _McpTransportDetector._find_config()
+        target_key = str(target) if target is not None else "<auto-detect>"
+
         cached_result, cached_ts = _McpTransportDetector._DETECTION_CACHE
         if (now - cached_ts) < _McpTransportDetector._CACHE_TTL:
-            return cached_result
+            if _McpTransportDetector._CACHED_TARGET == target_key:
+                return cached_result
 
         # --- cache miss or expired — run full detection -------------------
-        target = config_path if config_path is not None else _McpTransportDetector._find_config()
 
         if target is None:
             logger.debug("_McpTransportDetector: no config.yaml found")
@@ -299,6 +311,7 @@ class _McpTransportDetector:
             )
 
             _McpTransportDetector._DETECTION_CACHE = (resolved, now)
+            _McpTransportDetector._CACHED_TARGET = target_key
             return resolved
 
         # Fallback: try PATH discovery
@@ -306,11 +319,13 @@ class _McpTransportDetector:
         if fallback:
             logger.info("_McpTransportDetector: using PATH fallback -> %s", fallback["command"])
             _McpTransportDetector._DETECTION_CACHE = (fallback, now)
+            _McpTransportDetector._CACHED_TARGET = target_key
             return fallback
 
         # Nothing found — show actionable guidance before giving up
         _McpTransportDetector._log_config_guidance()
         _McpTransportDetector._DETECTION_CACHE = (None, now)
+        _McpTransportDetector._CACHED_TARGET = target_key
         return None
 
 
