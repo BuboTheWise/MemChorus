@@ -284,6 +284,9 @@ class MemChorusHooks:
             if not input_text:
                 return None
 
+            # 0. Scan for behavioral guards BEFORE any other injection (hard gates)
+            guard_blocks = self._try_guard_scan(input_text, orchestrator)
+
             detected_points = []
             enriched_terms = input_text
             if self._btrigger is not None:
@@ -319,6 +322,9 @@ class MemChorusHooks:
 
             injected_blocks: List[str] = []
 
+            # Guards go first so they appear before soft recall / feedback blocks
+            injected_blocks.extend(guard_blocks)
+
             if context_items:
                 injected_blocks.append(
                     "[MemChorus Memory Recall]\n"
@@ -346,6 +352,41 @@ class MemChorusHooks:
     def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
         """No-op — feedback_loop module removed in v1.9.0."""
         return []
+
+    def _try_guard_scan(self, input_text: str, orchestrator) -> List[str]:
+        """Scan input for behavioral prohibition matches and inject [[GUARD]] blocks.
+
+        Reuses the cached ProhibitionsManager from the orchestrator (populated by distillation
+        or created lazily here). Gracefully degrades when the prohibitions module is unavailable.
+        Returns a list of markdown guard block strings (may be empty).
+        """
+        try:
+            from memchorus.prohibitions import ProhibitionsManager
+
+            # Reuse cached prohibitions manager or create fresh one
+            pm = getattr(orchestrator, "_prohibitions_manager", None)
+            if pm is None:
+                pm = ProhibitionsManager()
+                count = pm.load()
+                orchestrator._prohibitions_manager = pm
+                logger.info("hooks: initialized ProhibitionsManager with %d rules", count)
+
+            result = pm.scan_text(str(input_text)[:4096])  # cap for performance
+            blocks = result.inject_blocks()
+            if blocks:
+                guard_header = "[[BEHAVIORAL GUARDS]]\n" + "\n".join(blocks)
+                logger.info(
+                    "hooks: prohibition scan triggered %d rule(s) (verdict=%s, %.1fms)",
+                    len(result.matched_rules), result.verdict.value, result.timing_ms,
+                )
+                return [guard_header]
+            return []
+        except ImportError:
+            logger.debug("hooks: ProhibitionsManager not available — skipping guard scan")
+            return []
+        except Exception as e:
+            logger.debug("hooks: guard scan failed silently: %s", e)
+            return []
 
     def on_post_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         logger.info("MemChorus on_post_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
