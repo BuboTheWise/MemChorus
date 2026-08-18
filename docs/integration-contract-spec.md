@@ -421,8 +421,8 @@ class DistillationConfig:
 
 ```python
 class ProhibitionDistiller:
-    SELFBREAK_KEYWORDS: List[str]      # 13 patterns: ModuleNotFoundError, venv damaged, pip install -e, etc.
-    NONDESTRUCTIVE_KEYWORDS: List[str] # 8 patterns: recall empty, cache miss, no matching memories, etc.
+    SELFBREAK_KEYWORDS: List[str]      # 11 patterns: ModuleNotFoundError, venv damaged, pip install -e, etc.
+    NONDESTRUCTIVE_KEYWORDS: List[str] # 7 patterns: recall empty, cache miss, no matching memories, etc.
 
     def __init__(self, config: Optional[DistillationConfig] = None):
         # Initialize with optional config; defaults to DistillationConfig() if omitted.
@@ -462,9 +462,9 @@ The `on_pre_llm_call` hook sequence was modified to insert guard scanning BEFORE
 Hermes turn_context.py -> invokes pre_llm_call hook
         |
         v
-[Step 1: _scan_prohibitions() / ProhibitionsManager.scan_text(user_message)]
-   - Reuses or creates _prohibitions_manager on orchestrator instance
-   - Scans current user_message + recent conversation history against all active rules
+[Step 1: _try_guard_scan() / ProhibitionsManager.scan_text(input_text)]
+   - Reuses or creates _prohibitions_manager on orchestrator instance (hooks.py line 356-389)
+   - Scans current input_text against all active rules, capped at 4096 chars for performance
    - If verdict is BLOCK or WARNING and .triggered is true, generates [[BEHAVIORAL GUARD]] blocks
         |
         v
@@ -487,20 +487,20 @@ Hermes turn_context.py -> invokes pre_llm_call hook
 
 ### 8.6 Post-Storage Distillation Integration
 
-The distiller is wired into `hooks.py` error-handling paths:
+The distiller is wired into `hooks.py` as a post-save check — it fires whenever significant content is successfully stored:
 
 ```
-Tool execution fails/errs
+Content successfully saved via capture_outcome()
         |
         v
-[on_post_tool_call hook fires with status="error"]
-        |
-        v
-[_try_distill_prohibition() — Entry Point #2]
+[_try_distill_prohibition(text, orchestrator)]
+   - Entry point inside _batch_flush callback (hooks.py line 120) AND _auto_save fallback (line 186)
    - Imports distiller module (gracefully degrades if unavailable)
-   - Calls distill(error_text, context)
+   - Calls distill(text) on the saved content
    - If CRITICAL and passes all gates: persists new Prohibition via ProhibitionsManager.add_rule()
    - If LOW or blocked by session cap / cooldown: silently logged, no persistence
 ```
 
-This creates the closed feedback loop: failure detected -> mistake distilled into rule -> next LLM call scans against expanded rule set -> action blocked before execution.
+This creates the closed feedback loop: significant content stored -> potential mistake distilled into guard rule -> next LLM call scans against expanded rule set -> self-breaking action blocked before execution.
+
+**Trigger note:** Distillation does NOT require error status — it fires on ANY successful save where `capture_outcome` marks the content as saved and significant, meaning both tool success and failure paths can trigger distillation.
