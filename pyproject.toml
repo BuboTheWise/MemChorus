@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=70.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memchorus"
+dynamic = ["version"]
+description = "Memory orchestration system for Hermes agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "MemChorus Project"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    "pydantic>=2.0,<3.0",
+    "pyyaml>=5.4",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0,<2.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-xdist>=3.0",
+    "pytest-timeout>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/BuboTheWise/MemChorus"
+
+[project.scripts]
+memchorus-init = "memchorus.auto_init:cli_main"
+
+# Hermes plugin discovery via entry points
+[project.entry-points."hermes_agent.plugins"]
+memchorus = "memchorus.hooks"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"*" = ["**/*.py", "**/*.toml"]
