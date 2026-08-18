@@ -115,6 +115,9 @@ def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
                             res.get("significance", ""),
                             res.get("importance_score", 0.0),
                         )
+                        # Post-storage distillation: check if this saved outcome is a
+                        # critical mistake worthy of becoming a prohibition guard (AC4)
+                        _try_distill_prohibition(text, orchestrator)
                     else:
                         logger.debug("hooks: capture_outcome rejected: %s", res.get("reason", ""))
                 except Exception as fe:
@@ -179,10 +182,56 @@ def _auto_save(orchestrator, text, error_context=""):
             logger.info(
                 "hooks: _auto_save saved (%s)", res.get("significance", ""),
             )
+            # Also try distillation on direct saves (AC4 completeness)
+            _try_distill_prohibition(text, orchestrator)
     except Exception as e:
         logger.warning(
             "hooks: _auto_save failed — content lost. %s (context: %s)", e, error_context,
         )
+
+
+def _try_distill_prohibition(text: str, orchestrator) -> None:
+    """Post-storage distillation: try to convert a critical mistake into a prohibition guard.
+
+    Called after capture_outcome saves a significant outcome. If the saved text looks like
+    self-breaking behavior, distill it into an enforceable rule so the next agent actually
+    sees and respects the guard.
+
+    Gracefully degrades when ProhibitionDistiller or ProhibitionsManager are unavailable.
+    """
+    try:
+        from memchorus.prohibition_distiller import ProhibitionDistiller
+        from memchorus.prohibitions import ProhibitionsManager
+
+        distiller = ProhibitionDistiller()
+        rule_dict = distiller.distill(text)
+        if rule_dict is None:
+            return  # not worthy or cooldown active — nothing to do
+
+        # Persist the distilled rule through the orchestrator's prohibitions manager
+        try:
+            pm = getattr(orchestrator, '_prohibitions_manager', None)
+            if pm is None:
+                pm = ProhibitionsManager()
+                pm.load()
+                orchestrator._prohibitions_manager = pm
+            from memchorus.prohibitions import Prohibition
+            rule = Prohibition.from_dict(rule_dict)
+            pm.add_rule(rule)
+            pm.save()
+            logger.info(
+                "hooks: distilled and saved new prohibition guard %s (severity=%d)",
+                rule.id, rule.severity,
+            )
+        except Exception as pe:
+            logger.warning(
+                "hooks: distiller produced a rule but failed to persist via ProhibitionsManager: %s", pe
+            )
+
+    except ImportError:
+        logger.debug("hooks: prohibition_distiller not available — skipping distillation")
+    except Exception as e:
+        logger.debug("hooks: distillation failed silently: %s", e)
 
 
 # ---------------------------------------------------------------------------
