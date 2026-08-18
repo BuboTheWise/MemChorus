@@ -292,6 +292,76 @@ Existing components (unchanged interface):
 
 ---
 
+---
+
+## 10 Behavioral Guard System — Component Architecture
+
+The behavioral guard system provides runtime protection against destructive operations that target the Hermes environment itself (venv corruption, config clobbering, scratch directory wiping). It operates independently of the lifecycle layer but shares the same persistence infrastructure.
+
+### 10.1 Prohibitions Manager
+
+```
+ProhibitionsManager
+    |
+    +--> load_rules()                -- JSONL I/O with data_dir fallback
+    +--> seed_prohibitions_from_list() -- three hardcoded guard rules (venv, config, scratch)
+    +--> add_rule(id, ...)            -- new rule deduplication by ID
+    +--> remove_rule(rule_id)         -- removal with compiled-pattern refresh
+    +--> scan_text(text, source="pre_llm_call") 
+        --> _compile_patterns()       -- regex per-prohibition from trigger_keywords OR tool_call_match
+        --> Prohibition.matches_text()  -- fuzzy match against single prohibition
+    +--> GuardVerdict enum               -- OK / WARNING / BLOCK (threshold: >= 2 blocks)
+    +--> GuardResult.inject_blocks()     -- double-bracket guard injection for blocked inputs
+```
+
+Seed rules loaded at startup (if no persistent JSONL):
+- `guard-001-pip-editable-venv`: pip install -e non-editable in Hermes venv → BLOCK  
+- `guard-002-config-yaml-overwrite`: deep merge config into user YAML → BLOCK  
+- `guard-003-no-scratch-delete`: delete site-packages / rm hermes dir → WARNING
+
+### 10.2 Prohibition Distiller
+
+```
+ProhibitionDistiller(config=...)
+    |
+    +--> MistakeSeverity enum            -- LOW (0) / SELF_MODIFIKATION (1) / SYSTEM_BREAK (2-3)
+    +--> DistillationConfig             -- threshold severity, session cap, cooldown hours
+    +--> distill(error_summary, context) 
+        --> is_worthy_of_guard()        -- severity classification against known patterns
+        --> _extract_keywords()         -- keyword extraction from error text
+        --> _build_rationale()          -- rationale construction with severity + summary
+    +--> ProhibitionDistiller.session_rules[]  -- per-session distilled rule accumulator (cap: 2)
+    +--> cooldown_hash_history[]       -- md5-based duplicate prevention (24h TTL)
+```
+
+### 10.3 Hook Integration Flow
+
+The full `on_pre_llm_call` pipeline with guard filtering:
+
+```
+Hermes turn_context.py
+        |
+        v
+[ProhibitionsManager.scan_text(user_message)]  <-- BLOCK/WARNING before recall
+        |  
+        | (pass=OK, block=injected_guard_text)
+        v
+[MemoryOrchestrator.retrieve()]          <-- semantic search across sources
+        |
+        v
+[Memory injection into LLM context]     <-- enriched context with guard layer
+```
+
+### 10.4 Configuration
+
+Guard system knobs via `DistillationConfig`:
+- `minimum_severity`: threshold for auto-distilling new rules (CRITICAL only) 
+- `max_rules_per_session`: hard cap on auto-generated rules per run
+- `cooldown_hours`: prevents duplicate patterns within this window (default 24h)
+- Opt-in via enabling ProhibitionDistiller in the orchestrator config; seed guards always active
+
+---
+
 ## 10. Open Questions for Future Iteration
 
 1. Should the importance threshold (`importance_min`) differ per MemoryProfile? Current design uses a single value, but ephemeral memories might tolerate lower thresholds than long-lived knowledge
