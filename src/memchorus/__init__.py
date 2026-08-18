@@ -106,10 +106,11 @@ _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
     "AutoStorageEngine": ("memchorus.auto_storage_engine", "AutoStorageEngine"),
     "BehavioralEnforcementManager": ("memchorus.enforcement_manager", "BehavioralEnforcementManager"),
     # Feedback loop detection + escalation v1.1.03
-    # Lifecycle management — Phase 1 (§6.2 / §8)
-    "AuditLogger": ("memchorus.lifecycle_manager", "AuditLogger"),
-    "LifecycleManager": ("memchorus.lifecycle_manager", "LifecycleManager"),
-    "SweepScheduler": ("memchorus.lifecycle_manager", "SweepScheduler"),
+    # Behavioral prohibitions guard system
+    "Prohibition": ("memchorus.prohibitions", "Prohibition"),
+    "ProhibitionsManager": ("memchorus.prohibitions", "ProhibitionsManager"),
+    "GuardVerdict": ("memchorus.prohibitions", "GuardVerdict"),
+    "GuardResult": ("memchorus.prohibitions", "GuardResult"),
 }
 
 __all__ = [
@@ -126,6 +127,11 @@ __all__ = [
     "AuditLogger",
     "LifecycleManager",
     "SweepScheduler",
+    # Behavioral prohibitions guard system
+    "Prohibition",
+    "ProhibitionsManager",
+    "GuardVerdict",
+    "GuardResult",
 ]
 
 
