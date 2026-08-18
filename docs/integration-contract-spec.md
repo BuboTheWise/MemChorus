@@ -74,9 +74,9 @@ _invoke_hook(
 )
 ```
 
-### 2.3 pre_llm_call Return Shape Contract
+### 2.3 pre_llm_call Return Shape Contract + Behavioral Guard Filtering
 
-**Source:** turn_context.py:538-569
+**Source:** turn_context.py:538-569 + hooks.py behavioral guard layer
 
 Hermes iterates hook return values and checks for context injection:
 
@@ -93,6 +93,16 @@ for r in _pre_results:
 ```
 
 **Critical requirement:** Hook return dicts MUST use the key `"context"` (not `"injected_context"`) for the string content. The value is coerced to `str()` and appended to context parts that later get injected into the system prompt/user message.
+
+### 2.3.1 Behavioral Guard Pre-Filter (`on_pre_llm_call`)
+
+Before memory recall injection, the hook runs **ProhibitionsManager.scan_text(user_message)**. This synchronous guard scan sits between Hermes' parameter delivery and MemoryOrchestrator.retrieve():
+
+1. `ProhibitionsManager.load()` fires at plugin startup — seeds 3 hardcoded rules (`guard-001`, `guard-002`, `guard-003`) unless persistent JSONL already exists
+2. Each incoming message is scanned through compiled regex patterns built from trigger keywords on all active rules (seed + user-added)
+3. If verdict is BLOCK or WARNING and `.triggered` is true, the result's `.inject_blocks()` generates double-bracket guard text injected into context — blocking destructive operations before they reach the LLM
+
+**Key properties:** synchronous execution (no crash risk), ~1ms wall time per turn, zero dependency on external services.
 
 ---
 

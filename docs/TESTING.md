@@ -2,7 +2,7 @@
 
 ## Overview
 
-MemChorus maintains a multi-layered test suite designed to verify correctness across all memory backends and produce quantitative metrics for continuous improvement. The current suite collects **1260+ tests across 75 modules**, covering unit, integration and end-to-end execution paths.
+MemChorus maintains a multi-layered test suite designed to verify correctness across all memory backends and produce quantitative metrics for continuous improvement. The current suite collects **1340+ tests across 77 modules**, covering unit, integration and end-to-end execution paths.
 
 This document is self-contained — if you are a third-party agent integrating MemChorus, this page tells you what is tested, how to run it locally, what the benchmarks measure, and how failure-mode testing works without needing to read any other file first.
 
@@ -10,7 +10,7 @@ This document is self-contained — if you are a third-party agent integrating M
 
 | Layer | Scope | Approximate Count | MCP Required |
 |-------|-------|-------------------|-------------|
-| Unit tests | Individual method correctness (scoring, routing, profile classification) | ~900 | No |
+| Unit tests | Individual method correctness (scoring, routing, profile classification, guard rules) | ~965 | No |
 | Integration tests | Multi-source orchestration, hook firing, lifecycle behavior | ~300 | Optional |
 | E2E MCP tests | Full synthetic natural scenario against live MemPalace server | 10 | Yes (gated by env var) |
 | Benchmark metrics | Timing, accuracy and failure-mode measurement | 8+ | Partial |
@@ -115,6 +115,27 @@ Python 3.11+ introduces `ExceptionGroup` for concurrent failures. The tests in `
 ### Recursion guard testing
 
 Deep nesting of enforcement hooks can cause stack overflow if recursion detection fails. The files `test_recursion_guard.py` and `test_recursion_guard_deep_nesting.py` exercise save-enforce-hook-save chains at 1-3 levels of nesting, including exception paths, confirming the `RecursionGuard` depth counter prevents infinite loops.
+
+### Behavioral guard system testing
+
+The behavioral guard system (prohibitions + distiller) is verified by two dedicated test modules covering rule evaluation and post-storage feedback:
+
+- **`tests/test_prohibitions.py`** — 31 tests across 4 test classes:
+  - `TestGuardVerdict`: enum values for OK/WARNING/BLOCK and equality semantics
+  - `TestGuardResult`: `triggered` flag, `.inject_blocks()` double-bracket text generation, WARNING threshold (>= 2 blocks)
+  - `TestProhibition`: serialization round-trip via JSON, regex pattern compilation with invalid-regex handling, case-insensitive text matching, tool_call_check regex binding
+  - `TestProhibitionsManager`: seed rule loading (3 rules), add/remove/deduplicate logic, JSONL persistence and reload idempotency, `scan_text()` against each seed keyword (pip-venv-guard, hermes-config-overwrite, scratch-delete), `scan_tool_call()` command+args wrapping
+
+- **`tests/test_distiller.py`** — 25 tests across 8 test classes:
+  - `TestMistakeSeverity`: enum values (LOW/SELF_MODIFIKATION/SYSTEM_BREAK)
+  - `TestDistillationConfig`: default thresholds (severity, session cap, cooldown hours) and override behavior
+  - `TestIsWorthyOfGuard`: critical self-break pattern detection (Hermes CLI crash, editable .pth shim, pip install -e non-editable), nondestructive patterns correctly filtered out, low-severity defaults on unknown text
+  - `TestProhibitionDistiller`: full distillation pipeline including severity gate (< CRITICAL returns None), session rule cap enforcement (max_rules_per_session limit), cooldown duplicate prevention, context appended to rationale, trigger keyword cap at 5 entries, serialized output round-trips through Prohibition model
+  - `TestKeywordExtraction`: `_extract_keywords()` hits known self-break terms for significant text, returns empty set for non-self-break text exceeding word threshold, fallback phrase extraction under short text
+  - `TestRationaleBuilder`: severity + error summary included in generated rationale string
+  - `TestConditionBuilder`: `_build_condition()` binds to representative error snippet
+  - `TestToolCallRegex`: generates compilable regex from keyword list, returns None on empty list
+  - `TestCooldownHelpers`: deterministic md5-based hash for same text, different hashes for different text, stale entry cleanup by age threshold
 
 ### Profile isolation contamination
 
