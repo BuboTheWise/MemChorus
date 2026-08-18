@@ -111,6 +111,7 @@ _LAZY_SYMBOLS: dict[str, tuple[str, str]] = {
     "ProhibitionsManager": ("memchorus.prohibitions", "ProhibitionsManager"),
     "GuardVerdict": ("memchorus.prohibitions", "GuardVerdict"),
     "GuardResult": ("memchorus.prohibitions", "GuardResult"),
+    "ProhibitionDistiller": ("memchorus.prohibition_distiller", "ProhibitionDistiller"),
 }
 
 __all__ = [
