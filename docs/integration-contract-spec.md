@@ -266,3 +266,241 @@ mcp mempalace_status
 | 1.0.0 Draft | 2026-07-17 | project lead | Initial spec from empirical verification |
 | 1.0.1 Updated | 2026-07-18 | project lead | Added noise filter patterns (4.3), updated test plan with pytest automation, added simulation harness coverage table |
 | 1.0.2 Final | 2026-07-18 | project lead | Marked P0 fixes as resolved (PR #27), corrected section numbering, aligned acceptance criteria with merged reality |
+| 1.0.3 Updated | 2026-08-18 | project lead | Added Behavioral Guard System section (8.x) covering prohibitions model, GuardVerdict/GuardResult, ProhibitionsManager, ProhibitionDistiller; updated hook injection sequence documentation |
+
+---
+
+## 8. Behavioral Guard System
+
+Supersedes Section 2.3.1 for guard-system details. The behavioral guard layer sits between Hermes parameter delivery and MemoryOrchestrator.retrieve(), injecting hard-block guardrails before soft recall. Unlike soft recall which is advisory, guards use `[[double bracket]]` markers that cannot be skimmed past by the LLM.
+
+### 8.1 Prohibition Model
+
+**Source:** `src/memchorus/prohibitions.py`, lines 80-166
+
+```python
+@dataclass
+class Prohibition:
+    id: str                          # stable UUID for deduplication / updates
+    condition: str                   # the actual rule statement (injected into prompt)
+    trigger_keywords: List[str] = dc_field(default_factory=list)  # fast-path match tokens
+    tool_call_check: Optional[str] = None  # compiled as regex at load time
+    severity: int = 3               # 1=note, 2=warning, 3=hard block
+    block_action: str = ""          # what it blocks (human-readable for prompt)
+    rationale: str = ""             # why this rule exists (critical - agents ignore rules without reasoning)
+    source: str = "system"          # origin label: system | distilled-from-mistake | manual
+    created: str = ""               # ISO-8601 timestamp
+    type_: str = "infrastructure"   # category tag
+```
+
+**Pre-compilation step:** `_compile_patterns()` runs at load time for each rule. It joins `trigger_keywords` with OR, applies word-boundary case-insensitive matching (`\b(?:kw1|kw2)\b`), and compiles the optional `tool_call_check` string as a separate regex. Compiled patterns are cached in `_compiled_patterns: List[re.Pattern[str]]` so runtime matching has zero compilation overhead (GAP107 performance budget: &lt; 1ms per check).
+
+**Text matching:** `matches_text(text)` iterates compiled patterns and returns `True` on the first match. This is the hot path executed on every guard scan.
+
+**Serialization:** `to_dict()` / `from_dict()` provide round-trip JSON serialization for `prohibitions.jsonl`. The internal `_compiled_patterns` cache is NOT persisted.
+
+### 8.2 GuardVerdict and GuardResult
+
+**Source:** `src/memchorus/prohibitions.py`, lines 30-72
+
+```python
+class GuardVerdict(Enum):
+    OK      = "ok"      # green light - proceed normally
+    WARNING = "warning" # severity 1-2 match; note in prompt but don't block
+    BLOCK   = "block"   # severity 3 match; inject hard guard that stops the action
+```
+
+```python
+@dataclass
+class GuardResult:
+    verdict: GuardVerdict             # outcome enum (default OK)
+    matched_rules: List[Prohibition]  # rules that triggered (default empty)
+    timing_ms: float = 0.0           # scan wall-clock time in milliseconds
+    errors: List[str] = dc_field(default_factory=list)
+
+    @property
+    def triggered(self) -> bool:
+        return self.verdict != GuardVerdict.OK
+
+    def inject_blocks(self, source_tag: str = "hermes_agent") -> List[str]:
+        # Build [[BEHAVIORAL GUARD]] markdown blocks for prompt injection.
+        # Caps at 3 rules to prevent bloat (GAP024).
+```
+
+`inject_blocks()` generates formatted markdown using double brackets so they are visually distinct from `[soft recall]` blocks:
+
+\`\`\`markdown
+[[BEHAVIORAL GUARD: guard-001-no-editable-install]]
+
+**RULE:** Never run pip install -e (editable install) inside ~/.hermes/ or any self-critical venv path. Always install from pushed GitHub commits only.
+**BLOCKS:** Editable installs into self-critical venvs that break the CLI on path shifts
+**WHY:** Aug 17 2026 incident: editable .pth shim in self-hosted venv caused ModuleNotFoundError for hermes_cli after path shift. Broken CLI = total agent outage until manual fix.
+**SEVERITY:** HIGH
+
+> This is a hard guardrail based on past mistakes. Do NOT override it without explicit human confirmation.
+\`\`\`
+
+The blocks list is capped at 3 matched rules to respect GAP024 context bloat limits.
+
+### 8.3 ProhibitionsManager
+
+**Source:** `src/memchorus/prohibitions.py`, lines 218-352
+
+```python
+class ProhibitionsManager:
+    def __init__(self, data_dir: Optional[Path] = None):
+        # Initialize with optional custom data directory.
+        # Defaults to data/prohibitions.jsonl in package directory or ~/.memchorus-data/ fallback.
+
+    @property
+    def file_path(self) -> Path:
+        # Resolve prohibitions.jsonl path; auto-creates parent directories.
+
+    def load(self) -> int:
+        # Load rules from disk JSONL. If file missing, seed with 3 default guards.
+        # Returns count of loaded/seeded rules.
+
+    def save(self) -> None:
+        # Persist all rules back to disk as JSONL.
+
+    def scan_text(self, text: str) -> GuardResult:
+        # Scan arbitrary text against all loaded rules. Highest severity across matches wins the verdict.
+
+    def scan_tool_call(self, command: str, args: Optional[str] = None) -> GuardResult:
+        # Specialized scan for shell commands. Concatenates command + args before scanning.
+
+    def add_rule(self, rule: Prohibition) -> None:
+        # Add a new rule (deduplicates by id).
+
+    def remove_rule(self, rule_id: str) -> bool:
+        # Remove a rule by ID. Returns True if found and removed.
+
+    @property
+    def rules(self) -> List[Prohibition]:
+        # Read-only access to the rule list.
+```
+
+**Lazy-loading behavior:** Rules are loaded on first `load()` call, compiled into regex patterns, and cached in memory. The manager is stored as `_prohibitions_manager` on the orchestrator instance for cross-turn reuse (avoids re-reading disk on every LLM call).
+
+**Seed rules:** Three default rules ship built-in (no distillation or training required):
+
+| Rule ID | Trigger Keywords | Severity | Block Action |
+|---------|-----------------|----------|-------------|
+| `guard-001-no-editable-install` | `pip install -e`, `editable install`, `pip install .`, `-e ~/.hermes` | 3 (HARD BLOCK) | Editable installs into self-critical venvs that break the CLI on path shifts |
+| `guard-002-no-scratch-delete` | `rm -rf ~/.hermes`, `remove hermes dir`, `delete site-packages`, `unlink hermes` | 3 (HARD BLOCK) | Removing the agent's own installation directory or venv site-packages |
+| `guard-003-no-public-opsec-leak` | `commit message with name`, `local path in code`, `personal identifier` | 2 (WARNING) | Including agent names or local paths in public repository content |
+
+Seed rules live in `_DEFAULT_SEED_RULES` at module level. The `created` timestamp is generated dynamically on first load via `datetime.now(timezone.utc).isoformat()`.
+
+### 8.4 ProhibitionDistiller
+
+**Source:** `src/memchorus/prohibition_distiller.py`, lines 1-383
+
+The distiller converts detected mistakes into enforceable prohibition rules — the post-storage pipeline that transforms observed failures into preventive guards. It integrates via `hooks.on_post_tool_call` error-handling paths.
+
+#### MistakeSeverity Enum
+
+```python
+class MistakeSeverity(Enum):
+    CRITICAL = 3   # self-destructs environment / loses data / breaks core toolchain
+    MEDIUM   = 2   # causes wasted cycles but not destructive
+    LOW      = 1   # quality-of-life degradation (e.g. poor recall, duplicate storage)
+```
+
+#### DistillationConfig
+
+```python
+@dataclass
+class DistillationConfig:
+    minimum_severity: int = 3          # only CRITICAL mistakes become rules by default
+    max_rules_per_session: int = 2     # prevent guard explosion; cap fresh guards per cycle
+    cooldown_hours: float = 24.0       # don't create a guard for the same pattern twice in X hours
+```
+
+#### ProhibitionDistiller API
+
+```python
+class ProhibitionDistiller:
+    SELFBREAK_KEYWORDS: List[str]      # 13 patterns: ModuleNotFoundError, venv damaged, pip install -e, etc.
+    NONDESTRUCTIVE_KEYWORDS: List[str] # 8 patterns: recall empty, cache miss, no matching memories, etc.
+
+    def __init__(self, config: Optional[DistillationConfig] = None):
+        # Initialize with optional config; defaults to DistillationConfig() if omitted.
+
+    @classmethod
+    def is_worthy_of_guard(cls, error_text: str) -> MistakeSeverity:
+        # Classify whether the given error/mistake text deserves a hard guard.
+        # Returns CRITICAL if self-breaking behavior detected, LOW if clearly non-destructive.
+
+    def distill(self, error_text: str, context: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        # Attempt to distill a prohibition rule from the given error text.
+        # Returns a dict matching Prohibition.from_dict() schema if worthy and passes all gates.
+        # Returns None if the mistake should not become a guard.
+```
+
+**Three-gate pipeline inside `distill()`:**
+
+1. **Severity gate** — `is_worthy_of_guard()` must return `CRITICAL` (severity >= `config.minimum_severity`, default 3). Non-destructive patterns like cache misses or empty search results are immediately classified as LOW and skipped.
+2. **Session cap gate** — at most `max_rules_per_session` new rules per distiller instance (default 2). Prevents guard explosion when errors cascade.
+3. **Cooldown gate** — MD5 fingerprint hash of the normalized error text is checked against `_recent_pattern_hashes`. If the same pattern was distilled within `cooldown_hours` (default 24h), the request is silently dropped.
+
+**Keyword extraction:** `_extract_keywords()` pulls matching self-break keywords from the error text first, then falls back to regex-based Python exception type extraction (`ModuleNotFoundError`, `ImportError`, etc.), and finally extracts short multi-word phrases if the text itself is brief enough.
+
+**Rule construction helpers:**
+- `_build_condition()` — builds a "Never do X because Y happened" statement from keywords + error summary
+- `_build_rationale()` — composes WHY this rule exists, including contextual failure details (critical for agent compliance)
+- `_build_block_action()` — extracts the core action being blocked for prompt injection display
+- `_build_tool_call_regex()` — generates a safe OR-joined regex from extracted keywords for tool-call scanning
+
+**Output format:** The returned dict contains all fields required by `Prohibition.from_dict()`: `id`, `condition`, `trigger_keywords` (capped at 5), `tool_call_check`, `severity`, `block_action`, `rationale`, `source="distilled-from-mistake"`, `created` (ISO timestamp), `type="infrastructure"`.
+
+### 8.5 Hook Injection Flow Update
+
+The `on_pre_llm_call` hook sequence was modified to insert guard scanning BEFORE soft recall injection:
+
+```
+Hermes turn_context.py -> invokes pre_llm_call hook
+        |
+        v
+[Step 1: _scan_prohibitions() / ProhibitionsManager.scan_text(user_message)]
+   - Reuses or creates _prohibitions_manager on orchestrator instance
+   - Scans current user_message + recent conversation history against all active rules
+   - If verdict is BLOCK or WARNING and .triggered is true, generates [[BEHAVIORAL GUARD]] blocks
+        |
+        v
+[Step 2: Guard blocks injected into "context" return dict]
+   - Double-bracket markers prevent LLM from skimming past (unlike [bracket] soft recall)
+   - Injected via the Hermes turn_context.py contract at line 538-569
+        |
+        v
+[Step 3: MemoryOrchestrator.retrieve() — semantic search/recall]
+   - Standard memory recall runs AFTER guard check completes
+        |
+        v
+[Step 4: Combined context injected into LLM prompt]
+   - Guard blocks + recalled memories both in final "context" key
+```
+
+**Key sequence change:** Previously, soft recall injection ran first on every LLM call. Now `_scan_prohibitions()` fires before `MemoryOrchestrator.retrieve()`, ensuring destructive actions are blocked or warned against before the LLM processes any recalled context about past mistakes. This ordering is critical because: if the agent recalls a past mistake but the prohibition hasn't fired yet, the LLM may still attempt the same action (soft recall alone does not prevent recurrence).
+
+**Performance characteristics:** Guard scan runs synchronously in ~1ms wall time per turn against all active rules using pre-compiled regex patterns. Zero dependency on external services, network calls, or MCP connectivity.
+
+### 8.6 Post-Storage Distillation Integration
+
+The distiller is wired into `hooks.py` error-handling paths:
+
+```
+Tool execution fails/errs
+        |
+        v
+[on_post_tool_call hook fires with status="error"]
+        |
+        v
+[_try_distill_prohibition() — Entry Point #2]
+   - Imports distiller module (gracefully degrades if unavailable)
+   - Calls distill(error_text, context)
+   - If CRITICAL and passes all gates: persists new Prohibition via ProhibitionsManager.add_rule()
+   - If LOW or blocked by session cap / cooldown: silently logged, no persistence
+```
+
+This creates the closed feedback loop: failure detected -> mistake distilled into rule -> next LLM call scans against expanded rule set -> action blocked before execution.
