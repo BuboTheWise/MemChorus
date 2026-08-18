@@ -467,6 +467,7 @@ class MemChorusHooks:
             if orchestrator is not None:
                 from memchorus.mistake_detector import MistakeDetector as _MD
                 from memchorus.hit_rate_tracker import HitRateTracker as _HRT
+from memchorus.prohibitions import ProhibitionsManager
 
                 detector = _MD.get_instance()
                 tracker = _HRT.get_instance()
