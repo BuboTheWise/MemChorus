@@ -5,7 +5,7 @@ Provides ``AutoStorageEngine`` that intercepts text after task/tool completion,
 detects significance (LEARNING/MISTAKE/DECISION/RESULT), filters trivial
 content, deduplicates, and writes structured payloads via a MemoryOrchestrator.
 
-Bug 3 additions (t_da9e2362):
+Bug 3 additions ([TASK-ID]):
     - AC1: min_content_length threshold (default 50 chars before storage)
     - AC2: Noise pattern recognition (rejects tracebacks, boilerplate, hex dumps)
     - AC3: Shannon entropy gating (rejects repetitive/low-signal content)
@@ -276,7 +276,7 @@ def _is_placeholder_artifact(text: str) -> bool:
     """Return True when *text* is a synthetic placeholder / boilerplate filler
     that carries no real informational signal.
 
-    Catch patterns like "session context t_17cfe174 current task" that slip
+    Catch patterns like "session context [TASK-ID] current task" that slip
     through entropy gates because their character variety looks superficially
     informative but contain zero actionable content.
 

@@ -1,6 +1,6 @@
 """Tests for MemoryOrchestrator.recommended_sources().
 
-This method is greenfield (B-2 bug fix t_b9205369). It should return a ranked list of source
+This method is greenfield (B-2 bug fix [TASK-ID]). It should return a ranked list of source
 names suitable for saving a given write_type, honouring:
 
   AC1  storage_enabled gating — disabled sources never appear

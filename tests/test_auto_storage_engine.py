@@ -167,7 +167,7 @@ class TestSignificanceDetection(unittest.TestCase):
         engine = _make_engine()
         self._assert_category(engine, "The deployment was a success with zero downtime", SignificanceCategory.RESULT)
 
-    # ---- RESULT suppression (t_61c6ab7c) ----
+    # ---- RESULT suppression ([TASK-ID]) ----
     # RESULT only fires as fallback; when LEARNING/MISTAKE/DECISION also match,
     # those win. This prevents generic tool-output words from diluting signal.
 
@@ -233,7 +233,7 @@ class TestSignificanceDetection(unittest.TestCase):
         self.assertIn(SC.LEARNING, cats)
         self.assertIn(SC.MISTAKE, cats)
 
-    # ---- Technical/architectural keyword detection (t_dc2e44b9) ----
+    # ---- Technical/architectural keyword detection ([TASK-ID]) ----
 
 
 
@@ -413,7 +413,7 @@ class TestCaptureResultStructure(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Dual-write (t_87b41d3a): LEARNING/MISTAKE/DECISION save to hermes_default AND mempalace
+# Dual-write ([TASK-ID]): LEARNING/MISTAKE/DECISION save to hermes_default AND mempalace
 # ---------------------------------------------------------------------------
 
 
@@ -434,7 +434,7 @@ class _MockOrchestratorDualWrite:
 
 
 class TestDualWrite(unittest.TestCase):
-    """AC-t_87b41d3a: dual-write to hermes_default + mempalace for key categories."""
+    """AC-[TASK-ID]: dual-write to hermes_default + mempalace for key categories."""
 
     def _sources_saved(self, orch: _MockOrchestratorDualWrite) -> set[str]:
         return {entry[0] for entry in orch.save_by_source}

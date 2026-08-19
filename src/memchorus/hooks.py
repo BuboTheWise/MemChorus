@@ -424,7 +424,7 @@ class MemChorusHooks:
                 return None
 
             # Guard: skip placeholder artifacts — synthetic filler text like
-            # "session context t_17cfe174 current task" that upstream injects
+            # "session context [TASK-ID] current task" that upstream injects
             # when no real tool_output is available (MC-004).
             from memchorus.auto_storage_engine import _is_placeholder_artifact
             if _is_placeholder_artifact(output_str):
@@ -602,7 +602,7 @@ class MemChorusHooks:
 
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
 _MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
-_MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat (t_32e7877a)
+_MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat ([TASK-ID])
 
 def _extract_text_from_message(message: Any) -> str:
     """Extract text content from a Message dict/object for search purposes."""
@@ -622,7 +622,7 @@ def _extract_text_from_message(message: Any) -> str:
 
 # ---------------------------------------------------------------------------
 # Search term quality helpers — stop-word filtering, stemming, TF scoring
-# Added for t_9848871a: mitigate score dilution from noise in raw messages
+# Added for [TASK-ID]: mitigate score dilution from noise in raw messages
 # ---------------------------------------------------------------------------
 
 _STOP_WORDS = frozenset([

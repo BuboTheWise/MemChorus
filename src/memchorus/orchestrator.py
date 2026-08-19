@@ -8,7 +8,7 @@ Relevance scoring: the orchestrator now uses a RelevanceScorer to rank multi-sou
 search results by computed relevance (G1 + G2 gap fixes) rather than a hard-coded
 priority chain that defeats the "chorus" principle.
 
-Smart placement (t_d0150e05 / G4+G5): memory_profile enum, inference from content,
+Smart placement ([TASK-ID] / G4+G5): memory_profile enum, inference from content,
 cross-source deduplication to prevent redundant storage.
 
 Lifecycle management (§8 Phase 1): config schema, LifecycleManager skeleton,
@@ -190,7 +190,7 @@ class MemoryOrchestrator:
         # they actually compete rather than losing to the built-in fallback order.
         self._source_priority: Dict[str, int] = {}
 
-        # Instrumentation: save-call counter for runtime verification (t_c5080e0f D2)
+        # Instrumentation: save-call counter for runtime verification ([TASK-ID] D2)
         self._save_call_count = 0
 
         # Lifecycle management (§6.2 / Phase 1 — opt-in)
@@ -1036,7 +1036,7 @@ class MemoryOrchestrator:
             The previous implementation used RelevanceScorer._extract_content_text which
             serialises every string value in a dict — timestamp, extra metadata fields,
             importance_score, etc.  That means two results with identical 'text' but
-            different metadata produce different hashes and never collapse (t_cc003615).
+            different metadata produce different hashes and never collapse ([TASK-ID]).
 
             Strategy: extract only the user-visible content text from well-known keys,
             falling back to full extraction only when no structured content field exists.
@@ -1354,7 +1354,7 @@ class MemoryOrchestrator:
     ) -> List[str]:
         """Return a ranked list of source names suitable for saving *write_type*.
 
-        Honours three acceptance criteria (B-2 bug fix t_b9205369):
+        Honours three acceptance criteria (B-2 bug fix [TASK-ID]):
           AC1 - enabled gating: disabled sources never appear in results
           AC2 - priority tiering: higher priority_tier sources come first
           AC3 - write_restrictions: sources that refuse the write_type are excluded

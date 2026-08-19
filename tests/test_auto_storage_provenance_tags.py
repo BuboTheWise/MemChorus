@@ -1,5 +1,5 @@
 """
-Tests for auto-storage provenance tagging (t_815edf58).
+Tests for auto-storage provenance tagging ([TASK-ID]).
 
 Verifies that AutoStorageEngine always includes "AUTO" in the categories
 list of saved payloads, so orchestrator._is_auto_metadata() PATH 1 catches
