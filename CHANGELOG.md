@@ -4,6 +4,10 @@ All notable changes to MemChorus will be documented in this file.
 
 ## [Unreleased]
 
+*(Next minor release: verify test count, add any new features that land after 2.0.0)*
+
+## [2.0.0] - 2026-08-19
+
 ### Fixed
 - **Category validation:** Strict enforcement of known enum categories (`LEARNING`, `MISTAKE`, `DECISION`, `RESULT`). Stale test fixtures using deprecated `AUTO` string cleaned to match runtime guards. Tests that relied on `AUTO` as a real category tag updated.
 - **Integration hook tests skip in CI:** `_hermes_plugins_list()` subprocess call now gracefully caught when the Hermes CLI is unavailable (GitHub Actions runners), preventing hard failures and allowing clean skips instead.
@@ -11,7 +15,7 @@ All notable changes to MemChorus will be documented in this file.
 
 ### Added
 - **GAP008 LRU cache eviction tests:** Unearthed and committed pre-existing test coverage verifying `OrderedDict` based LRU eviction in `_retrieve_cache`.
-- **Test suite growth:** Test count increased from 798 to 1260+ across 81 test modules, covering the full pipeline including parallel execution resilience.
+- **Test suite growth:** Test count increased from ~798 to 1295 across 82+ test modules, covering the full pipeline including parallel execution resilience.
 
 ### Removed
 - **Stale feedback_loop references:** README post-audit section cleaned — removed reference to `feedback_loop/integration.py` which was already deleted in v1.9.0.
