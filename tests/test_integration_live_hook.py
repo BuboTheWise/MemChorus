@@ -76,11 +76,15 @@ def _parse_plugin_status(text: str) -> dict[str, str]:
 def _check_plugins_enabled() -> tuple[bool, list[str]]:
     """Check that all required plugins show 'enabled' in `hermes plugins list`.
 
-    Returns (all_good, error_messages) where error_messages lists missing
-    or disabled plugins with specific diagnostic info.
+    Returns (all_good, error_messages).  When the hermes CLI is not available
+    (e.g. in CI runners) this returns (False, ["hermes CLI not found"]) so that
+    calling fixtures can skip the test instead of raising an unhandled exception.
     """
     errors = []
-    raw_output = _hermes_plugins_list()
+    try:
+        raw_output = _hermes_plugins_list()
+    except FileNotFoundError:
+        return False, ["hermes CLI not available; integration tests skipped"]
 
     # Parse the TUI table: each plugin occupies multiple rows.
     # The FIRST row of a plugin entry has the name in column 1 and status in column 2.
