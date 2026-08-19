@@ -381,7 +381,7 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.1)
+### Quick Bootstrap (new in v2.0.0)
 
 Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
