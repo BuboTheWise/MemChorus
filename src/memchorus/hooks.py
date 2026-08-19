@@ -135,7 +135,7 @@ def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
             "hooks: AutoStorageEngine/ToolCaptureBatcher import failed — %s\n"
             "All post-tool captures will fall back to direct orchestrator.save until restart.\n"
             "This usually means a broken package install; try:\n"
-            "  pip install --no-deps 'git+https://github.com/BuboTheWise/MemChorus.git@master'",
+            "  pip install --no-deps 'memchorus[full]' from PyPI",
             ie,
         )
         return None
@@ -937,8 +937,8 @@ def register(ctx: Any) -> None:
 
     # Trigger lazy bootstrap of orchestrator singleton BEFORE registering hooks.
     # This ensures _instance exists when hooks fire — without it every hook
-    # silently returns None (see t_a0d7e8c8). Bubo hit this lazily via MCP tool
-    # access, but Cthugha never touches memchorus directly so bootstrap was
+    # silently returns None (see [TASK-ID]). Orchestrator hit this lazily via MCP tool
+    # access, but executor never touches memchorus directly so bootstrap was
     # deferred forever.
     __import__('memchorus', fromlist=['_trigger_lazy_bootstrap'])._trigger_lazy_bootstrap()
 
