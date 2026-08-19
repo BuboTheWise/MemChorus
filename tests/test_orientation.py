@@ -16,7 +16,7 @@ Covers every public function/method in orientation.py:
 10. clear_orientation_cache() — global registry clearing
 
 New additions for GAP026:
-- t_0388776d: Hex Kanban ID detection + fallback chain priority order tests
+- [TASK-ID]: Hex Kanban ID detection + fallback chain priority order tests
 - Cache stale empty result prevention after project context switch
 
 Use live imports, no unittest.mock for MemChorus internals.
@@ -179,14 +179,14 @@ class TestIsHermezProjectName(unittest.TestCase):
 
     def test_lowercase_hex_8_char_skipped(self):
         """t_[0-9a-f]{8} pattern should NOT be treated as project name."""
-        self.assertFalse(_is_hermez_project_name("t_a1b2c3d4"))
+        self.assertFalse(_is_hermez_project_name("[TASK-ID]"))
 
     def test_uppercase_hex_8_char_skipped(self):
         """Hex detection is case-insensitive."""
-        self.assertFalse(_is_hermez_project_name("t_A1B2C3D4"))
+        self.assertFalse(_is_hermez_project_name("[TASK-ID]"))
 
     def test_mixed_case_hex_8_char_skipped(self):
-        self.assertFalse(_is_hermez_project_name("t_aF3Eb9d2"))
+        self.assertFalse(_is_hermez_project_name("[TASK-ID]"))
 
     def test_non_hex_task_id_accepted(self):
         """Task IDs with non-hex chars are treated as project names."""
@@ -204,7 +204,7 @@ class TestIsHermezProjectName(unittest.TestCase):
     def test_short_hex_not_skipped(self):
         """Only exactly 8 hex chars after t_ are skipped."""
         self.assertTrue(_is_hermez_project_name("t_a1b2c3"))       # 6 chars
-        self.assertTrue(_is_hermez_project_name("t_a1b2c3d4e5"))   # 10 chars
+        self.assertTrue(_is_hermez_project_name("[TASK-ID]e5"))   # 10 chars
 
     def test_no_t_prefix_not_skipped(self):
         """Plain hex strings without t_ prefix are treated as project names."""
@@ -229,7 +229,7 @@ class TestResolveProjectHexSkip(unittest.TestCase):
         """When env_task is a hex Kanban ID and HERMES_WORKSPACE is set, use workspace."""
         os.environ["HERMES_WORKSPACE"] = "/tmp/some/project/dir"
         try:
-            result = _resolve_project("t_a1b2c3d4")
+            result = _resolve_project("[TASK-ID]")
             self.assertEqual(result, "dir")
         finally:
             del os.environ["HERMES_WORKSPACE"]
@@ -238,7 +238,7 @@ class TestResolveProjectHexSkip(unittest.TestCase):
         """Uppercase hex Kanban IDs are also skipped."""
         os.environ["HERMES_WORKSPACE"] = "/tmp/some/project/dir"
         try:
-            result = _resolve_project("t_A1B2C3D4")
+            result = _resolve_project("[TASK-ID]")
             self.assertEqual(result, "dir")
         finally:
             del os.environ["HERMES_WORKSPACE"]
@@ -248,7 +248,7 @@ class TestResolveProjectHexSkip(unittest.TestCase):
         orig = self._save_workspace()
         try:
             # Without workspace set, hex ID falls all the way to cwd
-            result = _resolve_project("t_beeeeef0")
+            result = _resolve_project("[TASK-ID]")
             self.assertEqual(result, os.path.basename(os.getcwd()))
         finally:
             self._restore_workspace(orig)
@@ -282,7 +282,7 @@ class TestResolveProjectHexSkip(unittest.TestCase):
         """Priority 1→2: hex Kanban ID skipped, workspace used next."""
         os.environ["HERMES_WORKSPACE"] = "/tmp/work/project/path"
         try:
-            result = _resolve_project("t_12345678")
+            result = _resolve_project("[TASK-ID]")
             self.assertEqual(result, "path")
         finally:
             del os.environ["HERMES_WORKSPACE"]
@@ -375,10 +375,10 @@ class TestBuildOrientationQuery(unittest.TestCase):
         """When env_task is hex Kanban ID, queries should use workspace basename, not the raw ID."""
         os.environ["HERMES_WORKSPACE"] = "/tmp/my/test/project"
         try:
-            queries = _build_orientation_query(env_task="t_aabbccdd")
-            # The project should be "project" (workspace basename), NOT "t_aabbccdd"
+            queries = _build_orientation_query(env_task="[TASK-ID]")
+            # The project should be "project" (workspace basename), NOT "[TASK-ID]"
             for q in queries:
-                self.assertNotIn("t_aabbccdd", q["query"])
+                self.assertNotIn("[TASK-ID]", q["query"])
                 self.assertIn("project", q["query"])
         finally:
             del os.environ["HERMES_WORKSPACE"]

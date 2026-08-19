@@ -7,7 +7,7 @@ Acceptance criteria covered:
   AC-3: legitimate tool output still gets saved (no over-filtering)
   AC-4: hooks.on_post_tool_call also blocks query echoes
 
-Regression test for t_8d008135 — ensures recall _QUERY_MAP strings do not
+Regression test for [TASK-ID] — ensures recall _QUERY_MAP strings do not
 get stored as memory content via the post-recall storage cycle.
 """
 

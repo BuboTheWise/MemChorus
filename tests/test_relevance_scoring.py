@@ -1,7 +1,7 @@
 """
 Tests for the relevance scoring engine and orchestrator integration.
 
-Acceptance criteria covered (t_a16aa310):
+Acceptance criteria covered ([TASK-ID]):
   AC-1: Relevance scores are returned with each search result (a score field is present).
   AC-2: Multi-source results are properly ranked by relevance, not just priority chain.
   AC-3: Context awareness – searches include context which influences source weighting.

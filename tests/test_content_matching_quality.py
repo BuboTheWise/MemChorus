@@ -2,7 +2,7 @@
 """
 test_content_matching_quality.py — Unit tests for improved content matching in HermesDefaultMemorySource.
 
-Covers three acceptance criteria from t_4e02918b:
+Covers three acceptance criteria from [TASK-ID]:
   1. Self-match penalty (query-echo suppression)
   2. JSON content extraction before scoring
   3. MIN_RECALL_SCORE threshold filtering & ranked results

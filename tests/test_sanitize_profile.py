@@ -4,7 +4,7 @@ This file exercises every branch of ``memchorus._sanitize_profile`` which lives
 in ``__init__.py`` as a compiled-regex whitelist validator that prevents
 OSError 36 (File name too long) when HERMES_PROFILE contains corrupted content.
 
-See Kanban task t_98852cbd for the DRY consolidation context.
+See Kanban task [TASK-ID] for the DRY consolidation context.
 """
 
 import logging

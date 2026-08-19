@@ -139,7 +139,7 @@ _KANBAN_HEX_RE = re.compile(r"^t_[0-9a-f]{8}$", flags=re.IGNORECASE)
 def _is_hermez_project_name(name: str) -> bool:
     """Return True if *name* looks like a real project name rather than a skip value.
 
-    Hex Kanban task IDs (e.g. ``t_a1b2c3d4``) are NOT useful as query terms, so they
+    Hex Kanban task IDs (e.g. ``[TASK-ID]``) are NOT useful as query terms, so they
     return False and cause the caller to fall through the priority chain.
     """
     if not name:

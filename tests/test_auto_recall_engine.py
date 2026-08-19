@@ -10,7 +10,7 @@ Acceptance criteria covered:
   AC-5: Result count hard-limited to 3.
 
 Dependencies:
-  - behavioral_trigger.py must exist (supplied by parent task t_6886c9dc).
+  - behavioral_trigger.py must exist (supplied by parent task [TASK-ID]).
 """
 
 import os
