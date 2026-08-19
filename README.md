@@ -1,6 +1,6 @@
 # MemChorus
 
-Current version: 2.0.0 (dev)
+Current version: 2.0.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -24,6 +24,13 @@ local Hermes default files transparently.  Full attribution and copyright for
 the MemPalace project belongs to its authors; MemChorus simply provides the
 orchestration layer that routes reads/writes across it alongside any other
 registered source.
+
+**Multi-profile isolation:** If you run multiple Hermes profiles, configure a
+separate MemPalace database per profile to prevent memory cross-contamination.
+Add a profile-specific `mempalace` MCP server entry in each profile's
+`config.yaml` pointing to independent paths, for example:
+`~/.hermes/profiles/<name>/workspace/mempalace/palace/data.db`. Profiles should
+communicate via Kanban tasks rather than sharing memory graphs directly.
 
 ## Philosophy
 
