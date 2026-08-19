@@ -5,7 +5,7 @@ BUG: MemChorus hooks.read() kwargs keys that Hermes never sends.
 `on_post_tool_call` read `tool_output` while Hermes sends `result`.
 
 Effect: Every hook returned None immediately — no recall happened, nothing saved.
-Root cause traced in [TASK-ID] diagnosis task.
+Root cause traced in t_deadbeef diagnosis task.
 
 The kwarg contract was fixed by patching hooks.py to read the actual keys Hermes passes:
 - pre_llm_call: user_message (replacing input_text) + conversation_history (replacing messages)
