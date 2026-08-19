@@ -132,7 +132,7 @@ class TestPersistenceReproduction:
         test_key = "REPRO_test_persistence_001"
         test_payload = {
             "text": "This is a reproduction test to verify that data actually persists to disk storage",
-            "categories": ["AUTO", "RESULT"],
+            "categories": ["RESULT"],
             "category": "RESULT",
             "_auto_provenance": True,
             "provenance": "auto_stored",
@@ -162,8 +162,8 @@ class TestPersistenceReproduction:
 
         test_key = "REPRO_verify_file_on_disk"
         test_payload = {
-            "text": "Persistence proof: if you can read this file on disk, MemChorus storage works",
-            "categories": ["AUTO", "RESULT"],
+            "text": "Verify physical file exists after orchestrator persistence",
+            "categories": ["RESULT"],
             "_auto_provenance": True,
         }
 

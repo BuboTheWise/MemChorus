@@ -1063,12 +1063,20 @@ class MemoryOrchestrator:
             """Check if a RankedResult is auto-generated session metadata."""
             content = getattr(rr_obj, "content", None)
 
-            # PATH 1: dict-typed content with RESULT/AUTO categories (existing path)
+            # PATH 1: dict-typed content — detect via dedicated provenance markers
+            # and RESULT category (both signal machine-generated content).
+            # "AUTO" is no longer placed in the categories list so it survives
+            # strict category validation (BUG_2); instead check _auto_provenance
+            # and provenance fields which carry the same signal.
             if isinstance(content, dict):
+                if content.get("_auto_provenance"):
+                    return True
+                if content.get("provenance") == "auto_stored":
+                    return True
                 cat = content.get("categories", [])
                 for tag in cat:
                     upper_tag = str(tag).upper()
-                    if "RESULT" == upper_tag or "AUTO" == upper_tag:
+                    if "RESULT" == upper_tag:
                         return True
 
             # PATH 2: key-name pattern match (catches ALL auto-tool- and result- artifacts)

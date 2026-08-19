@@ -574,15 +574,14 @@ class AutoStorageEngine:
             }
 
         # --- Step 9: save to orchestrator with provenance marker (Bug 3 AC4) ---
-        # Always include "AUTO" in categories so _is_auto_metadata() PATH 1 matches
-        # even when detected significance is LEARNING/MISTAKE/DECISION (not RESULT).
-        # This ensures all auto-stored entries are penalized during search, regardless
-        # of which significance keyword triggered storage.
+        # Detected significance categories only — no "AUTO" tag here anymore so the
+        # payload survives strict category validation in
+        # MemoryOrchestrator._validate_categories_in_value (BUG_2).
+        # Auto-provenance is carried by _auto_provenance and provenance fields instead.
         detected_cats = [c.value for c in categories] or ["RESULT"]
-        provenance_cats = ["AUTO"] + detected_cats
         payload = {
             "text": text,
-            "categories": provenance_cats,
+            "categories": detected_cats,
             "significance": category_str,       # hook tests + downstream consumers read this key
             "category": category_str,
             "outcome_type": outcome_type,
