@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import dataclasses
+from collections import OrderedDict
 from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
@@ -177,8 +178,8 @@ class MemoryOrchestrator:
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
 
-        # GAP008: retrieval cache (LRU with TTL in seconds)
-        self._retrieve_cache: Dict[str, Tuple[Any, float]] = {}
+        # GAP008: retrieval LRU cache — OrderedDict gives O(1) eviction
+        self._retrieve_cache: OrderedDict = OrderedDict()
         self._cache_ttl = float(self.config.get('cache_ttl_seconds', 60.0))
         self._cache_max_size = int(self.config.get('cache_max_size', 256))
 
@@ -480,7 +481,6 @@ class MemoryOrchestrator:
 
         return MemoryProfile.EPHEMERAL
 
-    @staticmethod
     @staticmethod
     def _try_save_to(source_name: str, source: MemorySource, key: str, value: Any) -> bool:
         """Attempt to save to a source with targeted resilience for mempalace.
@@ -792,6 +792,7 @@ class MemoryOrchestrator:
         if key in self._retrieve_cache:
             cached_value, cached_ts = self._retrieve_cache[key]
             if time.monotonic() - cached_ts < self._cache_ttl:
+                self._retrieve_cache.move_to_end(key)  # O(1) — refresh LRU position on hit
                 return cached_value  # cache hit (not expired)
             else:
                 del self._retrieve_cache[key]  # expired
@@ -838,6 +839,7 @@ class MemoryOrchestrator:
         if key in self._retrieve_cache:
             cached_value, cached_ts = self._retrieve_cache[key]
             if time.monotonic() - cached_ts < self._cache_ttl:
+                self._retrieve_cache.move_to_end(key)  # O(1) — refresh LRU position on hit
                 return self._retrieve_with_source_from_cache(key, cached_value)
 
 
@@ -888,18 +890,13 @@ class MemoryOrchestrator:
         self._retrieve_cache.clear()
 
     def _evict_oldest_if_needed(self) -> None:
-        """Evict the oldest cached entry when the cache exceeds its size limit.
+        """Evict the least-recently-used cached entry when the cache exceeds its size limit.
 
-        Uses the monotonic timestamp stored as the second tuple element, so we
-        actually evict the oldest entry instead of comparing full tuples
-        element-by-element (which would break on mixed value types).
+        Uses OrderedDict.popitem(last=False) for amortized O(1) eviction — replaces
+        the previous linear scan across all keys (GAP008).
         """
-        if len(self._retrieve_cache) > self._cache_max_size:
-            oldest_key = min(
-                self._retrieve_cache,
-                key=lambda k: self._retrieve_cache[k][1],
-            )
-            del self._retrieve_cache[oldest_key]
+        while len(self._retrieve_cache) > self._cache_max_size:
+            self._retrieve_cache.popitem(last=False)  # O(1), removes oldest/least-recent
 
     def search(
         self,
