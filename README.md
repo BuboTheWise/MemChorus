@@ -1,6 +1,6 @@
 # MemChorus
 
-Current version: 2.0.0 (dev)
+Current version: 2.0.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -24,6 +24,14 @@ local Hermes default files transparently.  Full attribution and copyright for
 the MemPalace project belongs to its authors; MemChorus simply provides the
 orchestration layer that routes reads/writes across it alongside any other
 registered source.
+
+**Multi-profile isolation note:** When running multiple Hermes agent profiles, each
+profile should configure its own dedicated MemPalace database path to prevent cross-
+contamination of memories between profiles. Add a profile-specific `mempalace` MCP
+server entry in each profile's `config.yaml` pointing to an independent data directory
+(e.g., `~/.hermes/profiles/<name>/workspace/mempalace/palace/data.db`). Profiles should
+communicate via Kanban tasks or inter-agent protocols rather than sharing memory graphs
+directly.
 
 ## Philosophy
 
@@ -374,7 +382,7 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.1)
+### Quick Bootstrap (new in v2.0.0)
 
 Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
