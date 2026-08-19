@@ -655,7 +655,7 @@ Other v1.5.x features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
-- **Hooks feedback integration (commit 148e713):** `on_pre_llm_call` wired to both memory recall AND feedback loop evaluation. Before fix, feedback corrections were silently bypassed despite full implementation in `feedback_loop/integration.py`. Verified live during runtime effectiveness check — all 8 architectural claims confirmed true against behavior.
+- **Hooks integration:** `on_pre_llm_call` wired to memory recall and lifecycle enforcement hooks. Previously feedback corrections were silently bypassed; the hook wiring logic was verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
