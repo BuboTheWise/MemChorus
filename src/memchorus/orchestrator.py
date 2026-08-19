@@ -24,7 +24,7 @@ import dataclasses
 from collections import OrderedDict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Tuple, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memchorus.lifecycle_manager import LifecycleManager
@@ -36,6 +36,7 @@ from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWei
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
+from memchorus.auto_storage_engine import ALL_CATEGORIES, SignificanceCategory
 
 # Auto-tuning: lazy imports to avoid hard dependency when modules are unavailable
 _HITRATE_TRACKER = None
@@ -481,6 +482,77 @@ class MemoryOrchestrator:
 
         return MemoryProfile.EPHEMERAL
 
+    # ---------------------------------------------------------------------------
+    # Category validation — enforces whitelist so unknown categories cannot
+    # pollute memory payloads across storage backends.
+    # ---------------------------------------------------------------------------
+
+    _VALID_CATEGORY_VALUES: Set[str] = {c.value for c in ALL_CATEGORIES}
+
+    @staticmethod
+    def _validate_category_type_safe(cat: Any) -> Optional[str]:
+        """Validate a single category value and return normalised string or None.
+
+        Only values present in ``ALL_CATEGORIES`` are accepted.  Unknown strings,
+        empty strings after stripping, and non-string non-None types all fail fast.
+
+        Raises: ``ValueError`` on an unrecognised category."""
+        if cat is None:
+            return None
+
+        # Handle enum members by extracting their .value directly
+        value = getattr(cat, "value", None)
+        if value is not None and value in MemoryOrchestrator._VALID_CATEGORY_VALUES:
+            return str(value)
+
+        cleaned = str(cat).strip()
+        if not cleaned:
+            logger.warning("Empty category after cleaning (%r)", cat)
+            return None
+
+        if cleaned not in MemoryOrchestrator._VALID_CATEGORY_VALUES:
+            logger.error(
+                "Invalid memory category rejected '%s'. "
+                "Allowed values are %s.",
+                cleaned,
+                [e.value for e in ALL_CATEGORIES],
+            )
+            raise ValueError(
+                f"Category '{cleaned}' unknown; allowed={ALL_CATEGORIES}"
+            )
+
+        return cleaned
+
+    def _validate_categories_in_value(self, value: Any) -> None:
+        """Walk *value* and validate every category-like field against ALLOWED values.
+
+        Checks dict keys ``categories``, ``category``, and ``significance`` — the three
+        fields that downstream code reads as significance categories.  If any of
+        those fields contain an unknown value, ``ValueError`` is raised immediately.
+
+        Handles nested dicts/lists (values may be lists of sub-entries).
+        """
+        if isinstance(value, dict):
+            # Check known category-bearing keys
+            for cat_key in ("categories", "category", "significance"):
+                raw = value.get(cat_key)
+                if raw is None:
+                    continue
+                if isinstance(raw, list):
+                    for item in raw:
+                        self._validate_category_type_safe(item)
+                else:
+                    self._validate_category_type_safe(raw)
+            # Recurse into nested values so payloads that wrap entries still get caught
+            for sub in value.values():
+                if isinstance(sub, (dict, list)):
+                    self._validate_categories_in_value(sub)
+
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, (dict, list)):
+                    self._validate_categories_in_value(item)
+
     @staticmethod
     def _try_save_to(source_name: str, source: MemorySource, key: str, value: Any) -> bool:
         """Attempt to save to a source with targeted resilience for mempalace.
@@ -656,6 +728,7 @@ class MemoryOrchestrator:
         """
         # --- explicit source override takes precedence ------------------
         self._save_call_count += 1
+        self._validate_categories_in_value(value)  # reject bad categories early
         saved = False
         if source_name:
             if source_name in self.memory_sources:
