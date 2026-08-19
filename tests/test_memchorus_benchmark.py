@@ -436,7 +436,7 @@ class TestOrchestratorTimeoutResilience:
 
 class TestProfileIsolation:
     """Prove that saving profile 'default' data does not contaminate
-    'cthugha' search results (each source instance has its own data_dir)."""
+    'second' search results (each source instance has its own data_dir)."""
 
     def test_profile_isolation_data_integrity(self, tmp_path):
         from memchorus.hermes_memory_source import HermesDefaultMemorySource
@@ -444,33 +444,33 @@ class TestProfileIsolation:
         default_src = HermesDefaultMemorySource(
             config={"data_dir": str(tmp_path / "default")}
         )
-        cthugha_src = HermesDefaultMemorySource(
-            config={"data_dir": str(tmp_path / "cthugha")}
+        second_src = HermesDefaultMemorySource(
+            config={"data_dir": str(tmp_path / "second")}
         )
 
         # Seed profile-specific data.
         default_src.save("deploy_env", "us-east-1 production cluster")
         default_src.save("rollback_sla", "5-minute RTO target")
 
-        cthugha_src.save("agent_model", "qwen3.6:27b for Cthugha tasks")
-        cthugha_src.save("profile_tooling", "Kanban + MemPalace MCP only")
+        second_src.save("agent_model", "qwen3.6:27b for executor tasks")
+        second_src.save("profile_tooling", "Kanban + MemPalace MCP only")
 
         # Cross-search each profile's data using its own source.
         t0 = time.monotonic()
         default_results = default_src.search("production us-east", limit=10)
-        cthugha_results = cthugha_src.search("agent model qwen", limit=10)
+        second_results = second_src.search("agent model qwen", limit=10)
         latency_ms = (time.monotonic() - t0) * 1000.0
 
         default_keys = {r.get("key", "") for r in default_results}
-        cthugha_keys = {r.get("key", "") for r in cthugha_results}
+        second_keys = {r.get("key", "") for r in second_results}
 
-        contamination = len(default_keys & cthugha_keys)
+        contamination = len(default_keys & second_keys)
 
         print(
             f'--- Benchmark: profile_isolation.integrity ---\n'
             f'  latency={latency_ms:.1f}ms | '
             f'default_hits={len(default_keys)} | '
-            f'cthugha_hits={len(cthugha_keys)} | '
+            f'second_hits={len(second_keys)} | '
             f'cross_contamination={contamination}\n'
         )
 
@@ -478,7 +478,7 @@ class TestProfileIsolation:
             "test": "profile_isolation_data_integrity",
             "latency_ms": round(latency_ms, 2),
             "default_result_count": len(default_keys),
-            "cthugha_result_count": len(cthugha_keys),
+            "second_result_count": len(second_keys),
             "cross_contamination_count": contamination,
         }
         _write_metrics(self.__class__.__name__, metrics)

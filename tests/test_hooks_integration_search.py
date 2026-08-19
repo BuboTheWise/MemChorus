@@ -66,7 +66,7 @@ class TestIntegrationPreLlmCallWithRealMemories:
         # Memories that contain terms matching common metadata fallback search queries:
         # task IDs, model names, platform identifiers
         source.save("project_milestone", {
-            "text": "MemChorus project — integration testing phase for Bubo orchestration hooks",
+            "text": "MemChorus project — integration testing phase for lead-agent orchestration hooks",
             "categories": ["PROJECT"],
         })
         source.save("task_t_test123_context", {
