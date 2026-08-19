@@ -7,12 +7,12 @@ class TestPlaceholderArtifactDetection:
     """MC-004: Placeholder artifacts should be caught by pattern regexes and heuristics."""
 
     @pytest.mark.parametrize("text", [
-        "session context [TASK-ID] current task",
-        "session context [TASK-ID] current task",
+        "session context t_ffffffff current task",
+        "session context t_ffffffff current task",
         "Session Context T_17cfe174 Current Task",
-        "tool output for [TASK-ID]",
-        "execution context [TASK-ID]",
-        "tool result [TASK-ID]",
+        "tool output for t_ffffffff",
+        "execution context t_ffffffff",
+        "tool result t_ffffffff",
     ])
     def test_placeholder_patterns_rejected(self, text):
         """Synthetic placeholder patterns should be detected and rejected."""
@@ -43,7 +43,7 @@ class TestAutoStorageIntegration:
     def test_placeholder_rejected_by_engine(self):
         """Placeholder text should not pass through capture_outcome pipeline."""
         result = self.engine.capture_outcome(
-            "session context [TASK-ID] current task", outcome_type="automatic"
+            "session context t_ffffffff current task", outcome_type="automatic"
         )
         assert result["saved"] is False
         assert result["reason"] == "placeholder_artifact"
