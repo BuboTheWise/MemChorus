@@ -367,7 +367,7 @@ See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the f
 
 ## Installation
 
-Requires Python 3.8+. Install from GitHub via pip (recommended for most users):
+Requires Python 3.11+. Install from GitHub via pip (recommended for most users):
 
 ```bash
 pip install 'memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master'
@@ -666,7 +666,7 @@ Other v1.5.x features:
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
-**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design), but the `MergeEngine` implementation is still pending. Writes with `enabled: true` will be a no-op until the engine ships — the config key exists so users can prepare ahead of time without breaking existing deployments.
+**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design). `MergeEngine` is now implemented and active — it provides in-memory deduplication at write time using configurable strategies (`overwrite`, `append`, `union`). Enable via `lifecycle.merge_at_write.enabled: true` in your config to start consolidating duplicate memories at save time.
 
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
@@ -682,8 +682,8 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **798 tests** collected across all modules (current)
+- **1388 tests** collected across all modules (current)
 
 
 ---
-*MemChorus v1.7.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v2.0.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
