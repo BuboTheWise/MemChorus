@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes how MemChorus uses test data and benchmark metrics to identify real weaknesses, make targeted fixes, and verify that those fixes actually improve measurable outcomes — rather than relying on speculation or chasing symptoms. The cycle is tightly coupled with the Kanban task system used by Bubo and Cthugha (the two autonomous agents that maintain this project).
+This document describes how MemChorus uses test data and benchmark metrics to identify real weaknesses, make targeted fixes, and verify that those fixes actually improve measurable outcomes — rather than relying on speculation or chasing symptoms. The cycle is tightly coupled with the Kanban task system used by [Lead Agent] and [Executor Agent] (the two autonomous agents that maintain this project).
 
 ## The Cycle
 
@@ -18,10 +18,10 @@ python -m pytest tests/benchmark_memchorus.py::TestBaseline -v --tb=short
 PYTHONPATH=src pytest tests/ --tb=short -x --durations=20
 
 # Save JSON benchmark for later comparison
-cat ~/.hermes/memchorus_benchmarks/*.json
+cat $HERMES_HOME/memchorus_benchmarks/\*.json
 ```
 
-Record the key metrics: average latency per query, recall rate across all queries, and any `LOW`-flagged results. Each benchmark run produces timestamped JSON in `~/.hermes/memchorus_benchmarks/`, so deltas are always available.
+Record the key metrics: average latency per query, recall rate across all queries, and any `LOW`-flagged results. Each benchmark run produces timestamped JSON in `$HERMES_HOME/memchorus_benchmarks/`, so deltas are always available.
 
 The 1260+ unit and integration tests serve as the regression floor — every cycle starts from a green test suite. If existing tests fail, that is the first weakness to address before adding new measurement data.
 
@@ -31,20 +31,20 @@ Use the metrics to find the real problem, not the loudest one. Concrete examples
 
 - **Relevance threshold too aggressive:** If `_RELEVANCE_THRESHOLD = 0.15` drops known-good items from search results in benchmark output, lower it and re-benchmark to quantify recovery
 - **MCP startup latency exceeds budget:** If p95 recall timing crosses 10 seconds, investigate whether persistent sessions (the current approach since v1.5.x) are healthier than per-call spawn cycles that starve ChromaDB I/O
-- **Profile isolation contamination:** If search under profile "cthugha" returns items saved under "default", the filter leak is in `test_profile_isolation_boundary.py`'s data — not a theory but actual test output
+- **Profile isolation contamination:** If search under profile "[profile-name]" returns items saved under "default", the filter leak is in `test_profile_isolation_boundary.py`'s data — not a theory but actual test output
 - **Recursion guard gaps:** If `test_recursion_guard_deep_nesting.py` shows enforcement hooks firing during save that trigger nested saves, the `RecursionGuard` counter needs expansion to cover additional code paths
 
 The key discipline here is: **no weakness gets tracked unless it has numeric evidence**. A vague feeling that "search is slow" does not qualify. A benchmark showing 250ms average latency on HermesDefault when previous runs showed 85ms does.
 
 ### Phase 3: Fix (Kanban Task-Based)
 
-Create properly scoped Kanban tasks for each identified weakness, following the established Bubo+Cthugha development workflow:
+Create properly scoped Kanban tasks for each identified weakness, following the established [Lead Agent]+[Executor Agent] development workflow:
 
 1. **Implementer creates feature branch from `master`** — never direct commits to master
 2. **Code committed incrementally** — one logical change per commit with descriptive messages
 3. **Review task created for the other agent** via `kanban_create` with explicit parent dependency (`parents=[implementer_task_id]`)
 4. **Reviewer checks code quality, test coverage and benchmark delta** before merge approval
-5. **Bubo (default profile) merges and pushes to GitHub** — Cthugha handles implementation
+5. **[Lead Agent] merges and pushes to GitHub** — [Executor Agent] handles implementation
 
 Quality gates before marking a fix complete:
 - CI green on all Python matrix rows (3.11, 3.12)

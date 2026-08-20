@@ -74,7 +74,7 @@ def generate_config(profile: Optional[str] = None,
     Parameters
     ----------
     profile :
-        Agent/human slug (e.g. ``"cthugha"``). Falls back to
+        Agent/human slug (e.g. ``"my_agent"``). Falls back to
         ``$HERMES_KANBAN_PROFILE`` env var, then ``"default"``.
     data_dir :
         Absolute path on disk where MemPalace stores its durable files.
@@ -243,7 +243,7 @@ def cli_main() -> int:
         epilog=textwrap.dedent("""\
             examples:
               %(prog)s -p my_agent               # generate + write config
-              %(prog)s -p cthugha --dry-run       # print YAML to stdout only
+              %(prog)s -p my_agent --dry-run       # print YAML to stdout only
               %(prog)s --data-dir /opt/data       # custom data root
         """),
     )
