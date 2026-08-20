@@ -102,7 +102,7 @@ def env_a():
 @pytest.fixture(scope="module")
 def env_b():
     """Profile B source for cross-isolation test."""
-    instance = _SynthEnv(profile="cthugha", mcp_timeout=30)
+    instance = _SynthEnv(profile="my_agent", mcp_timeout=30)
     try:
         yield instance
     finally:
@@ -253,7 +253,7 @@ def main():
 
     # Profile A vs B isolation test
     env_a = _SynthEnv(profile="memchorus")
-    env_b = _SynthEnv(profile="cthugha")
+    env_b = _SynthEnv(profile="my_agent")
     try:
         test_06_profile_isolation(env_a, env_b)
     except Exception as e:
