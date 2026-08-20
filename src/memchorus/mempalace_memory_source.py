@@ -261,14 +261,36 @@ class _McpTransportDetector:
             if not isinstance(mempalace_cfg, dict):
                 goto_fallback = True
 
+        # Support two config shapes:
+        #  Shape A (legacy): command is a single shell string to split via shlex.
+        #  Shape B (Hermes native): command is an executable path, args is a list.
+        cfg_args: Optional[List[str]] = None
+
         if not goto_fallback:
+            cfg_args = mempalace_cfg.get("args", None)
+            if cfg_args is not None and not isinstance(cfg_args, (list)):
+                # args key exists but isn't a list — treat as invalid shape
+                logger.warning(
+                    "_McpTransportDetector: config 'args' is not a list (%s) — skipping override",
+                    type(cfg_args).__name__,
+                )
+                cfg_args = None
+
             command_raw = mempalace_cfg.get("command", None)
             if not command_raw or not isinstance(command_raw, str):
                 goto_fallback = True
 
-        if not goto_fallback:
+        parts: list[str] = []
+        if not goto_fallback and cfg_args is not None:
+            # Shape B: command is a path, args is already split.
+            assert isinstance(command_raw, str)  # narrowed above
+            parts.append(os.path.expanduser(command_raw))
+            parts.extend(cfg_args)
+        elif not goto_fallback:
+            # Shape A (legacy): shlex.split the command string.
+            assert isinstance(command_raw, str)  # narrowed above
             try:
-                parts = shlex.split(command_raw)  # ok – proven str above
+                parts = shlex.split(command_raw)
             except ValueError as exc:
                 logger.warning(
                     "_McpTransportDetector: invalid command string in config.yaml: %s", exc
@@ -278,8 +300,8 @@ class _McpTransportDetector:
         if not goto_fallback and not parts:
             goto_fallback = True
 
-        # Expand tilde paths (~ to $HOME) so Path.exists() checks work.
-        if not goto_fallback:
+        # Expand tilde paths for Shape A (already expanded for Shape B above).
+        if not goto_fallback and cfg_args is None:
             parts[0] = os.path.expanduser(parts[0])
 
         # Validate the resolved command actually exists on disk before trusting
@@ -300,7 +322,7 @@ class _McpTransportDetector:
             resolved = {
                 "command": parts[0],
                 "args": parts[1:],
-                "resolved_from": f"config.yaml mcp_servers.mempalace.command ({target})",
+                "resolved_from": f"config.yaml mcp_servers.mempalace ({target})",
             }
 
             logger.info(
