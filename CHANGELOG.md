@@ -9,6 +9,7 @@ All notable changes to MemChorus will be documented in this file.
 ## [2.0.0] - 2026-08-19
 
 ### Fixed
+- **OPSEC sanitization:** Complete sweep of public-facing repo — scrubbed internal agent names from examples, sanitized PKG-INFO build artifact, expanded .gitignore to exclude internal Hermes/Kanban workflow directories and scratch artifacts. Removed hardcoded local paths throughout README CalibrationEngine section. Test fixture `[executor]` replaced with `test_executor` to avoid PyYAML quoting collision.
 - **Category validation:** Strict enforcement of known enum categories (`LEARNING`, `MISTAKE`, `DECISION`, `RESULT`). Stale test fixtures using deprecated `AUTO` string cleaned to match runtime guards. Tests that relied on `AUTO` as a real category tag updated.
 - **Integration hook tests skip in CI:** `_hermes_plugins_list()` subprocess call now gracefully caught when the Hermes CLI is unavailable (GitHub Actions runners), preventing hard failures and allowing clean skips instead.
 - **Duplicate @staticmethod decorator:** Removed redundant second `@staticmethod` on `_try_save_to` in orchestrator, fixing silent warning under Python 3.12+.
