@@ -1,4 +1,4 @@
-# MemChorus Auto-Tuning Framework — v1.8.0
+# MemChorus Auto-Tuning Framework
 
 ## Problem
 

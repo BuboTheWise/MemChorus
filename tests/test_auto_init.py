@@ -31,11 +31,11 @@ class TestBuildWingMap:
             assert not key.startswith("_"), f"Unexpected prefix on {key}"
 
     def test_custom_profile_prefixed(self):
-        wmap = _build_wing_map("cthugha")
-        assert "cthugha_DECISION" in wmap
-        assert "cthugha_LEARNING" in wmap
+        wmap = _build_wing_map("test_executor")
+        assert "test_executor_DECISION" in wmap
+        assert "test_executor_LEARNING" in wmap
         for key in wmap:
-            assert key.startswith("cthugha_"), f"Missing prefix on {key}"
+            assert key.startswith("test_executor_"), f"Missing prefix on {key}"
 
     def test_rooms_are_defensive_copies(self):
         wmap = _build_wing_map("x")
@@ -61,8 +61,8 @@ class TestGenerateConfig:
         assert "profile_name:" not in txt
 
     def test_custom_profile_includes_profile_name(self):
-        txt = generate_config(profile="cthugha")
-        assert "profile_name: cthugha" in txt
+        txt = generate_config(profile="test_executor")
+        assert "profile_name: test_executor" in txt
 
     def test_data_dir_embedded_when_supplied(self):
         custom = "/opt/mem palace/data"
