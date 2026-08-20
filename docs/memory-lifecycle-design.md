@@ -286,7 +286,7 @@ Existing components (unchanged interface):
 
 ## 9. Backward Compatibility
 
-- **opt-in only:** `lifecycle.enabled` defaults to `False` in v1.1.x, enabling existing users to continue write-only operation without change. Default flips to `True` in v2.0 or when the feature exits beta.
+- **opt-in only:** `lifecycle.enabled` remains defaulted to `False`, enabling existing users to continue write-only operation without change. The system stays safe for backward compatibility until a future release explicitly flips the default.
 - **existing memories unaffected:** Memories written before lifecycle was enabled are preserved at current state; they enter review on their next natural sweep rather than being retroactively flagged
 - **config additive:** All new config keys have reasonable defaults; omitting them preserves write-only behavior
 
