@@ -31,7 +31,7 @@ Five passes run through separate isolated Python processes (`PYTHONPATH=""` clea
 
 ### Expected Metrics
 
-A healthy v1.5.09 install should produce:
+A healthy production-ready install should produce:
 - Recall improvement between fifty and ninety percentage points from cold start to saturated state
 - Persistence pass maintaining eighty-plus percent of saturated recall proving disk writes actually work
 - Latency under twenty milliseconds per query across five passes
