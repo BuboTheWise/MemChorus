@@ -16,7 +16,7 @@ All notable changes to MemChorus will be documented in this file.
 ### Added
 - **Install Doctor CLI diagnostic:** New `memchorus-doctor` command (`python -m memchorus.install_doctor`) runs 8 health checks: Python version (>=3.11), dependency integrity (pydantic/PyYAML), memory source registration, plugin hook state, config validation, auto-tune pipeline components (HitRateTracker/MistakeDetector/CalibrationEngine/AdaptiveThreshold), data directory readability/writability, and test suite discoverability. Returns exit code 0 on healthy install, non-zero on failures. Includes 25 unit tests.
 - **GAP008 LRU cache eviction tests:** Unearthed and committed pre-existing test coverage verifying `OrderedDict` based LRU eviction in `_retrieve_cache`.
-- **Test suite growth:** Test count increased from ~798 to 1295 across 82+ test modules, covering the full pipeline including parallel execution resilience.
+- **Test suite growth:** Test count increased from ~798 to 1388 across 90+ test modules, covering the full pipeline including parallel execution resilience.
 
 ### Removed
 - **Stale feedback_loop references:** README post-audit section cleaned — removed reference to `feedback_loop/integration.py` which was already deleted in v1.9.0.
