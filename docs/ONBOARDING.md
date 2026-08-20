@@ -12,7 +12,7 @@ MemChorus is a memory orchestration layer that sits between an AI agent and mult
 
 | Item |
 |------|
-| Python 3.8+ with `pip` or alternative package manager |
+| Python 3.11+ with `pip` or alternative package manager |
 | An isolated virtual environment for the install (venv, pipx, conda — your choice) |
 
 Optional: If you have [MemPalace](https://github.com/MemPalace/mempalace) installed as an MCP server, MemChorus will connect to it automatically and gain knowledge graph storage plus vector-backed semantic search. Everything still works without MemPalace — the system falls back to local file cache transparently.
