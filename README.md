@@ -390,7 +390,7 @@ routing configuration in one step — no manual YAML editing required:
 memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_agent/memchorus.yaml
 memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
 memchorus-init --dry-run                      # preview the generated YAML without writing
-memchorus-init -p cthugha -d /opt/data        # custom data directory
+memchorus-init -p my_agent -d /opt/data       # custom data directory
 memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
 ```
 
@@ -548,7 +548,7 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across **75 modules** with **1260+ collected tests**.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1388 collected tests**.
 
 ### Benchmark Metrics (v1.7.0+)
 
@@ -601,12 +601,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.8.0 (current — auto-tuning framework)
+### v2.0.0 (current — production release)
 
 - **HitRateTracker:** Singleton that logs save/recall events per memory key, computes empirical hit-rate and decay curves, feeds downstream utility metrics to retention engine
 - **MistakeDetector:** Pattern-based classification engine for user corrections/rejections vs transient failures; flags errors for penalty adjustments on low-value saves
 - **AdaptiveThreshold:** Consumes hit-rate + mistake signals, adjusts retention cutoffs dynamically using EMA smoothing with 15% drift guard limits
-- **CalibrationEngine:** Async calibration scheduler running during sweep cycles; YAML persistence per profile at `~/.hermes/data/memchorus/_tuning/`; CLI entry point `memchorus recalibrate`
+- **CalibrationEngine:** Async calibration scheduler running during sweep cycles; YAML persistence per profile at `$HOME/data/memchorus/_tuning/`; CLI entry point `memchorus-recalibrate`
 - **Lifecycle wiring:** HitRateTracker fires on orchestrator save/recall paths; MistakeDetector runs in on_session_end hook (§10.2); CalibrationEngine integrates into LifecycleManager._do_sweep() step 4
 - **Forty-eight tests** covering: bounded adjustments, EMA direction, hit-rate pipeline, CLI entry verification, graceful degradation per unregistered profile bounds enforcement
 - Spec documented in `docs/AUTOTUNING.md` — three-config-lever design (recall_frequency, importance_threshold, cleanup_interval), no opaque ML

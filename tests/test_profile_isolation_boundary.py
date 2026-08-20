@@ -205,10 +205,10 @@ class TestResolveHermesProfile:
         monkeypatch.delenv('HERMES_PROFILE', raising=False)
         assert _resolve_hermes_profile() == 'default'
 
-    def test_respects_env_var_cthugha(self, monkeypatch):
-        """Profile name 'cthugha' in HERMES_PROFILE is returned correctly."""
-        monkeypatch.setenv('HERMES_PROFILE', 'cthugha')
-        assert _resolve_hermes_profile() == 'cthugha'
+    def test_respects_env_var_my_agent(self, monkeypatch):
+        """Profile name 'my_agent' in HERMES_PROFILE is returned correctly."""
+        monkeypatch.setenv('HERMES_PROFILE', 'my_agent')
+        assert _resolve_hermes_profile() == 'my_agent'
 
     def test_respects_env_var_default(self, monkeypatch):
         monkeypatch.setenv('HERMES_PROFILE', 'default')
@@ -216,8 +216,8 @@ class TestResolveHermesProfile:
 
     def test_respects_env_var_custom_profile(self, monkeypatch):
         """Custom profile name with dashes returns correctly."""
-        monkeypatch.setenv('HERMES_PROFILE', 'grok-reasoner')
-        assert _resolve_hermes_profile() == 'grok-reasoner'
+        monkeypatch.setenv('HERMES_PROFILE', 'custom_agent')
+        assert _resolve_hermes_profile() == 'custom_agent'
 
     def test_env_value_returned_verbatim(self, monkeypatch):
         """The env value is returned as-is without normalization."""
