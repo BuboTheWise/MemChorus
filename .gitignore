@@ -56,3 +56,15 @@ Level-Set-Summary.md
 # QA report artifacts (versioned reports live in Bubo_Wisdom, not here)
 QA-Reports/
 .worktrees/
+
+# Hermes internal task files (not for public repos)
+tests/.hermes/
+
+# Internal dev artifacts (not for public repos)
+docs/runtimes/
+docs/verify/
+test_evolution_reports/
+
+# Build artifacts under src (should never be tracked)
+src/.eggs/
+src/*.egg-info/

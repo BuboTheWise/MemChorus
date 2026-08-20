@@ -415,7 +415,7 @@ routing configuration in one step — no manual YAML editing required:
 memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_agent/memchorus.yaml
 memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
 memchorus-init --dry-run                      # preview the generated YAML without writing
-memchorus-init -p cthugha -d /opt/data        # custom data directory
+memchorus-init -p my_agent -d /opt/data        # custom data directory
 memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
 ```
 

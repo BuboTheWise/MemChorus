@@ -21,7 +21,7 @@ class TestSanitizeProfile:
         assert _sanitize_profile("default") == "default"
 
     def test_valid_with_numbers(self):
-        assert _sanitize_profile("cthugha-9") == "cthugha-9"
+        assert _sanitize_profile("my-agent-9") == "my-agent-9"
 
     def test_valid_uppercase(self):
         assert _sanitize_profile("Agent123") == "Agent123"
