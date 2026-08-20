@@ -37,7 +37,7 @@ setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.11",
     install_requires=[
         "pydantic>=2.0,<3.0",  # schema_v1 validation (pinned <3.0 to avoid breaking changes)
         "pyyaml>=5.4",         # YAML loop definition loader
@@ -56,6 +56,7 @@ setup(
         "console_scripts": [
             "memchorus-init=memchorus.auto_init:cli_main",
             "memchorus-doctor=memchorus.install_doctor:main",
+            "memchorus-recalibrate=memchorus.calibration_engine:main",
         ],
         "hermes_agent.plugins": ["memchorus = memchorus.hooks"],
     },
