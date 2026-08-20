@@ -60,8 +60,8 @@ All notable changes to MemChorus will be documented in this file.
 ## [1.6.0] - 2026-08-06
 
 ### Changed
-- **Branch consolidation release:** Merged remaining unlanded feature branches onto master (GapGuard, GAP026 hex ID skip, GAP015/GAP016 fixes, RecursionGuard accuracy improvements, dynamic source routing).
-- **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution. README version string updated to match `__init__.py` (1.6.0).
+**Consolidation release.** Source version aligned with `__init__.py` = 2.0.0.
+- **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution. README version now matches `__init__.py` (2.0.0).
 
 ## [1.5.12] - 2026-07-29
 
