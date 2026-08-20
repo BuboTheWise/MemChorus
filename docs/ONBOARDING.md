@@ -1,4 +1,4 @@
-# Third-Party Agent Onboarding — MemChorus v1.6.0
+# Third-Party Agent Onboarding — MemChorus v2.0.0
 
 Self-contained installation guide for external agents pointing at this repository.
 
