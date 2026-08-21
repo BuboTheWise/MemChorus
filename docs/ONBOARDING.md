@@ -26,7 +26,7 @@ Optional: If you have [MemPalace](https://github.com/MemPalace/mempalace) instal
 ```bash
 python -m venv /path/to/your-venv
 source /path/to/your-venv/bin/activate  # Linux/macOS; use 'activate' on Windows
-pip install "memchorus @ git+https://github.com/BuboTheise/MemChorus.git@master"
+pip install "memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master"
 ```
 
 Verify the import works:
@@ -57,6 +57,27 @@ mcp_servers:
   mempalace:
     command: /path/to/python
     args: ["-m", "mempalace.mcp_server"]
+    env:
+      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+```
+
+**Per-profile data isolation:** Each agent profile MUST use its own `MEMPALACE_PALACE_PATH` value. Sharing a `.db` file between profiles is the primary cause of memory cross-contamination. At minimum, set separate paths for `default` and any named profiles.
+
+### 2b. Bootstrap (recommended shortcut)
+
+MemChorus v2.0.0+ includes a bootstrap command that generates a complete routing configuration in one step:
+
+```bash
+memchorus-init --profile <PROFILE>    # creates ~/.hermes/profiles/<PROFILE>/memchorus.yaml
+memchorus-init --dry-run              # preview without writing
+```
+
+### 2c. Diagnostic verification
+
+After installation, run the install doctor to verify your environment is healthy:
+
+```bash
+memchorus-doctor                     # exit code 0 = clean, non-zero lists failures
 ```
 
 ### 3. Development install
@@ -85,7 +106,7 @@ lifecycle:
 
 ```
 
-All remaining sub-keys are optional with documented defaults. See [LIFECYCLE.md](./LIFECYCLE.md) for the full retention and eviction spec if you want automatic sweep behaviour.
+All remaining sub-keys are optional with documented defaults. See [memory-lifecycle-design.md](./memory-lifecycle-design.md) for the full retention and eviction spec if you want automatic sweep behaviour.
 
 ---
 
@@ -105,16 +126,19 @@ Expected output shows ten tests covering persistent MCP session liveness, save +
 
 ## Data Isolation Model
 
-Each agent profile should use its own MemPalace database path. The `profile` parameter in the MemChorus config maps to `<base>/profiles/<profile_name>` under your mempalace home directory:
+Each agent profile should use its own MemPalace database path via `MEMPALACE_PALACE_PATH`. The configuration for each profile maps to its own isolated location:
 
 ```yaml
-sources:
+# Inside ~/.hermes/profiles/my_profile/config.yaml or equivalent
+mcp_servers:
   mempalace:
-    name: my_agent_profile
-    mcp_timeout: 90
+    command: /path/to/python
+    args: ["-m", "mempalace.mcp_server"]
+    env:
+      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/my_profile/workspace/mempalace/palace
 ```
 
-MemPalace will store all vectors under that resolved path so data cannot leak between agents sharing the same host.
+MemPalace stores all vectors, drawers, and knowledge graph data under that resolved path so data cannot leak between agents sharing the same host. The bootstrap command (`memchorus-init --profile <PROFILE>`) handles this correctly automatically.
 
 ## Dependencies And Version Constraints
 

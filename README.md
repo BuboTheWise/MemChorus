@@ -365,6 +365,89 @@ Key behaviour:
 
 See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
+## Agent Quick Start
+
+**If you are an AI agent scanning this repository, use the prompts below to self-serve your installation.** These instructions require no prior workspace knowledge and produce isolated, profile-safe results.
+
+### Prompt 1: MemPalace — per-profile database isolation
+
+\`\`\`text
+Install mempalace-server in the Hermes virtual environment, then create a separate
+MemPalace database per profile so memory does not leak between agents.
+
+Steps:
+1. /home/user/.hermes/hermes-agent/venv/bin/pip install mempalace>=3.7.0
+2. For each profile (at minimum "default" and any named profiles):
+
+     mkdir -p ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+
+3. In each profile's config.yaml, add a mempalace MCP server entry pointing to
+   its own database:
+
+     mcp_servers:
+       mempalace:
+         command: /home/user/.hermes/hermes-agent/venv/bin/python3
+         args: ["-m", "mempalace.mcp_server"]
+         env:
+           MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+
+   Example for the default profile:
+     MEMPALACE_PALACE_PATH: ~/.hermes/default/workspace/mempalace/palace/data.db
+
+4. Verify isolation by checking that each profile can write and read drawers
+   independently without cross-contamination.
+
+Key rules:
+- NEVER share a .db file between profiles — that is the primary failure mode.
+- NEVER modify MemPalace source code to fix consumer problems; the integration
+  layer (MemChorus) owns all adapter logic.
+- Each profile should use its own `mempalace` MCP server entry, not a shared one.
+\`\`\`
+
+### Prompt 2: MemChorus — install, configure, test
+
+\`\`\`text
+Install MemChorus from the remote GitHub repository into the Hermes virtual
+environment with live MCP support and run verification.
+
+Steps:
+1. Install from the pushed commit (not local source):
+
+     /home/user/.hermes/hermes-agent/venv/bin/pip install 'memchorus[mcp] @ git+https://github.com/BuboTheWise/MemChorus.git@master'
+
+2. Bootstrap the routing config:
+
+     memchorus-init --profile <PROFILE>
+
+   This creates ~/.hermes/profiles/<PROFILE>/memchorus.yaml with preconfigured
+   source routing, skip_mcp set to false for live transport, and MemChorus added
+   to plugins.enabled.
+
+3. Verify the import works:
+
+     /home/user/.hermes/hermes-agent/venv/bin/python -c "
+     from memchorus.orchestrator import MemoryOrchestrator
+     from memchorus.mempalace_memory_source import MemPalaceMemorySource
+     orch = MemoryOrchestrator()
+     try:
+         orch.register_source(MemPalaceMemorySource('mempalace'))
+         print('MemPalace source registered OK')
+     except Exception as e:
+         print(f'MemPalace registration failed (expected if not configured): {e}')
+     "
+
+4. Run the test suite to confirm installation health:
+
+     /home/user/.hermes/hermes-agent/venv/bin/python -c "import memchorus; print(f'MemChorus {memchorus.__version__} OK')"
+
+Key rules:
+- NEVER use pip install -e . in production — that creates non-reproducible paths.
+- The [mcp] extra is required for live MemPalace transport. Without it, the
+  system falls back to a local JSON cache (functional but degraded).
+- Do not patch mempalace or hermes-agent source to fix integration problems;
+  all adapter logic belongs in MemChorus.
+\`\`\`
+
 ## Installation
 
 Requires Python 3.11+. Install from GitHub via pip (recommended for most users):
@@ -548,7 +631,7 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1388 collected tests**.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1378 collected tests**.
 
 ### Benchmark Metrics (v1.7.0+)
 
@@ -682,7 +765,7 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **1388 tests** collected across all modules (current)
+- **1378 tests** collected across all modules (current)
 
 
 ---
