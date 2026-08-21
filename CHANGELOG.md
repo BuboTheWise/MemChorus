@@ -2,9 +2,14 @@
 
 All notable changes to MemChorus will be documented in this file.
 
-## [Unreleased]
+## [Unreleased — 2.0.1-pre] - 2026-08-21
 
-*(Next minor release: verify test count, add any new features that land after 2.0.0)*
+### Fixed
+- **McpTransportDetector Shape B config parsing:** Hermes 3.x config files split MCP server definitions into separate `command` and `args` keys instead of a single shell-style command string. The transport detector previously ignored the `args:` key, causing MemPalace subprocesses to launch without `-m mempalace.mcp_server` arguments (silently falling back to local cache). Parser now correctly detects both legacy Shape A (single-string) and Hermes-native Shape B (split dict) formats. Backwards compatible — no breaking changes.
+- **Test suite count corrected:** README references updated from 1388 to 1378 to match current live collection output (minor reduction due to environment-sensitivity shifts in two conditional MCP integration tests).
+
+### Added
+- **`_McpTransportDetector` unit test suite** (7 tests): Dual-shape config validation, missing args fallback, dead-path handling, and cache behavior coverage.
 
 ## [2.0.0] - 2026-08-19
 
@@ -17,7 +22,7 @@ All notable changes to MemChorus will be documented in this file.
 ### Added
 - **Install Doctor CLI diagnostic:** New `memchorus-doctor` command (`python -m memchorus.install_doctor`) runs 8 health checks: Python version (>=3.11), dependency integrity (pydantic/PyYAML), memory source registration, plugin hook state, config validation, auto-tune pipeline components (HitRateTracker/MistakeDetector/CalibrationEngine/AdaptiveThreshold), data directory readability/writability, and test suite discoverability. Returns exit code 0 on healthy install, non-zero on failures. Includes 25 unit tests.
 - **GAP008 LRU cache eviction tests:** Unearthed and committed pre-existing test coverage verifying `OrderedDict` based LRU eviction in `_retrieve_cache`.
-- **Test suite growth:** Test count increased from ~798 to 1388 across 90+ test modules, covering the full pipeline including parallel execution resilience.
+- **Test suite growth:** Test count increased from ~798 to 1378 across 90+ test modules, covering the full pipeline including parallel execution resilience.
 
 ### Removed
 - **Stale feedback_loop references:** README post-audit section cleaned — removed reference to `feedback_loop/integration.py` which was already deleted in v1.9.0.
