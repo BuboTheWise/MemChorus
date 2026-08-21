@@ -47,36 +47,37 @@ The system must stay functional even if every enhancement source disappears. The
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          AI Agent                               │
-│                    (Hermes / OpenClaw / custom)                 │
-└──────────────▲──────────────────────▲──────────────────────────┘
-               │ save/retrieve/search  │ feedback/escalation
-    ┌──────────┴──────────┐   ┌─────────┴──────────────────────┐
-    │                     │   │                                │
-    │  MemoryOrchestrator │   │  BehavioralEnforcementManager  │
-    │                     │   │                                │
-    │  ┌───────────────┐  │   │  ┌─────────────────────────┐  │
-    │  │ Relevance     │  │   │  │   BehavioralTrigger     │  │
-    │  │ Scorer +      │  │   │  ├─────────────────────────┤  │
-    │  │ Dedup Engine  │  │   │  │   AutoRecallEngine      │  │
-    │  └───────────────┘  │   │  ├─────────────────────────┤  │
-    │                     │   │  │   AutoStorageEngine     │  │
-    │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
-    │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
-    │  └───────────────┘  │   │  └─────────────────────────┘  │
-    └────┬──────────┬─────────────┬───────────────────────────┘
-         │          │             │
-    ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
-    │  Hermes  │  │   MemPalace  │  │   Custom Sources│
-    │  Default │  │   (MCP)      │  │   (MemorySource │
-    │  Memory  │  │              │  │     subclasses) │
-    │ (JSON/   │  │ Structured   │  │                 │
-    │  YAML)   │  │ knowledge    │  │ e.g.: vector DB,│
-    │          │  │ graph +      │  │  note stores,   │
-    │ Resilient│  │ semantic     │  │  remote APIs…   │
-    │  core    │  │ search       │  │                 │
-    └──────────┘  └──────────────┘  └─────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                              AI Agent                               │
+│                       (Hermes / OpenClaw / custom)                  │
+└─────────────────▲──────────────────────────▲───────────────────────┘
+                  │ save/retrieve/search       │ feedback/escalation
+   ┌──────────────┴─────────────┐  ┌──────────┴──────────────────────┐
+   │                            │  │                                  │
+   │    MemoryOrchestrator      │  │   BehavioralEnforcementManager   │
+   │                            │  │                                  │
+   │  ┌─────────────────────┐  │  │  ┌──────────────────────────┐   │
+   │  │ Relevance Scorer +  │  │  │  │   BehavioralTrigger      │   │
+   │  │ Dedup Engine        │  │  │  ├──────────────────────────┤   │
+   │  └─────────────────────┘  │  │  │   AutoRecallEngine       │   │
+   │                            │  │  ├──────────────────────────┤   │
+   │  ┌─────────────────────┐  │  │  │   AutoStorage/           │   │
+   │  │ Classifier          │  │  │  │   Escalation Engine      │   │
+   │  └─────────────────────┘  │  │  └──────────────────────────┘   │
+   └───────┬───────────┬──────┴──────────┬──────────────────────────┘
+           │           │                 │
+         ┌─▼──────────▼──────┐      ┌────▼───────────────────┐
+         │ Hermes Default    │      │ MemPalace (MCP)        │
+         │ Memory Source     │      │ Structured knowledge   │
+         │ JSON / YAML       │      │ graph + semantic search│
+         │ Resilient core    │      └──────┬─────────────────┘
+         └──────────────────┘             │
+                                         │
+                                  ┌──────▼───────────────────┐
+                                  │ Custom Sources           │
+                                  │ (MemorySource subclasses)│
+                                  │ e.g. vector DB, APIs…    │
+                                  └──────────────────────────┘
 ```
 
 ### Component Summary
@@ -294,16 +295,17 @@ Key guarantees from this pipeline:
 ### Data Flow Overview
 
 ```
-                ┌───────────┐   Write      ┌─────────────────┐
-  Agent ◄─────► │           ├─────────────►│   Hermes        │
-                │  Memory   │             │   Default       │
-                │ Orchestrator            │   (JSON/YAML)   │
-                │           ├─────────────►│   MemPalace    │
-                └───────────┘             │   (MCP server)  │
-                      ▲                   └─────────────────┘
-                      │
-                    Read ◄──── Returns scored + deduplicated results from
-                              best-matching source(s)
+  Agent ◄──────►┌───────────────────┐
+                │                   │
+                │  Memory            │   Write      ┌────────────────────┐
+                │  Orchestrator       ├─────────────►│  Hermes Default   │
+                │                   │               │  (JSON / YAML)    │
+                │  + Relevance/Dedup ├─────────────►│  MemPalace        │
+                │                   │               │  (MCP server)     │
+                └────────┬──────────┘               └────────────────────┘
+                         ▲
+                    Read │  Returns scored + deduplicated results
+                         │  from best-matching source(s)
 ```
 
 ### Storage Routing Matrix
