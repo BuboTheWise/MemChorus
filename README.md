@@ -371,7 +371,7 @@ See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the f
 
 ### Prompt 1: MemPalace — per-profile database isolation
 
-\`\`\`text
+```text
 Install mempalace-server in the Hermes virtual environment, then create a separate
 MemPalace database per profile so memory does not leak between agents.
 
@@ -402,11 +402,11 @@ Key rules:
 - NEVER modify MemPalace source code to fix consumer problems; the integration
   layer (MemChorus) owns all adapter logic.
 - Each profile should use its own `mempalace` MCP server entry, not a shared one.
-\`\`\`
+```
 
 ### Prompt 2: MemChorus — install, configure, test
 
-\`\`\`text
+```text
 Install MemChorus from the remote GitHub repository into the Hermes virtual
 environment with live MCP support and run verification.
 
