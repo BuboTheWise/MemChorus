@@ -461,19 +461,23 @@ class _McpClient:
     ]
 
     @classmethod
-    def _filter_command(cls, python: str) -> tuple[str, list]:
+    def _filter_command(cls, python: str, child_cmd: Optional[list] = None) -> tuple[str, list]:
         """Return a command that runs MemPalace MCP server via a thin stderr filter.
 
         Spawns a tiny Python -c wrapper that starts mempalace.mcp_server and
         filters out repetitive informational noise from stderr while letting
         real errors / warnings pass through untouched.
+
+        If ``child_cmd`` is None, defaults to [python, "-m", "mempalace.mcp_server"].
+        Pass a custom list when a config override (Shape B) specifies different args/env.
         """
+        effective_cmd = child_cmd if child_cmd else [python, "-m", "mempalace.mcp_server"]
         # Build the filter script as plain string to avoid f-string escaping issues.
         filtered_patterns = [repr(p) for p in cls._NOISE_PATTERNS]
         patterns_str = ", ".join(filtered_patterns)
         script_lines = [
             'import subprocess, sys;',
-            "p=subprocess.Popen(" + repr([python, "-m", "mempalace.mcp_server"]) +
+            "p=subprocess.Popen(" + repr(effective_cmd) +
             ", stderr=subprocess.PIPE);",
             "for line in p.stderr:",
             "  s=line.decode('utf-8','replace').strip();",
@@ -490,9 +494,16 @@ class _McpClient:
         Priority 0: config.yaml override from ``_McpTransportDetector``.
         Fallback: filtered python command via :meth:`_filter_command` that suppresses
         informational noise while letting real errors through.
+
+        IMPORTANT: All paths MUST go through the stderr filter wrapper, otherwise
+        "MemPalace MCP Server starting" and "stdin EOF -- client disconnected" lines
+        flood the user's terminal (issue discovered 2026-08-21).
         """
         if self._transport_override:
-            return (self._transport_override["command"], list(self._transport_override["args"]))
+            cmd = self._transport_override["command"]
+            args = list(self._transport_override["args"])
+            effective_child = [cmd] + args
+            return self._filter_command(self._python_bin, child_cmd=effective_child)
         return self._filter_command(self._python_bin)
 
     def _discover_python(self) -> str:
