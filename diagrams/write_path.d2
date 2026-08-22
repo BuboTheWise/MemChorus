@@ -1,0 +1,32 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+step1: "save(key, value)"
+
+step2: "Explicit source\noverride?"
+
+step3: "Infer or use\nMemoryProfile"
+
+step4: "Look up preferred\ntargets"
+
+step5: "Write to first\nmatch"
+
+step6: "Safety-net fallback\nfor any available source"
+
+step7: "Invalidate LRU\ncache entries"
+
+step8: "Capture outcome via\nBehavioralEnforcement"
+
+# Pipeline chain
+step1 -> step2
+step2 -> step3
+step3 -> step4
+step4 -> step5
+step5 -> step6
+step6 -> step7
+step7 -> step8
