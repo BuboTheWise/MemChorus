@@ -47,38 +47,38 @@ The system must stay functional even if every enhancement source disappears. The
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                          AI Agent                               │
-│                    (Hermes / OpenClaw / custom)                 │
-└──────────────▲──────────────────────▲──────────────────────────┘
-               │ save/retrieve/search  │ feedback/escalation
-    ┌──────────┴──────────┐   ┌─────────┴──────────────────────┐
-    │                     │   │                                │
-    │  MemoryOrchestrator │   │  BehavioralEnforcementManager  │
-    │                     │   │                                │
-    │  ┌───────────────┐  │   │  ┌─────────────────────────┐  │
-    │  │ Relevance     │  │   │  │   BehavioralTrigger     │  │
-    │  │ Scorer +      │  │   │  ├─────────────────────────┤  │
-    │  │ Dedup Engine  │  │   │  │   AutoRecallEngine      │  │
-    │  └───────────────┘  │   │  ├─────────────────────────┤  │
-    │                     │   │  │   AutoStorageEngine     │  │
-    │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
-    │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
-    │  └───────────────┘  │   │  └─────────────────────────┘  │
-    └────┬──────────┬─────────────┬───────────────────────────┘
-         │          │             │
-    ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
-    │  Hermes  │  │   MemPalace  │  │   Custom Sources│
-    │  Default │  │   (MCP)      │  │   (MemorySource │
-    │  Memory  │  │              │  │     subclasses) │
-    │ (JSON/   │  │ Structured   │  │                 │
-    │  YAML)   │  │ knowledge    │  │ e.g.: vector DB,│
-    │          │  │ graph +      │  │  note stores,   │
-    │ Resilient│  │ semantic     │  │  remote APIs…   │
-    │  core    │  │ search       │  │                 │
-    └──────────┘  └──────────────┘  └─────────────────┘
+                              ┌──────────────────────────────────────┐                  
+                              │                                      │                  
+                              │    AI Agent                          │                  
+                              │    (Hermes / OpenClaw / custom)      │                  
+                              │                                      │                  
+                              └──────────────────────────────────────┘                  
+                     save─retrieve/search      │                                        
+                      │                        │                                        
+                      │               feedback/escalation                               
+                      │               data flow│                                        
+                      │                        │                                        
+                      ▼                        ▼                                        
+            ┌───────────────────┐          ┌─────────────────────────────┐              
+            │MemoryOrchestrator │          │BehavioralEnforcementManager │              
+            │                   │          │                             │              
+            └───────────────────┘          └─────────────────────────────┘              
+                  │      │                                         │                    
+                  │      └────────────────┐                        │                    
+                  │                       │                        │                    
+┌─────────────────│───────────────────────│────────────────────────│─────────────────┐  
+│                 │                Memory Backends                 │                 │  
+│                 │                       │                        │                 │  
+│                 ▼                       ▼                        ▼                 │  
+│    ┌───────────────────────────┌────────────────┐  ┌─────────────────────────────────┐
+│    │Hermes Default (JSON/YAML) │MemPalace (MCP) │  │Custom Sources (vector DB, etc.) │
+│    │                           │                │  │                               │ │
+│    └───────────────────────────└────────────────┘  └─────────────────────────────────┘
+│                                                                                    │  
+└────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+*Diagram source: [`diagrams/architecture.d2`](diagrams/architecture.d2) — edit with D2 to regenerate.*
 ### Component Summary
 
 | Component | Role |
@@ -114,96 +114,127 @@ Agent  -->  MemoryOrchestrator  -->  [Hermes Source]  -->  local memory files
 ### Write Path Detail
 
 ```
-  orchestrate.save(key, value)
-         │
-         ▼
-   ┌───────────────┐
-   │ Explicit      │──► source_name provided? → write there, return
-   │ source        │
-   │ override?     │
-   └───────┬───────┘
-           │ no
-           ▼
-   ┌───────────────┐
-   │ Infer or use  │──► MemoryProfile from content shape
-   │ profile       │    (size, structure type, keywords)
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Look up       │──► _PROFILE_SOURCE_HINT[profile]
-   │ preferred     │    returns ranked target list
-   │ targets       │
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Write to      │──► First available, enabled source wins
-   │ first match   │    Single-target write (no duplication)
-   └───────┬───────┘
-           │ miss all preferred?
-           ▼
-   ┌───────────────┐
-   │ Safety-net    │──► Try ANY available non-disabled source
-   ◄───────────────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Invalidate    │──► Clear LRU cache entry for this key
-   │ LRU cache     │
-   └───────┬───────┘
-           │ enforcement-on-write enabled?
-           ▼
-   ┌───────────────┐
-   │ Capture       │──► BehavioralEnforcementManager.enforce(⋯)
-   │ outcome       │    auto-archives significant save events
-   └───────────────┘
+   ┌─────────────────┐                         
+   │save(key, value) │                         
+   │                 │                         
+   └─────────────────┘                         
+           │                                   
+           ▼                                   
+    ┌──────────────────────────┐               
+    │                          │               
+    │     Explicit source      │               
+    │     override?            │               
+    │                          │               
+    └──────────────────────────┘               
+           │                                   
+           ▼                                   
+    ┌───────────────────────────┐              
+    │                           │              
+    │      Infer or use         │              
+    │      MemoryProfile        │              
+    │                           │              
+    └───────────────────────────┘              
+           │                                   
+           ▼                                   
+  ┌──────────────────────────┐                 
+  │                          │                 
+  │    Look up preferred     │                 
+  │    targets               │                 
+  │                          │                 
+  └──────────────────────────┘                 
+           │                                   
+           ▼                                   
+    ┌─────────────────────┐                    
+    │                     │                    
+    │   Write to first    │                    
+    │   match             │                    
+    │                     │                    
+    └─────────────────────┘                    
+           │                                   
+           ▼                                   
+┌─────────────────────────────────────────────┐
+│                                             │
+│          Safety-net fallback                │
+│          for any available source           │
+│                                             │
+└─────────────────────────────────────────────┘
+           │                                   
+           ▼                                   
+    ┌─────────────────────────────┐            
+    │                             │            
+    │       Invalidate LRU        │            
+    │       cache entries         │            
+    │                             │            
+    └─────────────────────────────┘            
+           │                                   
+           ▼                                   
+┌──────────────────────────────────────────┐   
+│                                          │   
+│          Capture outcome via             │   
+│          BehavioralEnforcement           │   
+│                                          │   
+└──────────────────────────────────────────┘
 ```
 
+*Diagram source: [`diagrams/write_path.d2`](diagrams/write_path.d2) — edit with D2 to regenerate.*
 **On retrieve:** Requests hit every available source in parallel. Results are scored using a domain-aware relevance engine that weighs keyword overlap, semantic proximity, and configurable context priorities. Top results surface first with deduplication applied across the combined result set.
 
 ### Retrieve Path Detail
 
 ```
-  orchestrate.retrieve(key)
-         │
-         ▼
-   ┌───────────────┐
-   │ Check LRU     │──► cached + within TTL? → return immediately
-   │ cache         │
-   └───────┬───────┘            (default TTL: 60s, max 256 entries)
-           │ miss / expired
-           ▼
-   ┌───────────────┐
-   │ Pre-decision  │──► enforcement-on-read enabled?
-   │ recall        │    → BehavioralTrigger + AutoRecallEngine fire
-   │ (optional)    │    → recalled context prepended to result
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Rank sources  │──► priority_order config OR RelevanceScorer
-   │               │    determines candidate order
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Query first   │──► First source that has the key wins
-   │ ranked source │
-   └───────┬───────┘
-           │ hit
-           ▼
-   ┌───────────────┐
-   │ Update LRU    │──► Store (value, timestamp) in cache
-   │ cache         │
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Return        │──► value (+ any pre-decision recall context)
-   ◄───────────────┘
+  ┌──────────────┐                  
+  │retrieve(key) │                  
+  │              │                  
+  └──────────────┘                  
+          │                         
+          ▼                         
+   ┌────────────────┐               
+   │                │               
+   │   Check LRU    │               
+   │   cache        │               
+   │                │               
+   └────────────────┘               
+          │                         
+          ▼                         
+ ┌───────────────────────────────┐  
+ │                               │  
+ │      Pre-decision             │  
+ │      recall (optional)        │  
+ │                               │  
+ └───────────────────────────────┘  
+          │                         
+          ▼                         
+ ┌───────────────────────────────┐  
+ │                               │  
+ │       Rank sources by         │  
+ │       priority order          │  
+ │                               │  
+ └───────────────────────────────┘  
+          │                         
+          ▼                         
+ ┌──────────────────────────┐       
+ │                          │       
+ │   Query first ranked     │       
+ │   source                 │       
+ │                          │       
+ └──────────────────────────┘       
+          │                         
+          ▼                         
+ ┌─────────────────┐                
+ │Update LRU cache │                
+ │                 │                
+ └─────────────────┘                
+          │                         
+          ▼                         
+┌──────────────────────────────────┐
+│                                  │
+│      Return value                │
+│      (+ recalled context)        │
+│                                  │
+└──────────────────────────────────┘
 ```
 
+*Diagram source: [`diagrams/retrieve_path.d2`](diagrams/retrieve_path.d2) — edit with D2 to regenerate.*
 The orchestrator exposes three core operations:
 
 - `save(key, value)` — intelligent write routing
@@ -255,34 +286,45 @@ sequenceDiagram
 The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
 
 ```
-  enforce(input_text)
-         │
-         ▼
-   ┌─────────────────┐
-   │ Behavioral      │──► Detects decision points in text
-   │ Trigger         │    (planning verbs, choice phrases, etc.)
-   └────────┬────────┘
-            │ detected points
-            ▼
-   ┌─────────────────┐
-   │ AutoRecall      │──► Queries relevant memories for each
-   │ Engine          │    decision point. Returns context dicts.
-   └────────┬────────┘
-            │ recall context
-            ▼
-   ┌─────────────────┐
-   │ AutoStorage     │──► Captures outcomes with dedup window
-   │ Engine          │    (default: 30s window, 0.6 similarity)
-   └────────┬────────┘
-            │
-            ▼
-   ┌─────────────────┐
-   │ EnforcementResult│──► Structured summary returned to caller:
-   │ (dataclass)     │    triggered_points, recall_context lists,
-   │                 │    storage_outcome, timing_ms, errors[]
-   └─────────────────┘
+      ┌────────────────────┐                                     
+      │enforce(input_text) │                                     
+      │                    │                                     
+      └────────────────────┘                                     
+                │                                                
+                ▼                                                
+  ┌─────────────────────────────────────────────────────┐        
+  │                                                     │        
+  │         Behavioral Trigger                          │        
+  │         (Plays decision points from text)           │        
+  │                                                     │        
+  └─────────────────────────────────────────────────────┘        
+                │                                                
+                ▼                                                
+┌──────────────────────────────────────────────────────┐         
+│                                                      │         
+│         AutoRecall Engine                            │         
+│         (Query relevant memories per point)          │         
+│                                                      │         
+└──────────────────────────────────────────────────────┘         
+                │                                                
+                ▼                                                
+┌─────────────────────────────────────────────────────┐          
+│                                                     │          
+│         AutoStorage Engine                          │          
+│         (Captures outcomes, dedup window)           │          
+│                                                     │          
+└─────────────────────────────────────────────────────┘          
+                │                                                
+                ▼                                                
+  ┌─────────────────────────────────────────────────────────────┐
+  │                                                             │
+  │               EnforcementResult (dataclass)                 │
+  │               (Structured summary to caller)                │
+  │                                                             │
+  └─────────────────────────────────────────────────────────────┘
 ```
 
+*Diagram source: [`diagrams/behav_pipeline.d2`](diagrams/behav_pipeline.d2) — edit with D2 to regenerate.*
 Key guarantees from this pipeline:
 
 1. **Pre-decision recall automatically fires** — before planning, before choosing an approach, before making architectural decisions, relevant memories surface without the agent needing to think about querying them
@@ -294,17 +336,19 @@ Key guarantees from this pipeline:
 ### Data Flow Overview
 
 ```
-                ┌───────────┐   Write      ┌─────────────────┐
-  Agent ◄─────► │           ├─────────────►│   Hermes        │
-                │  Memory   │             │   Default       │
-                │ Orchestrator            │   (JSON/YAML)   │
-                │           ├─────────────►│   MemPalace    │
-                └───────────┘             │   (MCP server)  │
-                      ▲                   └─────────────────┘
-                      │
-                    Read ◄──── Returns scored + deduplicated results from
-                              best-matching source(s)
+                                            ┌───────────────────────────┐
+                ┌──────────────────┌───────▶│                           │
+                │                  │ │      │      Hermes Default       │
+                │                  └─── ┌───│      (JSON/YAML)          │
+┌────────┐      │   Memory           │◀─┘   │                           │
+│ Agent  │◀────▶│   Orchestrator     │──┐   └───────────────────────────┘
+│        │      │                    │  │   ┌───────────────────────┐    
+└────────┘      │                  ┌──▶ └──▶│MemPalace (MCP server) │    
+                └──────────────────└────────│                       │    
+                                            └───────────────────────┘    
 ```
+
+*Diagram source: [`diagrams/data_flow.d2`](diagrams/data_flow.d2)*
 
 ### Storage Routing Matrix
 

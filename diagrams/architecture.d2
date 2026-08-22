@@ -1,0 +1,25 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+ai: "AI Agent\n(Hermes / OpenClaw / custom)"
+
+MemoryOrchestrator
+
+BehavioralEnforcementManager
+
+backends: Memory Backends {
+  "Hermes Default (JSON/YAML)"
+  "MemPalace (MCP)"
+  "Custom Sources (vector DB, etc.)"
+}
+
+ai -> MemoryOrchestrator: save/retrieve/search
+ai -> BehavioralEnforcementManager: feedback/escalation\ndata flow
+MemoryOrchestrator -> backends."Hermes Default (JSON/YAML)"
+MemoryOrchestrator -> backends."MemPalace (MCP)"
+BehavioralEnforcementManager -> backends."Custom Sources (vector DB, etc.)"

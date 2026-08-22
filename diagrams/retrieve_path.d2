@@ -1,0 +1,29 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: down
+
+step1: "retrieve(key)"
+
+step2: "Check LRU\ncache"
+
+step3: "Pre-decision\nrecall (optional)"
+
+step4: "Rank sources by\npriority order"
+
+step5: "Query first ranked\nsource"
+
+step6: "Update LRU cache"
+
+step7: "Return value\n(+ recalled context)"
+
+# Pipeline chain
+step1 -> step2
+step2 -> step3
+step3 -> step4
+step4 -> step5
+step5 -> step6
+step6 -> step7
