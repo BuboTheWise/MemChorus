@@ -1,18 +1,12 @@
 vars: {
-  d2-config: {
-    layout-engine: elk
-  }
+  d2-config: { layout-engine: elk }
 }
 
 direction: right
 
 agent: "Agent"
-orchestrator: "Memory\nOrchestrator"
-hermes_dest: "Hermes Default\n(JSON/YAML)"
-mempalace_dest: "MemPalace (MCP server)"
+orchestrator: "Memory Orchestrator"
+backends: "Hermes Default + MemPalace"
 
 agent <-> orchestrator
-orchestrator -> hermes_dest
-orchestrator -> mempalace_dest
-hermes_dest -> orchestrator
-mempalace_dest -> orchestrator
+orchestrator <-> backends
