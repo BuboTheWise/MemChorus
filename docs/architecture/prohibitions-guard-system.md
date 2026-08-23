@@ -130,8 +130,30 @@ Hook wiring is additionally covered indirectly by `test_hooks.py` and end-to-end
 
 ## 7. Configuration
 
-All knobs are controlled via `DistillationConfig` defaults:
-- Only CRITICAL severity mistakes (score 3) become new guards
-- Maximum 2 new rules per session instance prevents runaway auto-generation
-- 24-hour cooldown window per pattern hash prevents duplicate rules from near-identical errors
-- No external configuration file required — the system uses safe defaults
+Runtime knobs are controlled via `config_example.yaml` under the `prohibitions:` block:
+
+| Config Key | Default | Description |
+|---|---|---|
+| `prohibitions.enabled` | `true` | Master toggle — when false, guard scan is entirely skipped |
+| `prohibitions.distillation_enabled` | `true` | Auto-distillation toggle — when false, no new rules are created from CRITICAL mistakes |
+| `distillation.minimum_severity` | `3` | Floor for distillation (CRITICAL only) |
+| `distillation.max_rules_per_session` | `2` | Cap on new rules per cycle prevents runaway generation |
+| `distillation.cooldown_hours` | `24.0` | Pattern-hash window preventing duplicate guards from near-identical errors |
+
+Set `prohibitions.enabled: false` to disable all guard scanning without removing seed rules or distilled state.
+Set `prohibitions.distillation_enabled: false` to allow pre-existing guards while stopping auto-creation of new ones.
+
+### Default Behavior Without Config
+
+If no external configuration file is provided, the system uses safe defaults that are equivalent to:
+```yaml
+prohibitions:
+  enabled: true
+  distillation:
+    enabled: true
+    minimum_severity: 3
+    max_rules_per_session: 2
+    cooldown_hours: 24.0
+```
+
+Only CRITICAL severity mistakes (score 3) become new guards. Maximum 2 new rules per session instance prevents runaway auto-generation. 24-hour cooldown window per pattern hash prevents duplicate rules from near-identical errors.
