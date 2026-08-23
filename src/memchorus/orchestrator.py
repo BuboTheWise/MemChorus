@@ -225,7 +225,11 @@ class MemoryOrchestrator:
         self._lifecycle_manager: Optional['LifecycleManager'] = None
         self._initialize_lifecycle()
 
-        self._initialize_default_sources()
+        # Allow tests (and other isolated scenarios) to skip auto-registration
+        # of hermes_default / MemPalace so only explicitly registered sources
+        # participate.  Default is False — backward compatible.
+        if not bool(self.config.get('skip_init_sources', False)):
+            self._initialize_default_sources()
 
     def _get_enforcement_manager(self) -> Optional[BehavioralEnforcementManager]:
         """Lazily instantiate BehavioralEnforcementManager once enforcement is needed.

@@ -127,7 +127,7 @@ class TestTiebreakerAndConfig:
 
     def test_dict_typed_results_also_dedup(self):
         """Dict-typed results (legacy format) still go through dedup correctly."""
-        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.5}})
+        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.5}, "skip_init_sources": True})
 
         # High overlap: 6 shared words out of ~7 unique total → Jaccard ~0.86
         r1 = {"key": "x1", "content": "docker nginx reverse proxy load balancer setup", "source": "a", "score": 0.9}
@@ -142,7 +142,7 @@ class TestDedupBenchmark:
 
     def test_performance_on_typical_batch(self):
         """25 results should deduplicate in under 100ms (generous ceiling)."""
-        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.6}})
+        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.6}, "skip_init_sources": True})
         from memchorus.relevance_engine import RankedResult
 
         results = [
@@ -183,7 +183,7 @@ class TestIntegrationSearch:
                          "content": "pytest with ignore-glob flag for tests config",
                          "score": 0.7}]
 
-        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.5, "per_source_limit": 10}})
+        ro = MemoryOrchestrator(config={"recall": {"dedup_threshold": 0.5, "per_source_limit": 10}, "skip_init_sources": True})
         ro.register_source(SrcA())
         ro.register_source(SrcB())
 
