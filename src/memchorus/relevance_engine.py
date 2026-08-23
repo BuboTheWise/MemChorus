@@ -17,6 +17,7 @@ Design decisions (from Gap Analyses G1 + G2):
 from __future__ import annotations
 
 import logging
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -88,19 +89,45 @@ class RelevanceScorer:
         1. **Text match quality** -- lexical overlap between query and result content
            (BM25-inspired unigram recall).  Default weight = 0.45.
         2. **Recency decay** -- exponential decay from the result timestamp using a
-           half-life of 30 days (configurable via ``half_life_days``).  Default
-           weight = 0.30.
+           half-life of 30 days (configurable via ``half_life_days``).  Optional
+           two-tier mode: fast_window_days + fast_retention_pct give a higher,
+           flatter plateau for recent operational context before standard decay
+           takes over.  Default weight = 0.30.
         3. **Source-type bias** -- boosts the base probability assigned to each source.
            For example, 'hermes_default' gets priors={'hermes_default': 0.7} by default.
            Default weight = 0.25.
+
+    Two-tier recency model (GH-99)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    When ``fast_window_days`` is provided, memories within that window retain a
+    proportion of their score (controlled by ``fast_retention_pct``), then standard
+    exponential decay kicks in for anything older.  This lets operational context
+    — PR pushed, file changed, deploy completed — stay highly ranked for hours
+    or days but fade rapidly once it becomes stale, while stable knowledge continues
+    on its longer decay curve.
+
+    Example (fast_window_days=7, fast_retention_pct=0.7):
+      - Day 0: score = 1.0  (brand new)
+      - Days 1-6: slow exponential decay from 1.0 toward 0.7 at the boundary (day 7).
+        Decay inside the window is much gentler than the standard half-life so scores
+        stay well above the single-curve model during this period.
+      - After day 7: standard exponential decay resumes from 0.7 using ``half_life_days``
+
+    If ``fast_window_days`` is None (the default), the previous single-curve
+    model is preserved exactly, maintaining backward compatibility.
     """
 
     def __init__(
         self,
         half_life_days: float = 30.0,
         priors: Optional[Dict[str, float]] = None,
+        fast_window_days: Optional[float] = None,
+        fast_retention_pct: float = 0.7,
     ):
         self.half_life_days = half_life_days
+        # Two-tier recency model (GH-99)
+        self.fast_window_days = fast_window_days  # None disables two-tier mode
+        self.fast_retention_pct = fast_retention_pct
         # Normalise priors to a probability distribution if provided
         if priors:
             total = sum(priors.values())
@@ -113,7 +140,12 @@ class RelevanceScorer:
     # ------------------------------------------------------------------
 
     def _score_recency(self, timestamp_str: Optional[str]) -> float:
-        """Return a value in [0, 1] for ``timestamp_str`` (ISO-8601)."""
+        """Return a value in [0, 1] for ``timestamp_str`` (ISO-8601).
+
+        Two-tier recency model (GH-99): when self.fast_window_days is set, memories
+        within that window retain a higher score controlled by fast_retention_pct,
+        after which standard exponential decay takes over from the boundary value.
+        """
         if not timestamp_str:
             return 0.5  # neutral
         try:
@@ -128,6 +160,28 @@ class RelevanceScorer:
                 timestamp_str, abs(delta),
             )
             delta = 0
+
+        # Two-tier model (GH-99): fast_window keeps recency scores higher during the
+        # first N days so operational context stays relevant, then standard decay.
+        if self.fast_window_days is not None and delta > 0:
+            window = max(self.fast_window_days, 0.01)
+            base = max(self.half_life_days, 1)
+            floor = min(max(self.fast_retention_pct, 0.0), 1.0)
+            # Slower effective half-life inside the fast window keeps operational context
+            # highly ranked longer than the standard curve would allow.
+            slow_half_life = base / max(floor, 1e-9)
+
+            if delta <= window:
+                # Gentle plateau: decay is slower than standard half-life here
+                return float(0.5 ** (delta / slow_half_life))
+            else:
+                # After window ends, continue standard decay — scaled from the boundary
+                # value where the slow-curve left off to avoid any score cliff.
+                boundary_score = 0.5 ** (window / slow_half_life)
+                post_delta = delta - window
+                return float(boundary_score * (0.5 ** (post_delta / base)))
+
+        # Original single-curve behaviour when fast_window not configured
         decay = 0.5 ** (delta / max(self.half_life_days, 1))
         return float(decay)
 

@@ -20,7 +20,7 @@ import json
 import logging
 import re
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -601,8 +601,9 @@ class MemChorusHooks:
 # ---------------------------------------------------------------------------
 
 # GAP P0-4 FIX (2026-07-19): Enforce character budget per entry + total block
-_MAX_CONTENT_CHARS = 300   # max chars per single memory entry  
-_MAX_BLOCK_CHARS = 800     # hard ceiling — tightened from 2000 to prevent hook bloat ([TASK-ID])
+_MAX_CONTENT_CHARS = 300   # max chars per single memory entry
+_DEFAULT_MAX_BLOCK_CHARS = 2000  # GH-96: configurable default recall block ceiling
+_MAX_BLOCK_CHARS = _DEFAULT_MAX_BLOCK_CHARS
 
 def _extract_text_from_message(message: Any) -> str:
     """Extract text content from a Message dict/object for search purposes."""
@@ -802,41 +803,78 @@ def _build_search_terms(kwargs: Dict[str, Any]) -> str:
 
 
 def _resolve_char_limit() -> int:
-    """Return per-profile char budget if set, else global default."""
+    """Return effective recall block character ceiling (GH-96).
+
+    Resolution order (first match wins):
+      1. MEMCHORUS_RECALL_MAX_CHARS env var
+      2. Per-profile config.yaml: memchorus.recall.max_block_chars
+         OR memchorus.hook_char_limit (legacy key)
+      3. Global default _DEFAULT_MAX_BLOCK_CHARS
+    """
     from memchorus import _sanitize_profile
+
+    # Layer 1: environment variable
+    env_val = os.environ.get("MEMCHORUS_RECALL_MAX_CHARS")
+    if env_val is not None:
+        try:
+            val = int(env_val)
+            return max(200, min(val, 10000))
+        except ValueError:
+            pass
+
+    # Layer 2: per-profile config.yaml
     try:
         profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
         cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")
         p = _Path(cfg_path)
         if p.exists():
             data = _yml.safe_load(p.read_text()) or {}
-            limit = data.get("memchorus", {}).get("hook_char_limit", None)
-            if isinstance(limit, int):
-                return max(200, min(limit, 10000))
+            memchorus_cfg = data.get("memchorus", {})
+
+            # New key: recall.max_block_chars (nested under recall.)
+            if isinstance(memchorus_cfg, dict):
+                recall_cfg = memchorus_cfg.get("recall", None)
+                if isinstance(recall_cfg, dict):
+                    limit = recall_cfg.get("max_block_chars", None)
+                    if isinstance(limit, int):
+                        return max(200, min(limit, 10000))
+
+            # Legacy key: memchorus.hook_char_limit
+            if isinstance(memchorus_cfg, dict):
+                limit = memchorus_cfg.get("hook_char_limit", None)
+                if isinstance(limit, int):
+                    return max(200, min(limit, 10000))
     except Exception:
         pass
-    return _MAX_BLOCK_CHARS
+
+    # Layer 3: global default
+    return _DEFAULT_MAX_BLOCK_CHARS
 
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
 
     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
+    GH-96: resolves max_block_chars dynamically via _resolve_char_limit() (env var,
+    per-profile config, or default).  When the budget is exceeded, lowest-scored
+    entries are dropped first to preserve the most relevant memories.
     Truncation respects line boundaries — partial lines are dropped rather than cut,
     ensuring markdown formatting stays intact.
     """
     if not items:
         return ""
 
-    ordered = items
+    max_chars = _resolve_char_limit()
 
-    lines: List[str] = []
+    # Build formatted lines with per-entry budget enforcement + key dedup
+    lines_with_score: List[Tuple[str, float]] = []
     seen_keys: set = set()
 
-    for item in ordered[:5]:
+    for item in items:
         key = item.get("key") or str(item)
         if key in seen_keys:
             continue
         seen_keys.add(key)
+        score = float(item.get("score", 0.0))
         content_raw = item.get("content") or ""
         # Defensive: some memory sources return nested dicts instead of strings
         if not isinstance(content_raw, str):
@@ -865,26 +903,34 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
                     raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
 
         line = f"- **{key}** — {raw_content}"
-        lines.append(line)
+        lines_with_score.append((line, score))
+
+    # Sort by score ascending so we can pop lowest-scored first if over budget
+    lines_with_score.sort(key=lambda pair: pair[1])
+    lines = [pair[0] for pair in lines_with_score]
 
     joined = "\n".join(lines)
-    truncated = False
+    dropped_count = 0
 
     # --- Hard total block ceiling (drops complete entries, not partial lines)-
     # Constants that appear in every output regardless of truncation
-    _header_len  = len("[MemChorus injected context]\n")
-    _footer_len  = len("\n[/MemChorus injected block]")
+    _header_len = len("[MemChorus injected context]\n")
+    _footer_len = len("\n[/MemChorus injected block]")
 
-    while len(joined) + _header_len + _footer_len > _MAX_BLOCK_CHARS:
-        if not lines:
-            break
-        lines.pop()
+    while lines and len(joined) + _header_len + _footer_len > max_chars:
+        # Remove the lowest-scored entry (at the front after ascending sort)
+        lines.pop(0)
+        dropped_count += 1
         joined = "\n".join(lines)
-        truncated = True
 
-    # Append trailer only if we actually dropped entries
-    if truncated:
-        joined += "\n... (truncated, budget exceeded)"
+    # Re-sort remaining lines descending by score so highest-ranked appears first
+    if dropped_count > 0:
+        scores_remaining = [pair[1] for pair in lines_with_score[dropped_count:]]
+        indexed_lines = list(zip(lines, scores_remaining))
+        indexed_lines.sort(key=lambda pair: -pair[1])
+        lines = [pair[0] for pair in indexed_lines]
+        joined = "\n".join(lines)
+        joined += f"\n... (truncated, budget exceeded — {dropped_count} entries dropped)"
 
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 

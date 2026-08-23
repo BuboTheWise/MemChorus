@@ -145,6 +145,13 @@ class MemoryOrchestrator:
                 enforce_on_read (bool): Enable pre-decision recall during search/retrieve (default True)
                 enforce_on_write (bool): Enable post-action storage during save (default True)
                 half_life_days (float): Relevance scoring decay (default 30.0)
+                fast_window_days (float|None): Two-tier recency: retain higher score within
+                    this window before standard exponential decay takes over (GH-99).
+                    Set to a positive number of days (e.g. 7) to enable; None preserves
+                    single-curve backward compatibility.  Default: None.
+                fast_retention_pct (float): Fraction of recency score retained at the
+                    boundary of ``fast_window_days`` (default 0.7).  Values are clamped
+                    to [0, 1].
                 default_source (str): Default source name (default 'hermes_default')
                 lifecycle_config (Dict[str, Any]): Optional lifecycle management config (§6.2).
 
@@ -163,7 +170,13 @@ class MemoryOrchestrator:
 
         # Relevance scoring engine (Gap G1/G2 fix)
         half_life_days = self.config.get('half_life_days', 30.0)
-        self._scorer = RelevanceScorer(half_life_days=half_life_days)
+        fast_window_days = self.config.get('fast_window_days', None)
+        fast_retention_pct = float(self.config.get('fast_retention_pct', 0.7))
+        self._scorer = RelevanceScorer(
+            half_life_days=half_life_days,
+            fast_window_days=fast_window_days,
+            fast_retention_pct=fast_retention_pct,
+        )
 
         # Behavioral enforcement pipeline
         self._enforce_on_read = bool(self.config.get('enforce_on_read', True))

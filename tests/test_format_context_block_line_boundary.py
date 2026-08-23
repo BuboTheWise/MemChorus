@@ -75,6 +75,9 @@ class TestBlockCeilingDoesNotCutPartialLines:
             {"key": f"item_{i}", "content": "x" * 250 + "\nmore content here"}
             for i in range(6)
         ]
+        # Assign scores so the order matters
+        for idx, item in enumerate(items):
+            item["score"] = float(idx) / 100
         result = _format_context_block(items)
 
         # If we kept "item_N", its full line must appear, not a partial version
@@ -85,14 +88,19 @@ class TestBlockCeilingDoesNotCutPartialLines:
                 assert f"- **{key}**" in result
 
     def test_truncated_marker_present(self):
-        """Block ceiling exceeded should show the truncation trailer."""
+        """Block ceiling exceeded should show the truncation trailer with dropped count."""
         items = [
             {"key": f"wide_{i}", "content": "padded content " * 30}
             for i in range(8)
         ]
         result = _format_context_block(items)
 
-        assert "... (truncated, budget exceeded)" in result
+        assert "... (truncated, budget exceeded" in result
+        # GH-96: suffix now includes dropped count
+        import re as _re
+        match = _re.search(r"(\d+) entries dropped", result)
+        assert match is not None
+        assert int(match.group(1)) > 0
 
     def test_no_truncated_marker_when_in_budget(self):
         """Small blocks should NOT show the truncation marker."""
@@ -102,7 +110,7 @@ class TestBlockCeilingDoesNotCutPartialLines:
         ]
         result = _format_context_block(items)
 
-        assert "... (truncated, budget exceeded)" not in result
+        assert "... (truncated, budget exceeded" not in result
 
 
 class TestEdgeCases:
