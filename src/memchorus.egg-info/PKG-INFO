@@ -8,7 +8,7 @@ Classifier: Programming Language :: Python :: 3.11
 Classifier: Programming Language :: Python :: 3.12
 Classifier: License :: OSI Approved :: MIT License
 Classifier: Operating System :: OS Independent
-Requires-Python: >=3.8
+Requires-Python: >=3.11
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: pydantic<3.0,>=2.0
@@ -32,7 +32,7 @@ Dynamic: summary
 
 # MemChorus
 
-Current version: 2.0.0 (dev)
+Current version: 2.0.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -57,6 +57,13 @@ the MemPalace project belongs to its authors; MemChorus simply provides the
 orchestration layer that routes reads/writes across it alongside any other
 registered source.
 
+**Multi-profile isolation:** If you run multiple Hermes profiles, configure a
+separate MemPalace database per profile to prevent memory cross-contamination.
+Add a profile-specific `mempalace` MCP server entry in each profile's
+`config.yaml` pointing to independent paths, for example:
+`~/.hermes/profiles/<name>/workspace/mempalace/palace/data.db`. Profiles should
+communicate via Kanban tasks rather than sharing memory graphs directly.
+
 ## Philosophy
 
 The design is driven by two questions:
@@ -71,44 +78,14 @@ The system must stay functional even if every enhancement source disappears. The
 
 ## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          AI Agent                               │
-│                    (Hermes / OpenClaw / custom)                 │
-└──────────────▲──────────────────────▲──────────────────────────┘
-               │ save/retrieve/search  │ feedback/escalation
-    ┌──────────┴──────────┐   ┌─────────┴──────────────────────┐
-    │                     │   │                                │
-    │  MemoryOrchestrator │   │  BehavioralEnforcementManager  │
-    │                     │   │                                │
-    │  ┌───────────────┐  │   │  ┌─────────────────────────┐  │
-    │  │ Relevance     │  │   │  │   BehavioralTrigger     │  │
-    │  │ Scorer +      │  │   │  ├─────────────────────────┤  │
-    │  │ Dedup Engine  │  │   │  │   AutoRecallEngine      │  │
-    │  └───────────────┘  │   │  ├─────────────────────────┤  │
-    │                     │   │  │   AutoStorageEngine     │  │
-    │  ┌───────────────┐  │   │  ├─────────────────────────┤  │
-    │  │ Classifier    │  │   │  │   + Escalation Engine   │  │
-    │  └───────────────┘  │   │  └─────────────────────────┘  │
-    └────┬──────────┬─────────────┬───────────────────────────┘
-         │          │             │
-    ┌────▼─────┐  ┌──▼───────────┐  ┌──▼──────────────┐
-    │  Hermes  │  │   MemPalace  │  │   Custom Sources│
-    │  Default │  │   (MCP)      │  │   (MemorySource │
-    │  Memory  │  │              │  │     subclasses) │
-    │ (JSON/   │  │ Structured   │  │                 │
-    │  YAML)   │  │ knowledge    │  │ e.g.: vector DB,│
-    │          │  │ graph +      │  │  note stores,   │
-    │ Resilient│  │ semantic     │  │  remote APIs…   │
-    │  core    │  │ search       │  │                 │
-    └──────────┘  └──────────────┘  └─────────────────┘
-```
+![High-Level Architecture](diagrams/images/architecture.svg)
 
+*Diagram source: [`diagrams/architecture.d2`](diagrams/architecture.d2) — edit with D2 to regenerate.*
 ### Component Summary
 
 | Component | Role |
 |---|---|
-| `MemorySource` (ABC) | Pluggable backend interface — 7 user-facing methods (`save`, `retrieve`, `search`, `proactive_check`, `proactive_save`, `get_source_info`, `is_available`) plus `__init__` |
+| `MemorySource` (ABC) | Pluggable backend interface — 8 user-facing methods (`save`, `retrieve`, `search`, `proactive_check`, `proactive_save`, `get_source_info`, `is_available`, `delete`) plus `__init__` |
 | `HermesDefaultMemorySource` | Local curated files on disk. Always-available fallback. |
 | `MemPalaceMemorySource` | [MemPalace](https://github.com/MemPalace/mempalace) backend via MCP protocol. Knowledge graph, semantic search, diary journals. |
 | `MemoryOrchestrator` | Unified facade — registers sources, routes reads/writes, applies scoring, enforces deduplication |
@@ -136,99 +113,24 @@ Agent  -->  MemoryOrchestrator  -->  [Hermes Source]  -->  local memory files
 
 **On save:** The orchestrator classifies the memory using a `MemoryProfile` heuristic (ephemeral, long-lived knowledge, user preference, relationship graph, large data block, context-sensitive, or auto/default). Each profile carries placement hints that route the write to the most appropriate backend. Duplicate checks run before commit.
 
+![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
+
+*Diagram source: [`diagrams/multi_wing_routing.d2`](diagrams/multi_wing_routing.d2) — edit with D2 to regenerate.*
+
+When MemPalace is the active backend, category-aware routing maps writes into distinct wings and semantic rooms. DECISION content lands in `memchorus_decisions/decisions`, LEARNING goes to `memchorus_learning/lessons-learned`, MISTAKE corrections route to `memchorus_learning/corrections`, and untagged content falls back to the general wing. This keeps memory organized by intent rather than flat storage.
+
 ### Write Path Detail
 
-```
-  orchestrate.save(key, value)
-         │
-         ▼
-   ┌───────────────┐
-   │ Explicit      │──► source_name provided? → write there, return
-   │ source        │
-   │ override?     │
-   └───────┬───────┘
-           │ no
-           ▼
-   ┌───────────────┐
-   │ Infer or use  │──► MemoryProfile from content shape
-   │ profile       │    (size, structure type, keywords)
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Look up       │──► _PROFILE_SOURCE_HINT[profile]
-   │ preferred     │    returns ranked target list
-   │ targets       │
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Write to      │──► First available, enabled source wins
-   │ first match   │    Single-target write (no duplication)
-   └───────┬───────┘
-           │ miss all preferred?
-           ▼
-   ┌───────────────┐
-   │ Safety-net    │──► Try ANY available non-disabled source
-   ◄───────────────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Invalidate    │──► Clear LRU cache entry for this key
-   │ LRU cache     │
-   └───────┬───────┘
-           │ enforcement-on-write enabled?
-           ▼
-   ┌───────────────┐
-   │ Capture       │──► BehavioralEnforcementManager.enforce(⋯)
-   │ outcome       │    auto-archives significant save events
-   └───────────────┘
-```
+![Write Path Detail](diagrams/images/write_path.svg)
 
+*Diagram source: [`diagrams/write_path.d2`](diagrams/write_path.d2) — edit with D2 to regenerate.*
 **On retrieve:** Requests hit every available source in parallel. Results are scored using a domain-aware relevance engine that weighs keyword overlap, semantic proximity, and configurable context priorities. Top results surface first with deduplication applied across the combined result set.
 
 ### Retrieve Path Detail
 
-```
-  orchestrate.retrieve(key)
-         │
-         ▼
-   ┌───────────────┐
-   │ Check LRU     │──► cached + within TTL? → return immediately
-   │ cache         │
-   └───────┬───────┘            (default TTL: 60s, max 256 entries)
-           │ miss / expired
-           ▼
-   ┌───────────────┐
-   │ Pre-decision  │──► enforcement-on-read enabled?
-   │ recall        │    → BehavioralTrigger + AutoRecallEngine fire
-   │ (optional)    │    → recalled context prepended to result
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Rank sources  │──► priority_order config OR RelevanceScorer
-   │               │    determines candidate order
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Query first   │──► First source that has the key wins
-   │ ranked source │
-   └───────┬───────┘
-           │ hit
-           ▼
-   ┌───────────────┐
-   │ Update LRU    │──► Store (value, timestamp) in cache
-   │ cache         │
-   └───────┬───────┘
-           │
-           ▼
-   ┌───────────────┐
-   │ Return        │──► value (+ any pre-decision recall context)
-   ◄───────────────┘
-```
+![Retrieve Path Detail](diagrams/images/retrieve_path.svg)
 
+*Diagram source: [`diagrams/retrieve_path.d2`](diagrams/retrieve_path.d2) — edit with D2 to regenerate.*
 The orchestrator exposes three core operations:
 
 - `save(key, value)` — intelligent write routing
@@ -279,35 +181,9 @@ sequenceDiagram
 
 The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
 
-```
-  enforce(input_text)
-         │
-         ▼
-   ┌─────────────────┐
-   │ Behavioral      │──► Detects decision points in text
-   │ Trigger         │    (planning verbs, choice phrases, etc.)
-   └────────┬────────┘
-            │ detected points
-            ▼
-   ┌─────────────────┐
-   │ AutoRecall      │──► Queries relevant memories for each
-   │ Engine          │    decision point. Returns context dicts.
-   └────────┬────────┘
-            │ recall context
-            ▼
-   ┌─────────────────┐
-   │ AutoStorage     │──► Captures outcomes with dedup window
-   │ Engine          │    (default: 30s window, 0.6 similarity)
-   └────────┬────────┘
-            │
-            ▼
-   ┌─────────────────┐
-   │ EnforcementResult│──► Structured summary returned to caller:
-   │ (dataclass)     │    triggered_points, recall_context lists,
-   │                 │    storage_outcome, timing_ms, errors[]
-   └─────────────────┘
-```
+![Behavioral Enforcement Pipeline](diagrams/images/behav_pipeline.svg)
 
+*Diagram source: [`diagrams/behav_pipeline.d2`](diagrams/behav_pipeline.d2) — edit with D2 to regenerate.*
 Key guarantees from this pipeline:
 
 1. **Pre-decision recall automatically fires** — before planning, before choosing an approach, before making architectural decisions, relevant memories surface without the agent needing to think about querying them
@@ -318,18 +194,9 @@ Key guarantees from this pipeline:
 
 ### Data Flow Overview
 
-```
-                ┌───────────┐   Write      ┌─────────────────┐
-  Agent ◄─────► │           ├─────────────►│   Hermes        │
-                │  Memory   │             │   Default       │
-                │ Orchestrator            │   (JSON/YAML)   │
-                │           ├─────────────►│   MemPalace    │
-                └───────────┘             │   (MCP server)  │
-                      ▲                   └─────────────────┘
-                      │
-                    Read ◄──── Returns scored + deduplicated results from
-                              best-matching source(s)
-```
+![Data Flow Overview](diagrams/images/data_flow.svg)
+
+*Diagram source: [`diagrams/data_flow.d2`](diagrams/data_flow.d2)*
 
 ### Storage Routing Matrix
 
@@ -390,9 +257,92 @@ Key behaviour:
 
 See [docs/memory-lifecycle-design.md](docs/memory-lifecycle-design.md) for the full specification.
 
+## Agent Quick Start
+
+**If you are an AI agent scanning this repository, use the prompts below to self-serve your installation.** These instructions require no prior workspace knowledge and produce isolated, profile-safe results.
+
+### Prompt 1: MemPalace — per-profile database isolation
+
+```text
+Install mempalace-server in the Hermes virtual environment, then create a separate
+MemPalace database per profile so memory does not leak between agents.
+
+Steps:
+1. /home/user/.hermes/hermes-agent/venv/bin/pip install mempalace>=3.7.0
+2. For each profile (at minimum "default" and any named profiles):
+
+     mkdir -p ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+
+3. In each profile's config.yaml, add a mempalace MCP server entry pointing to
+   its own database:
+
+     mcp_servers:
+       mempalace:
+         command: /home/user/.hermes/hermes-agent/venv/bin/python3
+         args: ["-m", "mempalace.mcp_server"]
+         env:
+           MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+
+   Example for the default profile:
+     MEMPALACE_PALACE_PATH: ~/.hermes/default/workspace/mempalace/palace/data.db
+
+4. Verify isolation by checking that each profile can write and read drawers
+   independently without cross-contamination.
+
+Key rules:
+- NEVER share a .db file between profiles — that is the primary failure mode.
+- NEVER modify MemPalace source code to fix consumer problems; the integration
+  layer (MemChorus) owns all adapter logic.
+- Each profile should use its own `mempalace` MCP server entry, not a shared one.
+```
+
+### Prompt 2: MemChorus — install, configure, test
+
+```text
+Install MemChorus from the remote GitHub repository into the Hermes virtual
+environment with live MCP support and run verification.
+
+Steps:
+1. Install from the pushed commit (not local source):
+
+     /home/user/.hermes/hermes-agent/venv/bin/pip install 'memchorus[mcp] @ git+https://github.com/BuboTheWise/MemChorus.git@master'
+
+2. Bootstrap the routing config:
+
+     memchorus-init --profile <PROFILE>
+
+   This creates ~/.hermes/profiles/<PROFILE>/memchorus.yaml with preconfigured
+   source routing, skip_mcp set to false for live transport, and MemChorus added
+   to plugins.enabled.
+
+3. Verify the import works:
+
+     /home/user/.hermes/hermes-agent/venv/bin/python -c "
+     from memchorus.orchestrator import MemoryOrchestrator
+     from memchorus.mempalace_memory_source import MemPalaceMemorySource
+     orch = MemoryOrchestrator()
+     try:
+         orch.register_source(MemPalaceMemorySource('mempalace'))
+         print('MemPalace source registered OK')
+     except Exception as e:
+         print(f'MemPalace registration failed (expected if not configured): {e}')
+     "
+
+4. Run the test suite to confirm installation health:
+
+     /home/user/.hermes/hermes-agent/venv/bin/python -c "import memchorus; print(f'MemChorus {memchorus.__version__} OK')"
+
+Key rules:
+- NEVER use pip install -e . in production — that creates non-reproducible paths.
+- The [mcp] extra is required for live MemPalace transport. Without it, the
+  system falls back to a local JSON cache (functional but degraded).
+- Do not patch mempalace or hermes-agent source to fix integration problems;
+  all adapter logic belongs in MemChorus.
+\`\`\`
+
 ## Installation
 
-Requires Python 3.8+. Install from GitHub via pip (recommended for most users):
+Requires Python 3.11+. Install from GitHub via pip (recommended for most users):
 
 ```bash
 pip install 'memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master'
@@ -406,7 +356,7 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.1)
+### Quick Bootstrap (new in v2.0.0)
 
 Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
@@ -415,7 +365,7 @@ routing configuration in one step — no manual YAML editing required:
 memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_agent/memchorus.yaml
 memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
 memchorus-init --dry-run                      # preview the generated YAML without writing
-memchorus-init -p my_agent -d /opt/data        # custom data directory
+memchorus-init -p my_agent -d /opt/data       # custom data directory
 memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
 ```
 
@@ -561,7 +511,7 @@ class MyMCPServer(MemorySource):
 orch.register_source(MyMCPServer('mcp-server'))
 ```
 
-The `MemorySource` abstract class defines 7 user-facing methods plus `__init__`. Implementing all of them gives the orchestrator maximum routing flexibility — if you only need read/write/search, provide no-ops for the rest. The orchestrator handles routing, scoring, and deduplication automatically for any registered source regardless of origin. Whether it hits a local file, an MCP server, or a remote API, the integration path is identical. No config files to patch, no build artifacts to recompile.
+The `MemorySource` abstract class defines 8 user-facing methods plus `__init__`. Implementing all of them gives the orchestrator maximum routing flexibility — if you only need read/write/search, provide no-ops for the rest. The orchestrator handles routing, scoring, and deduplication automatically for any registered source regardless of origin. Whether it hits a local file, an MCP server, or a remote API, the integration path is identical. No config files to patch, no build artifacts to recompile.
 
 ## Testing
 
@@ -573,7 +523,7 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across **75 modules** with **1260+ collected tests**.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1378 collected tests**.
 
 ### Benchmark Metrics (v1.7.0+)
 
@@ -626,12 +576,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v1.8.0 (current — auto-tuning framework)
+### v2.0.0 (current — production release)
 
 - **HitRateTracker:** Singleton that logs save/recall events per memory key, computes empirical hit-rate and decay curves, feeds downstream utility metrics to retention engine
 - **MistakeDetector:** Pattern-based classification engine for user corrections/rejections vs transient failures; flags errors for penalty adjustments on low-value saves
 - **AdaptiveThreshold:** Consumes hit-rate + mistake signals, adjusts retention cutoffs dynamically using EMA smoothing with 15% drift guard limits
-- **CalibrationEngine:** Async calibration scheduler running during sweep cycles; YAML persistence per profile at `~/.hermes/data/memchorus/_tuning/`; CLI entry point `memchorus recalibrate`
+- **CalibrationEngine:** Async calibration scheduler running during sweep cycles; YAML persistence per profile at `$HOME/data/memchorus/_tuning/`; CLI entry point `memchorus-recalibrate`
 - **Lifecycle wiring:** HitRateTracker fires on orchestrator save/recall paths; MistakeDetector runs in on_session_end hook (§10.2); CalibrationEngine integrates into LifecycleManager._do_sweep() step 4
 - **Forty-eight tests** covering: bounded adjustments, EMA direction, hit-rate pipeline, CLI entry verification, graceful degradation per unregistered profile bounds enforcement
 - Spec documented in `docs/AUTOTUNING.md` — three-config-lever design (recall_frequency, importance_threshold, cleanup_interval), no opaque ML
@@ -659,39 +609,37 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 **Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
 
-\`\`\`
-  +------------------+----------------------------+-------------------+---------------------------+
-  | Category         | Wing                       | Room              | Example Content           |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | DECISION         | memchorus_decisions        | decisions         | Architecture, transport   |
-  | LEARNING         | memchorus_learning         | lessons-learned   | Shell escape, stderr      |
-  \|                  |                            | corrections       | proactive_save fix        |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | OUTCOMES         | memchorus_general          | outcomes          | Test suite results        |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | (uncategorized)  | memchorus_general (default)| general           | Untagged content          |
-  +------------------+----------------------------+-------------------+---------------------------+
-\`\`\`
+![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
 
-Usage requires \`category\` metadata injection at write time:
+**Memory routing table:** Category-aware wing/room selection via `mempalace_route` YAML config. Semantic room slugs map intent to storage locations:
 
-\`\`\`python
+| Category | Wing | Room | Example Content |
+|---|---|---|---|
+| DECISION | memchorus_decisions | decisions | Architecture, transport |
+| LEARNING | memchorus_learning | lessons-learned | Shell escape, stderr |
+| MISTAKE  | memchorus_learning | corrections | proactive_save fix |
+| OUTCOMES | memchorus_general | outcomes | Test suite results |
+| (uncategorized) | memchorus_general (default) | general | Untagged content |
+
+Usage requires `category` metadata injection at write time:
+
+```python
 orchestrate.save(
     key="architecture_decision_x",
     value="We chose MemPalace routing over flat storage...",
     metadata={"category": "DECISION"}     # drives wing + room selection
 )
-\`\`\`
+```
 
 Other v1.5.x features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
-- **Hooks feedback integration (commit 148e713):** `on_pre_llm_call` wired to both memory recall AND feedback loop evaluation. Before fix, feedback corrections were silently bypassed despite full implementation in `feedback_loop/integration.py`. Verified live during runtime effectiveness check — all 8 architectural claims confirmed true against behavior.
+- **Hooks integration:** `on_pre_llm_call` wired to memory recall and lifecycle enforcement hooks. Previously feedback corrections were silently bypassed; the hook wiring logic was verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
-**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design), but the `MergeEngine` implementation is still pending. Writes with `enabled: true` will be a no-op until the engine ships — the config key exists so users can prepare ahead of time without breaking existing deployments.
+**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design). `MergeEngine` is now implemented and active — it provides in-memory deduplication at write time using configurable strategies (`overwrite`, `append`, `union`). Enable via `lifecycle.merge_at_write.enabled: true` in your config to start consolidating duplicate memories at save time.
 
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
@@ -707,8 +655,8 @@ An integration test verifying that loaded custom feedback flows from `hooks.on_p
 
 - **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
 
-- **798 tests** collected across all modules (current)
+- **1378 tests** collected across all modules (current)
 
 
 ---
-*MemChorus v1.7.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v2.0.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
