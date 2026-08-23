@@ -7,8 +7,15 @@ pre_llm_call, post_tool_call, on_session_start.
 
 On import of memchorus package, global bootstrap fires if enabled.
 These hooks wire into that bootstrap'd orchestrator instance to provide
-automatic memory recall + feedback loop evaluation without requiring the
+automatic memory recall + behavioral prohibition guard scanning without requiring the
 calling agent to do anything beyond `import memchorus`.
+
+The pre_llm_call hook performs three phases:
+  1. Guard scan (ProhibitionsManager): matches input against seed/distilled rules,
+     injects [[GUARD]] blocks before any other context — hard gates over prompt content.
+  2. Behavioral recall: auto-recall engine queries relevant memories by domain.
+  3. Post-storage distillation: saved outcomes classified as CRITICAL mistakes are
+     automatically converted into new prohibition rules via ProhibitionDistiller.
 
 Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 """
@@ -264,13 +271,14 @@ class MemChorusHooks:
             self._btrigger = None
 
     def on_pre_llm_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        logger.info("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
-        """Fire before an LLM call to auto-recall relevant memories + evaluate feedback loops.
+        """Fire before an LLM call to auto-recall relevant memories + guard-scan input.
 
         Returns a dict with injected context (if available) or None if disabled/empty.
-        Both memory recall and feedback corrections travel through the same injection path
-        as labelled blocks — soft nudges, never hard overrides.
+        Memory recall is soft context injection; behavioral guards are hard gates that
+        inject [[GUARD]] blocks blocking self-breaking actions (env corruption, data loss,
+        toolchain breakage). Guards run first before any recall context is added.
         """
+        logger.info("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         orchestrator = _get_orchestrator()
         if orchestrator is None:
             return None
