@@ -52,6 +52,8 @@ prohibitions:
     # - "no_venv_delete"            # allow deleting venv site-packages
     # - "no_bare_rmp"               # allow rm without backup strategy
 
-# --- Feedback Loop (removed in v1.9.0) ---
-# The custom_loops/ YAML feedback system was replaced by the prohibitions guard system.
-# Legacy `feedback_loop` keys are ignored if present. Use `prohibitions` instead.
+# --- Feedback Loop (rebuilt in v2.0 per GH#101) ---
+# Fingerprint-based correction storage tied to decision points with persistent state.
+feedback_loop:
+  enabled: false                    # master toggle (default: false)
+  store_path: ~/.hermes/feedback_store.jsonl  # persistence file (default: as shown)
