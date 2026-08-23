@@ -6,7 +6,7 @@ vars: {
 
 direction: down
 
-ai: "AI Agent\n(Hermes / OpenClaw / custom)"
+AI Agent (Hermes / OpenClaw / custom)
 
 MemoryOrchestrator
 
@@ -18,8 +18,9 @@ backends: Memory Backends {
   "Custom Sources (vector DB, etc.)"
 }
 
-ai -> MemoryOrchestrator: save/retrieve/search
-ai -> BehavioralEnforcementManager: feedback/escalation\ndata flow
+AI Agent* -> MemoryOrchestrator: save / retrieve / search
+AI Agent* -> BehavioralEnforcementManager: enforce() at decision points
+BehavioralEnforcementManager -> MemoryOrchestrator: auto-save / auto-recall via lifecycle hooks
 MemoryOrchestrator -> backends."Hermes Default (JSON/YAML)"
 MemoryOrchestrator -> backends."MemPalace (MCP)"
-BehavioralEnforcementManager -> backends."Custom Sources (vector DB, etc.)"
+MemoryOrchestrator -> backends."Custom Sources (vector DB, etc.)"
