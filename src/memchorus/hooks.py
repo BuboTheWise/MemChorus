@@ -198,7 +198,17 @@ def _try_distill_prohibition(text: str, orchestrator) -> None:
     sees and respects the guard.
 
     Gracefully degrades when ProhibitionDistiller or ProhibitionsManager are unavailable.
+    Skips entirely when provisions.distillation_enabled=False (respects opt-out config).
     """
+    # Check if distillation is disabled via config
+    try:
+        distill_cfg = orchestrator.config.get("provisions_distillation_enabled", True)
+        if not distill_cfg:
+            logger.debug("hooks: distillation disabled — skipping prohibition distillation")
+            return
+    except Exception:
+        pass  # fallback to enabled=True if config access fails
+
     try:
         from memchorus.prohibition_distiller import ProhibitionDistiller
         from memchorus.prohibitions import ProhibitionsManager
@@ -360,6 +370,15 @@ class MemChorusHooks:
         or created lazily here). Gracefully degrades when the prohibitions module is unavailable.
         Returns a list of markdown guard block strings (may be empty).
         """
+        # Check if provisions subsystem is disabled via config
+        try:
+            prov_cfg = orchestrator.config.get("provisions_enabled", True)
+            if not prov_cfg:
+                logger.debug("hooks: provisions disabled — skipping guard scan")
+                return []
+        except Exception:
+            pass  # fallback to enabled=True if config access fails
+
         try:
             from memchorus.prohibitions import ProhibitionsManager
 

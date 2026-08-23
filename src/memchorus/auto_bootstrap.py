@@ -36,6 +36,10 @@ _DEFAULTS: Dict[str, Any] = {
     "default_source": "hermes_default",
     "half_life_days": 30.0,
     "cache_ttl_seconds": 60,
+    "provisions": {
+        "enabled": True,
+        "distillation_enabled": True,
+    },
 }
 
 # Wing/room routing defaults (§1 + §3 of spec).  Mirrored here so that
@@ -217,6 +221,17 @@ def _bootstrap() -> Optional[Any]:
     enforce_on_read = _resolve_boolean(config.get("enforce_on_read", True))
     enforce_on_write = _resolve_boolean(config.get("enforce_on_write", True))
 
+    # provisions toggles — control ProhibitionsManager guard scanning and
+    # prohibition distillation from self-breaking mistakes. Both opt-out by
+    # default (True). Set provisions.enabled=false to disable behavioral
+    # guard checks entirely; set provisions.distillation_enabled=false to
+    # prevent new rules from being auto-generated while keeping existing rules.
+    _provisions_cfg: Dict[str, Any] = config.get("provisions", {})
+    provisions_enabled = _resolve_boolean(_provisions_cfg.get("enabled", True))
+    provisions_distillation_enabled = _resolve_boolean(
+        _provisions_cfg.get("distillation_enabled", True)
+    )
+
     auto_enabled_raw = config.get("auto_enabled", _DEFAULTS["auto_enabled"])
     config["auto_enabled"] = _resolve_boolean(auto_enabled_raw)
 
@@ -291,6 +306,12 @@ def _bootstrap() -> Optional[Any]:
         "enabled" if enforce_on_read else "disabled",
         "enabled" if enforce_on_write else "disabled",
     )
+    # Log provisions toggle state alongside enforcement toggles.
+    logger.info(
+        "MEMCHORUS provisions toggles -- guard_scan: %s, distillation: %s",
+        "enabled" if provisions_enabled else "disabled",
+        "enabled" if provisions_distillation_enabled else "disabled",
+    )
 
     # --- Step 3: MemPalace availability probe (import-only) ---
     # With lazy init, constructing MemPalaceMemorySource does NOT spawn a subprocess —
@@ -320,6 +341,8 @@ def _bootstrap() -> Optional[Any]:
         "cache_ttl_seconds": float(cache_ttl_seconds),
         "enforce_on_read": enforce_on_read,
         "enforce_on_write": enforce_on_write,
+        "provisions_enabled": provisions_enabled,
+        "provisions_distillation_enabled": provisions_distillation_enabled,
         "mempalace_config": {
             "skip_mcp": not mp_available,
             "mempalace_routing": yaml_cfg.get("mempalace_routing", _DEFAULT_MEMPALACE_ROUTING),
