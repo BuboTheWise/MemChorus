@@ -336,16 +336,10 @@ Key guarantees from this pipeline:
 ### Data Flow Overview
 
 ```
-                                            ┌───────────────────────────┐
-                ┌──────────────────┌───────▶│                           │
-                │                  │ │      │      Hermes Default       │
-                │                  └─── ┌───│      (JSON/YAML)          │
-┌────────┐      │   Memory           │◀─┘   │                           │
-│ Agent  │◀────▶│   Orchestrator     │──┐   └───────────────────────────┘
-│        │      │                    │  │   ┌───────────────────────┐    
-└────────┘      │                  ┌──▶ └──▶│MemPalace (MCP server) │    
-                └──────────────────└────────│                       │    
-                                            └───────────────────────┘    
+┌────────┐      ┌────────────────────┐      ┌───────────────────────────┐
+│ Agent  │◀────▶│Memory Orchestrator │◀────▶│Hermes Default + MemPalace │
+│        │      │                    │      │                           │
+└────────┘      └────────────────────┘      └───────────────────────────┘
 ```
 
 *Diagram source: [`diagrams/data_flow.d2`](diagrams/data_flow.d2)*
