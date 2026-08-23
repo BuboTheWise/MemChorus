@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.01 (current — production release)
+### v2.0.02 (current — 2026-08-23)
+
+- `skip_init_sources` config flag for test isolation: orchestrator auto-registers live sources that pollute unit tests; new flag lets tests opt out while preserving backward compatibility. Fix branch merged and verified via pytest against installed artifact from pushed SHA.
+
+### v2.0.01 (2026-08-23)
 
 Fix cycle closing GH#95 through GH#104 on 2026-08-23:
 
