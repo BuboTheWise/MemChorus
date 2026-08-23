@@ -1,0 +1,21 @@
+vars: {
+  d2-config: {
+    layout-engine: elk
+  }
+}
+
+direction: right
+
+Agent: "Agent writes with\ncategory metadata"
+
+dec: "DECISION\n→ memchorus_decisions / decisions"
+lea: "LEARNING\n→ memchorus_learning / lessons-learned"
+mis: "MISTAKE\n→ memchorus_learning / corrections"
+out: "OUTCOMES\n→ memchorus_general / outcomes"
+def: "(uncategorized)\n→ memchorus_general / general"
+
+Agent -> dec
+Agent -> lea
+Agent -> mis
+Agent -> out
+Agent -> def
