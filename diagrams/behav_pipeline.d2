@@ -4,20 +4,15 @@ vars: {
   }
 }
 
-direction: down
+direction: right
 
-step1: "enforce(input_text)"
+enforce: "enforce(input_text)"
+trigger: "Behavioral Trigger"
+autorecall: "AutoRecall Engine"
+autostorage: "AutoStorage Engine"
+result: "EnforcementResult"
 
-step2: "Behavioral Trigger\n(Plays decision points from text)"
-
-step3: "AutoRecall Engine\n(Query relevant memories per point)"
-
-step4: "AutoStorage Engine\n(Captures outcomes, dedup window)"
-
-step5: "EnforcementResult (dataclass)\n(Structured summary to caller)"
-
-# Pipeline chain
-step1 -> step2
-step2 -> step3
-step3 -> step4
-step4 -> step5
+enforce -> trigger
+trigger -> autorecall
+autorecall -> autostorage
+autostorage -> result

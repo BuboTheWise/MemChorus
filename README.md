@@ -571,29 +571,27 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 **Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
 
-\`\`\`
-  +------------------+----------------------------+-------------------+---------------------------+
-  | Category         | Wing                       | Room              | Example Content           |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | DECISION         | memchorus_decisions        | decisions         | Architecture, transport   |
-  | LEARNING         | memchorus_learning         | lessons-learned   | Shell escape, stderr      |
-  \|                  |                            | corrections       | proactive_save fix        |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | OUTCOMES         | memchorus_general          | outcomes          | Test suite results        |
-  +------------------+----------------------------+-------------------+---------------------------+
-  | (uncategorized)  | memchorus_general (default)| general           | Untagged content          |
-  +------------------+----------------------------+-------------------+---------------------------+
-\`\`\`
+![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
 
-Usage requires \`category\` metadata injection at write time:
+**Memory routing table:** Category-aware wing/room selection via `mempalace_route` YAML config. Semantic room slugs map intent to storage locations:
 
-\`\`\`python
+| Category | Wing | Room | Example Content |
+|---|---|---|---|
+| DECISION | memchorus_decisions | decisions | Architecture, transport |
+| LEARNING | memchorus_learning | lessons-learned | Shell escape, stderr |
+| MISTAKE  | memchorus_learning | corrections | proactive_save fix |
+| OUTCOMES | memchorus_general | outcomes | Test suite results |
+| (uncategorized) | memchorus_general (default) | general | Untagged content |
+
+Usage requires `category` metadata injection at write time:
+
+```python
 orchestrate.save(
     key="architecture_decision_x",
     value="We chose MemPalace routing over flat storage...",
     metadata={"category": "DECISION"}     # drives wing + room selection
 )
-\`\`\`
+```
 
 Other v1.5.x features:
 
