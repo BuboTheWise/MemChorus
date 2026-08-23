@@ -81,6 +81,56 @@ class Scorched(Protocol):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Default recall-time penalty patterns (GH-100)
+# Target content that passes write-time noise filters but still scores highly
+# on keyword overlap: changelogs, package lists, empty API responses, etc.
+# Each tuple: (label, compiled regex, multiplicative factor).
+# Factor in (0, 1] — lower means the pattern kills score harder.
+# If multiple patterns match, the MINIMUM factor applies (not multiplicative).
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PENALTY_PATTERNS = [
+    # Changelog / version diff entries (structured commit/release notes)
+    (
+        "changelog",
+        re.compile(
+            r'^\s*(?:-|[*•])\s+v?\d+\.\d+\.\d+',  # bullet followed by version number
+            re.M | re.I,
+        ),
+        0.4,
+    ),
+    # Package / dependency list dumps (pip, npm, cargo style)
+    # Detect 3+ lines matching constraint syntax — loose match avoids ^ anchor issues
+    (
+        "package_list",
+        re.compile(
+            r'(?:\w+\s*[<>=!~]+\s*[\d.*]+(?:\n|\s|$).*){3}',
+            re.I,
+        ),
+        0.25,
+    ),
+    # Empty / trivially-successful API or tool responses
+    (
+        "empty_api_response",
+        re.compile(
+            r'(?s)^\s*\{\s*"(?:ok|success|status)"\s*:\s*(?:true|"ok"|"success"|200)\s*,?\s*\}',
+            re.I,
+        ),
+        0.3,
+    ),
+    # Pure version metadata blocks (non-code) — detect 2+ version-like assignment lines
+    (
+        "version_block",
+        re.compile(
+            r'(?s)(?:^\s*version\s*[=:]\s*[\da-f.+]+).*?\n(?:\s*version\s*[=:]\s*[\da-f.+]+)',
+            re.M | re.I,
+        ),
+        0.35,
+    ),
+]
+
+
 class RelevanceScorer:
     """Evaluate and rank memory results using a multi-dimensional scoring model.
 
@@ -93,12 +143,19 @@ class RelevanceScorer:
         3. **Source-type bias** -- boosts the base probability assigned to each source.
            For example, 'hermes_default' gets priors={'hermes_default': 0.7} by default.
            Default weight = 0.25.
+
+    Penalty patterns (GH-100):
+        Configurable negative scoring rules applying multiplicative score reduction
+        when content matches known low-signal noise classes that pass write-time filters.
+        Patterns are precompiled at module load time. Multi-pattern overlap uses the
+        minimum factor rather than compounding multiplicatively.
     """
 
     def __init__(
         self,
         half_life_days: float = 30.0,
         priors: Optional[Dict[str, float]] = None,
+        penalty_patterns: Optional[List[Dict[str, Any]]] = None,
     ):
         self.half_life_days = half_life_days
         # Normalise priors to a probability distribution if provided
@@ -107,6 +164,82 @@ class RelevanceScorer:
             self.priors = {k: v / total for k, v in priors.items()}
         else:
             self.priors = {"hermes_default": 0.7, "mempalace": 0.3}
+
+        # GH-100: recall-time penalty patterns (label, compiled regex, factor)
+        # Override with user config; fall back to _DEFAULT_PENALTY_PATTERNS.
+        self._penalty_patterns = self._compile_penalty_patterns(
+            penalty_patterns if penalty_patterns is not None else None  # None means defaults
+        )
+
+    @staticmethod
+    def _compile_penalty_patterns(
+        raw_patterns: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[tuple]:
+        """Parse config-style penalty patterns into compiled (label, pattern, factor) tuples.
+
+        If *raw_patterns* is None, returns the built-in defaults.
+        Each dict should have keys: ``pattern`` (regex string), ``label`` (str),
+        and ``factor`` (float in (0, 1]).  Invalid entries are logged and skipped.
+
+        Returns a list of (label, compiled_regex, factor) tuples ready for matching.
+        """
+        if raw_patterns is None:
+            # Fall back to built-in defaults (already compiled).
+            return list(_DEFAULT_PENALTY_PATTERNS)
+
+        compiled: List[tuple] = []
+        for entry in raw_patterns:
+            try:
+                label = str(entry["label"])
+                regex = re.compile(str(entry["pattern"]))
+                factor = float(entry["factor"])
+                if not 0 < factor <= 1.0:
+                    logger.warning(
+                        "Penalty pattern '%s' has factor %s (must be in (0, 1]) — skipping",
+                        label, factor,
+                    )
+                    continue
+                compiled.append((label, regex, factor))
+            except (KeyError, TypeError, re.error) as exc:
+                logger.warning(
+                    "Skipping malformed penalty pattern entry %r: %s", entry, exc
+                )
+        return compiled
+
+    def _apply_penalty_patterns(self, content_text: str) -> float:
+        """Return the minimum multiplicative factor across all matching penalty patterns.
+
+        If no penalties match or the penalty list is empty, returns ``1.0`` (no penalty).
+        When multiple patterns hit the same content, we use the *minimum* factor
+        rather than multiplying them together — this avoids over-penalizing content.
+
+        Args:
+            content_text: Plain text extracted from a result's content field.
+
+        Returns:
+            A float in ``(0, 1]`` representing the strongest applicable penalty factor.
+        """
+        if not self._penalty_patterns:
+            return 1.0
+
+        matched_factor = 1.0
+        content_text = content_text or ""
+        for label, pattern, factor in self._penalty_patterns:
+            try:
+                if pattern.search(content_text):
+                    if factor < matched_factor:
+                        matched_factor = factor
+                        logger.debug(
+                            "Penalty pattern '%s' matched — current min factor %.2f",
+                            label, matched_factor,
+                        )
+            except Exception:
+                # Defensive: a bad pattern shouldn't crash scoring
+                logger.debug("Penalty pattern match failed for '%s'", label)
+                continue
+
+        result = round(matched_factor, 4)
+        return result if result > 0 else 1.0
 
     # ------------------------------------------------------------------
     # Scoring helpers
@@ -356,6 +489,14 @@ class RelevanceScorer:
         # factor (default 0.3) so it ranks below deliberately stored memories.
         if result.get("_auto_provenance") is True:
             raw *= auto_provenance_penalty
+
+        # GH-100: recall-time penalty patterns — apply multiplicative score reduction
+        # for known low-signal content that passed write-time noise filters but still
+        # scores highly due to keyword overlap (changelogs, package lists, empty API
+        # responses, version blocks). Multi-pattern overlap uses minimum factor.
+        c_text = self._extract_content_text(content)
+        penalty_factor = self._apply_penalty_patterns(c_text)
+        raw *= penalty_factor
 
         # Safety clamp (floating-point drift / user error guard)
         return float(min(max(raw, 0.0), score_max))
