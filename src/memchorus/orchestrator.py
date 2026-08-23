@@ -184,6 +184,14 @@ class MemoryOrchestrator:
         self._cache_ttl = float(self.config.get('cache_ttl_seconds', 60.0))
         self._cache_max_size = int(self.config.get('cache_max_size', 256))
 
+        # GAP095: cross-source deduplication at recall time
+        recall_config = self.config.get("recall", {})
+        if isinstance(recall_config, dict):
+            self._dedup_threshold = float(recall_config.get("dedup_threshold", 0.85))
+        else:
+            # Allow top-level 'recall.dedup_threshold' as a dotted string key fallback
+            self._dedup_threshold = float(self.config.get("recall.dedup_threshold", 0.85))
+
         # GAP008: configurable source priority for retrieval
         self._priority_order: List[str] = list(self.config.get('priority_order', []))
 
@@ -1175,7 +1183,7 @@ class MemoryOrchestrator:
             except Exception:
                 pass  # never fail a search due to tracking
 
-        # Convert RankedResult -> plain dict with score field — use original limit
+        # Convert RankedResult -> plain dict with score field
         results = [
             {
                 "key": r.key,
@@ -1187,6 +1195,9 @@ class MemoryOrchestrator:
             }
             for r in ranked[:effective_limit]
         ]
+
+        # GAP095: cross-source similarity deduplication before final return
+        results = self._deduplicate_results(results)
 
         if dupes_removed:
             logger.debug(
@@ -1221,6 +1232,47 @@ class MemoryOrchestrator:
             }
             for r in scored
         ]
+
+    def _deduplicate_results(
+        self,
+        results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Cross-source content similarity deduplication at recall time (GAP095).
+
+        After all sources have been scored and ranked by the RelevanceScorer, this
+        removes near-duplicate entries using N-gram Jaccard similarity. If two
+        results exceed ``self._dedup_threshold`` similarity, only the higher-scored
+        one is kept (recency tiebreaker when scores are within 0.05).
+
+        This is O(K^2) where K is the number of ranked candidates (typically
+        15-25), so the overhead is negligible compared to the token savings from
+        preventing near-identical content from entering the injected block twice.
+
+        Args:
+            results: A list of dicts keyed by ``score``, ``content``, ``key``, etc.
+                     Expected to be sorted by score descending already.
+
+        Returns:
+            Deduplicated result list preserving ranking order of kept items.
+        """
+        try:
+            from memchorus.content_similarity import RecallDeduplicator
+        except ImportError:
+            logger.debug("content_similarity unavailable — skipping recall dedup")
+            return results
+
+        deduper = RecallDeduplicator(threshold=self._dedup_threshold)
+        before = len(results)
+        results = deduper.deduplicate_with_tiebreaker(results)
+        after = len(results)
+
+        if before - after > 0:
+            logger.debug(
+                "Cross-source dedup removed %d near-duplicates from %d candidates (threshold=%.2f)",
+                before - after, before, self._dedup_threshold,
+            )
+
+        return results
     
     @staticmethod
     def _synthesize_preview(content: Any) -> str:
