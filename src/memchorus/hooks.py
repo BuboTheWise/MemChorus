@@ -205,7 +205,14 @@ def _try_distill_prohibition(text: str, orchestrator) -> None:
     sees and respects the guard.
 
     Gracefully degrades when ProhibitionDistiller or ProhibitionsManager are unavailable.
+    Skips entirely when prohibitions.distillation_enabled is False.
     """
+    # Bypass if distillation is explicitly disabled in config
+    prohib_cfg = getattr(orchestrator, "config", {}) or {}
+    distill_enabled = bool(prohib_cfg.get("prohibitions", {}).get("distillation_enabled", True))
+    if not distill_enabled:
+        return
+
     try:
         from memchorus.prohibition_distiller import ProhibitionDistiller
         from memchorus.prohibitions import ProhibitionsManager
@@ -293,7 +300,13 @@ class MemChorusHooks:
                 return None
 
             # 0. Scan for behavioral guards BEFORE any other injection (hard gates)
-            guard_blocks = self._try_guard_scan(input_text, orchestrator)
+            # Bypass if prohibitions.enabled is explicitly set to False
+            prohib_cfg = orchestrator.config.get("prohibitions", {})
+            guards_enabled = bool(prohib_cfg.get("enabled", True))
+            if guards_enabled:
+                guard_blocks = self._try_guard_scan(input_text, orchestrator)
+            else:
+                guard_blocks = []
 
             detected_points = []
             enriched_terms = input_text
