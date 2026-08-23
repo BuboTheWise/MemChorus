@@ -333,7 +333,7 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.0)
+### Quick Bootstrap (new in v2.0.01)
 
 Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
@@ -553,7 +553,20 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.0 (current — production release)
+### v2.0.01 (current — production release)
+
+Fix cycle closing GH#95 through GH#104 on 2026-08-23:
+
+| Feature | Branch/PRs | Tests | SHA (squash merge) | Verified |
+|---|---|---|---|---|
+| Cross-source deduplication with Jaccard similarity | `feat/cross-source-dedup-#95` / PR #110 | 14 | 2d1a74d, fixed 413f567 | ✅ Installed runtime pass |
+| Configurable max recall block chars (2000 default) | `feat/GH-96-recall-char-cap` / PR #112 | 12 | 99b41c5, fixed 4b5e7e3 | ✅ Implemented and tested |
+| Domain-aware minimum recall score thresholds | `feat/domain-thresholds-#98` / PR #111 | 10 | ec1d646 | ✅ Installed runtime pass |
+| Two-tier recency scoring (recent vs mature) | `feat/GH-99-two-tier-recency` / PR #120 | 13 | a394ebf | ✅ Implemented and tested |
+| Feedback loop rebuild with persistence, fingerprinting | `feat/GH-101-feedback-loop-rebuild` / PR #112 | 13 | 5f62f9c | ✅ Installed runtime pass |
+| Prohibitions opt-out toggles (enabled / distillation_enabled) | `feat/GH-102-prohibitions-opt-out` / PR #113 | 10 | a08cd6c | ✅ Implemented and tested |
+| MCP resilience + cross-source merge + edge case tests | `feat/GH-103-test-coverage-enhancements` / PR #114 | 22 | 964008c | ✅ 527 results, 0 failures |
+| Architecture docs synced to v2.0 source reality | `fix/GH-104-docs-drift` / PR #115 | N/A | c6f220f | ✅ Docs now accurate |
 
 - **HitRateTracker:** Singleton that logs save/recall events per memory key, computes empirical hit-rate and decay curves, feeds downstream utility metrics to retention engine
 - **MistakeDetector:** Pattern-based classification engine for user corrections/rejections vs transient failures; flags errors for penalty adjustments on low-value saves
@@ -635,4 +648,4 @@ Other v1.5.x features:
 
 
 ---
-*MemChorus v2.0.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
+*MemChorus v2.0.01 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
