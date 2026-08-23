@@ -6,17 +6,19 @@ vars: {
 
 direction: right
 
-retrieve: "retrieve(key)"
-lru_check: "Check LRU cache"
-recall: "Pre-decision recall (optional)"
-rank: "Rank sources by priority order"
-query: "Query first ranked source"
-update_lru: "Update LRU cache"
-return_val: "Return value (+ recalled context)"
+Retrieve Path {
+  retrieve: "retrieve(key)"
+  lru_check: "Check LRU cache"
+  recall: "Pre-decision recall (optional)"
+  rank: "Rank sources by priority order"
+  query: "Query first ranked source"
+  update_lru: "Update LRU cache"
+  return_val: "Return value (+ recalled context)"
 
-retrieve -> lru_check
-lru_check -> recall
-recall -> rank
-rank -> query
-query -> update_lru
-update_lru -> return_val
+  retrieve -> lru_check
+  lru_check -> recall
+  recall -> rank
+  rank -> query
+  query -> update_lru
+  update_lru -> return_val
+}

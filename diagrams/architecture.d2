@@ -8,9 +8,7 @@ direction: down
 
 AI Agent (Hermes / OpenClaw / custom)
 
-MemoryOrchestrator
-
-BehavioralEnforcementManager
+MemoryOrchestrator._bem: "BehavioralEnforcementManager\n(internal, toggle-enabled)"
 
 backends: Memory Backends {
   "Hermes Default (JSON/YAML)"
@@ -19,8 +17,6 @@ backends: Memory Backends {
 }
 
 AI Agent* -> MemoryOrchestrator: save / retrieve / search
-AI Agent* -> BehavioralEnforcementManager: enforce() at decision points
-BehavioralEnforcementManager -> MemoryOrchestrator: auto-save / auto-recall via lifecycle hooks
 MemoryOrchestrator -> backends."Hermes Default (JSON/YAML)"
 MemoryOrchestrator -> backends."MemPalace (MCP)"
 MemoryOrchestrator -> backends."Custom Sources (vector DB, etc.)"
