@@ -46,37 +46,7 @@ The system must stay functional even if every enhancement source disappears. The
 
 ## High-Level Architecture
 
-```
-                              ┌──────────────────────────────────────┐                  
-                              │                                      │                  
-                              │    AI Agent                          │                  
-                              │    (Hermes / OpenClaw / custom)      │                  
-                              │                                      │                  
-                              └──────────────────────────────────────┘                  
-                     save─retrieve/search      │                                        
-                      │                        │                                        
-                      │               feedback/escalation                               
-                      │               data flow│                                        
-                      │                        │                                        
-                      ▼                        ▼                                        
-            ┌───────────────────┐          ┌─────────────────────────────┐              
-            │MemoryOrchestrator │          │BehavioralEnforcementManager │              
-            │                   │          │                             │              
-            └───────────────────┘          └─────────────────────────────┘              
-                  │      │                                         │                    
-                  │      └────────────────┐                        │                    
-                  │                       │                        │                    
-┌─────────────────│───────────────────────│────────────────────────│─────────────────┐  
-│                 │                Memory Backends                 │                 │  
-│                 │                       │                        │                 │  
-│                 ▼                       ▼                        ▼                 │  
-│    ┌───────────────────────────┌────────────────┐  ┌─────────────────────────────────┐
-│    │Hermes Default (JSON/YAML) │MemPalace (MCP) │  │Custom Sources (vector DB, etc.) │
-│    │                           │                │  │                               │ │
-│    └───────────────────────────└────────────────┘  └─────────────────────────────────┘
-│                                                                                    │  
-└────────────────────────────────────────────────────────────────────────────────────┘
-```
+![High-Level Architecture](diagrams/images/architecture.svg)
 
 *Diagram source: [`diagrams/architecture.d2`](diagrams/architecture.d2) — edit with D2 to regenerate.*
 ### Component Summary
@@ -113,126 +83,14 @@ Agent  -->  MemoryOrchestrator  -->  [Hermes Source]  -->  local memory files
 
 ### Write Path Detail
 
-```
-   ┌─────────────────┐                         
-   │save(key, value) │                         
-   │                 │                         
-   └─────────────────┘                         
-           │                                   
-           ▼                                   
-    ┌──────────────────────────┐               
-    │                          │               
-    │     Explicit source      │               
-    │     override?            │               
-    │                          │               
-    └──────────────────────────┘               
-           │                                   
-           ▼                                   
-    ┌───────────────────────────┐              
-    │                           │              
-    │      Infer or use         │              
-    │      MemoryProfile        │              
-    │                           │              
-    └───────────────────────────┘              
-           │                                   
-           ▼                                   
-  ┌──────────────────────────┐                 
-  │                          │                 
-  │    Look up preferred     │                 
-  │    targets               │                 
-  │                          │                 
-  └──────────────────────────┘                 
-           │                                   
-           ▼                                   
-    ┌─────────────────────┐                    
-    │                     │                    
-    │   Write to first    │                    
-    │   match             │                    
-    │                     │                    
-    └─────────────────────┘                    
-           │                                   
-           ▼                                   
-┌─────────────────────────────────────────────┐
-│                                             │
-│          Safety-net fallback                │
-│          for any available source           │
-│                                             │
-└─────────────────────────────────────────────┘
-           │                                   
-           ▼                                   
-    ┌─────────────────────────────┐            
-    │                             │            
-    │       Invalidate LRU        │            
-    │       cache entries         │            
-    │                             │            
-    └─────────────────────────────┘            
-           │                                   
-           ▼                                   
-┌──────────────────────────────────────────┐   
-│                                          │   
-│          Capture outcome via             │   
-│          BehavioralEnforcement           │   
-│                                          │   
-└──────────────────────────────────────────┘
-```
+![Write Path Detail](diagrams/images/write_path.svg)
 
 *Diagram source: [`diagrams/write_path.d2`](diagrams/write_path.d2) — edit with D2 to regenerate.*
 **On retrieve:** Requests hit every available source in parallel. Results are scored using a domain-aware relevance engine that weighs keyword overlap, semantic proximity, and configurable context priorities. Top results surface first with deduplication applied across the combined result set.
 
 ### Retrieve Path Detail
 
-```
-  ┌──────────────┐                  
-  │retrieve(key) │                  
-  │              │                  
-  └──────────────┘                  
-          │                         
-          ▼                         
-   ┌────────────────┐               
-   │                │               
-   │   Check LRU    │               
-   │   cache        │               
-   │                │               
-   └────────────────┘               
-          │                         
-          ▼                         
- ┌───────────────────────────────┐  
- │                               │  
- │      Pre-decision             │  
- │      recall (optional)        │  
- │                               │  
- └───────────────────────────────┘  
-          │                         
-          ▼                         
- ┌───────────────────────────────┐  
- │                               │  
- │       Rank sources by         │  
- │       priority order          │  
- │                               │  
- └───────────────────────────────┘  
-          │                         
-          ▼                         
- ┌──────────────────────────┐       
- │                          │       
- │   Query first ranked     │       
- │   source                 │       
- │                          │       
- └──────────────────────────┘       
-          │                         
-          ▼                         
- ┌─────────────────┐                
- │Update LRU cache │                
- │                 │                
- └─────────────────┘                
-          │                         
-          ▼                         
-┌──────────────────────────────────┐
-│                                  │
-│      Return value                │
-│      (+ recalled context)        │
-│                                  │
-└──────────────────────────────────┘
-```
+![Retrieve Path Detail](diagrams/images/retrieve_path.svg)
 
 *Diagram source: [`diagrams/retrieve_path.d2`](diagrams/retrieve_path.d2) — edit with D2 to regenerate.*
 The orchestrator exposes three core operations:
@@ -285,44 +143,7 @@ sequenceDiagram
 
 The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
 
-```
-      ┌────────────────────┐                                     
-      │enforce(input_text) │                                     
-      │                    │                                     
-      └────────────────────┘                                     
-                │                                                
-                ▼                                                
-  ┌─────────────────────────────────────────────────────┐        
-  │                                                     │        
-  │         Behavioral Trigger                          │        
-  │         (Plays decision points from text)           │        
-  │                                                     │        
-  └─────────────────────────────────────────────────────┘        
-                │                                                
-                ▼                                                
-┌──────────────────────────────────────────────────────┐         
-│                                                      │         
-│         AutoRecall Engine                            │         
-│         (Query relevant memories per point)          │         
-│                                                      │         
-└──────────────────────────────────────────────────────┘         
-                │                                                
-                ▼                                                
-┌─────────────────────────────────────────────────────┐          
-│                                                     │          
-│         AutoStorage Engine                          │          
-│         (Captures outcomes, dedup window)           │          
-│                                                     │          
-└─────────────────────────────────────────────────────┘          
-                │                                                
-                ▼                                                
-  ┌─────────────────────────────────────────────────────────────┐
-  │                                                             │
-  │               EnforcementResult (dataclass)                 │
-  │               (Structured summary to caller)                │
-  │                                                             │
-  └─────────────────────────────────────────────────────────────┘
-```
+![Behavioral Enforcement Pipeline](diagrams/images/behav_pipeline.svg)
 
 *Diagram source: [`diagrams/behav_pipeline.d2`](diagrams/behav_pipeline.d2) — edit with D2 to regenerate.*
 Key guarantees from this pipeline:
