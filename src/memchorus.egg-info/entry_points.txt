@@ -1,5 +1,7 @@
 [console_scripts]
+memchorus-doctor = memchorus.install_doctor:main
 memchorus-init = memchorus.auto_init:cli_main
+memchorus-recalibrate = memchorus.calibration_engine:main
 
 [hermes_agent.plugins]
 memchorus = memchorus.hooks

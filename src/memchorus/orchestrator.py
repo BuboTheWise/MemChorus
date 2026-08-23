@@ -1078,6 +1078,10 @@ class MemoryOrchestrator:
         # Score and rank via the relevance engine
         ranked = self._scorer.score_and_rank(all_results, query, context)
 
+        # GH-98: apply domain-aware minimum threshold filter after scoring
+        if domain:
+            ranked = self._scorer._filter_by_domain_threshold(ranked, domain)
+
         # Provenance filter: demote auto-generated session metadata results so real
         # user-authored content dominates search rankings. Auto-storage marks entries
         # with categories: ["RESULT"] — these echo query text and otherwise outrank
