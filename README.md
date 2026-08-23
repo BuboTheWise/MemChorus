@@ -1,6 +1,6 @@
 # MemChorus
 
-Current version: 2.0.0
+**Current version:** 2.0.01
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
