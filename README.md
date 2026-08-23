@@ -335,12 +335,7 @@ Key guarantees from this pipeline:
 
 ### Data Flow Overview
 
-```
-┌────────┐      ┌────────────────────┐      ┌───────────────────────────┐
-│ Agent  │◀────▶│Memory Orchestrator │◀────▶│Hermes Default + MemPalace │
-│        │      │                    │      │                           │
-└────────┘      └────────────────────┘      └───────────────────────────┘
-```
+![Data Flow Overview](images/data_flow.svg)
 
 *Diagram source: [`diagrams/data_flow.d2`](diagrams/data_flow.d2)*
 
