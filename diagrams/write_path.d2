@@ -6,19 +6,21 @@ vars: {
 
 direction: right
 
-save: "save(key, value)"
-override: "Explicit source override?"
-profile: "Infer or use MemoryProfile"
-targets: "Look up preferred targets"
-write: "Write to first match"
-fallback: "Safety-net fallback"
-lru: "Invalidate LRU cache"
-capture: "Capture via BehavioralEnforcement"
+Write Path {
+  save: "save(key, value)"
+  override: "Explicit source override?"
+  profile: "Infer or use MemoryProfile"
+  targets: "Look up preferred targets"
+  write: "Write to first match"
+  fallback: "Safety-net fallback"
+  lru: "Invalidate LRU cache"
+  capture: "Capture via BehavioralEnforcement"
 
-save -> override
-override -> profile
-profile -> targets
-targets -> write
-write -> fallback
-fallback -> lru
-lru -> capture
+  save -> override
+  override -> profile
+  profile -> targets
+  targets -> write
+  write -> fallback
+  fallback -> lru
+  lru -> capture
+}

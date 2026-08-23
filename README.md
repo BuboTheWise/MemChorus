@@ -81,6 +81,12 @@ Agent  -->  MemoryOrchestrator  -->  [Hermes Source]  -->  local memory files
 
 **On save:** The orchestrator classifies the memory using a `MemoryProfile` heuristic (ephemeral, long-lived knowledge, user preference, relationship graph, large data block, context-sensitive, or auto/default). Each profile carries placement hints that route the write to the most appropriate backend. Duplicate checks run before commit.
 
+![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
+
+*Diagram source: [`diagrams/multi_wing_routing.d2`](diagrams/multi_wing_routing.d2) — edit with D2 to regenerate.*
+
+When MemPalace is the active backend, category-aware routing maps writes into distinct wings and semantic rooms. DECISION content lands in `memchorus_decisions/decisions`, LEARNING goes to `memchorus_learning/lessons-learned`, MISTAKE corrections route to `memchorus_learning/corrections`, and untagged content falls back to the general wing. This keeps memory organized by intent rather than flat storage.
+
 ### Write Path Detail
 
 ![Write Path Detail](diagrams/images/write_path.svg)
