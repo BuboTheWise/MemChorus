@@ -109,6 +109,69 @@ _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 # provides no semantic signal worth storing.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Self-referential internal artifact filter — GAP097
+# Rejects raw tool output, session metadata dumps, recursive introspection
+# results, and truncated capture blobs that pollute memory with noise.
+# ---------------------------------------------------------------------------
+
+_INTERNAL_JSON_SIGNATURES: List[re.Pattern] = [
+    # JSON shaped like session_search / tool result payloads
+    re.compile(r'"session_id"\s*:', re.I),
+    re.compile(r'"match_message_id"\s*:', re.I),
+    re.compile(r'"mode"\s*:.*"(?:discover|scroll|read)"', re.I),
+    re.compile(r'"tool_output"\s*:', re.I),
+    re.compile(r'"tool_call_id"\s*:', re.I),
+    re.compile(r'"session_meta"\s*:', re.I),
+    re.compile(r'"total_count"\s*:.*"paths"\s*:', re.I),
+]
+
+_INTERNAL_TRUNCATION: re.Pattern = re.compile(
+    r'\(\s*truncated[,\s]+budget\s+exceeded\s*\)', re.I)
+
+
+def _is_internal_artifact(text: str) -> bool:
+    """Return True when *text* appears to be an internal tool artifact that should
+    NOT be auto-stored.
+
+    Targets:
+     - Raw JSON with Hermes/MemChorus structural signatures
+     - Recursive introspection dumps (session_search result shapes)
+     - Truncated capture blobs cut by context budget limits
+     - Entities/triples/knowledge-graph dump shapes
+
+    False positive guard: only triggers on content that actually looks like a
+    raw artifact (JSON start, truncation marker). Human commentary containing
+    keywords is allowed through.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    # Quick gate: truncated artifacts are always noise
+    if _INTERNAL_TRUNCATION.search(stripped):
+        return True
+
+    # Only inspect JSON-shaped content for internal keys — prevents false
+    # positives on natural language that happens to mention "success" etc.
+    if stripped.startswith('{'):
+        for pattern in _INTERNAL_JSON_SIGNATURES:
+            if pattern.search(stripped):
+                return True
+
+        # Knowledge graph / entity dump detection
+        kg_pattern = re.compile(r'"(?:entities|triples)"\s*:', re.I)
+        if kg_pattern.search(stripped):
+            return True
+
+    # Catch {"text": "...", "content": "..."} wrapper shapes (MemChorus decision payloads)
+    wrapper = re.compile(r'^\s*\{\s*"text"\s*:', re.I)
+    if wrapper.search(stripped):
+        return True
+
+    return False
+
+
 _NOISE_PATTERNS: List[Tuple[str, re.Pattern]] = [
     # Generic error/exception prefixes (e.g. "Error: ...", "Exception: ...")
     ("error_prefix", re.compile(r'^\s*(?:Error|Exception)[:\s]', re.M)),
@@ -489,6 +552,18 @@ class AutoStorageEngine:
                 "key": "",
                 "significance": "",
                 "reason": "placeholder_artifact",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
+        # --- Step 1c: filter self-referential internal artifacts (GAP097) ---
+        if _is_internal_artifact(text):
+            logger.debug("AutoStorageEngine: rejecting internal artifact")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "internal_artifact",
                 "outcome_type": outcome_type,
                 "importance_score": 0.0,
             }
