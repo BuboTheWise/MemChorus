@@ -358,8 +358,41 @@ class MemChorusHooks:
             return None
 
     def _try_feedback_loop(self, input_text: str, kwargs: Dict[str, Any]) -> List[str]:
-        """No-op — feedback_loop module removed in v1.9.0."""
-        return []
+        """Run feedback loop to inject targeted course-corrections at decision points.
+
+        Matches the current trigger context against stored corrections whose category
+        overlaps with the detected decision type. Fires as [[FEEDBACK CORRECTION]] blocks
+        distinct from [MemChorus Memory Recall]. Each injection decrements the correction's
+        exhaust TTL counter — exhausted entries are archived and removed from the queue.
+
+        Gracefully degrades when feedback_loop module is unavailable.
+
+        Args:
+            input_text: Combined search terms from kwargs (message, task, etc.)
+            kwargs: Original kwargs passed to on_pre_llm_call (contains trigger_category, etc.)
+
+        Returns:
+            List of [[FEEDBACK CORRECTION]] markdown block strings (may be empty).
+        """
+        try:
+            orchestrator = _get_orchestrator()
+            if orchestrator is None:
+                return []
+
+            fb_config = orchestrator.config.get("feedback_loop", {})
+            # Default enable when feedback_loop key exists but 'enabled' missing
+            enabled = bool(fb_config.get("enabled", True))
+            feedback_mgr_config = {"feedback_loop": {**fb_config, "enabled": enabled}}
+
+            from memchorus.feedback_loop import FeedbackLoopManager
+            mgr = FeedbackLoopManager(config=feedback_mgr_config)
+            return mgr.process_feedback(input_text, kwargs)
+        except ImportError:
+            logger.debug("hooks: feedback_loop module unavailable — returning empty blocks")
+            return []
+        except Exception as e:
+            logger.debug("hooks: feedback loop failed silently: %s", e)
+            return []
 
     def _try_guard_scan(self, input_text: str, orchestrator) -> List[str]:
         """Scan input for behavioral prohibition matches and inject [[GUARD]] blocks.
