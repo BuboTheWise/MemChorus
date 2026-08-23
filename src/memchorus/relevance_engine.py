@@ -132,6 +132,24 @@ _DEFAULT_PENALTY_PATTERNS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Domain-aware minimum recall score thresholds (GH-98)
+# Different query types benefit from different signal floors because false positive
+# costs vary by context.  E.g., error lookup benefits from strict filtering, while
+# planning sessions prefer broader recall.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_DOMAIN_THRESHOLDS = {
+    "error_context": 0.5,      # When BehavioralTrigger detects ERROR_STATE
+    "code_review": 0.5,        # 'review' keyword in query / code review context
+    "planning": 0.4,           # When PLANNING_START detected
+    "general": 0.3,            # Fallback — preserves P1-1 floor for backward compat
+}
+
+# Global minimum recall threshold (preserves P1-1 value of 0.3)
+_MIN_RECALL_THRESHOLD = 0.3
+
+
 class RelevanceScorer:
     """Evaluate and rank memory results using a multi-dimensional scoring model.
 
@@ -180,11 +198,14 @@ class RelevanceScorer:
         fast_window_days: Optional[float] = None,
         fast_retention_pct: float = 0.7,
         penalty_patterns: Optional[List[Dict[str, Any]]] = None,
+        min_score: float = _MIN_RECALL_THRESHOLD,
+        domain_thresholds: Optional[Dict[str, float]] = None,
     ):
         self.half_life_days = half_life_days
         # Two-tier recency model (GH-99)
         self.fast_window_days = fast_window_days  # None disables two-tier mode
         self.fast_retention_pct = fast_retention_pct
+
         # Normalise priors to a probability distribution if provided
         if priors:
             total = sum(priors.values())
@@ -197,6 +218,40 @@ class RelevanceScorer:
         self._penalty_patterns = self._compile_penalty_patterns(
             penalty_patterns if penalty_patterns is not None else None  # None means defaults
         )
+
+        # GH-98: domain-aware minimum recall thresholds
+        self.min_score = min_score
+        if domain_thresholds is None:
+            self.domain_thresholds = dict(_DEFAULT_DOMAIN_THRESHOLDS)
+        else:
+            self.domain_thresholds = dict(_DEFAULT_DOMAIN_THRESHOLDS)
+            # Validate incoming overrides before merging
+            for k, v in domain_thresholds.items():
+                threshold_val = float(v)
+                if not 0.0 <= threshold_val <= 1.0:
+                    raise ValueError(
+                        f"Domain threshold '{k}' must be in [0, 1], got {threshold_val}"
+                    )
+            self.domain_thresholds.update(domain_thresholds)
+
+    def get_threshold(self, domain: str) -> float:
+        """Return the minimum score floor for *domain*.
+
+        Fallback chain: explicit domain_thresholds[domain] -> global min_score -> 0.3 hard floor.
+        The 'general' key is special-cased to always return self.min_score.
+        """
+        if domain == "general":
+            return max(self.min_score, 0.0)
+        if domain in self.domain_thresholds:
+            return max(self.domain_thresholds[domain], 0.0)
+        return self.min_score
+
+    def _filter_by_domain_threshold(
+        self, results: List[RankedResult], domain: str
+    ) -> List[RankedResult]:
+        """Drop results whose score falls below the domain floor."""
+        floor = self.get_threshold(domain)
+        return [r for r in results if r.score >= floor]
 
     @staticmethod
     def _compile_penalty_patterns(
