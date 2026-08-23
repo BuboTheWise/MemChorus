@@ -1132,8 +1132,10 @@ class MemoryOrchestrator:
         ranked = sorted(ranked, key=lambda r: -r.score)
 
         # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
-        # Multiple keys can carry identical content (query-echo artifacts). Keep only the
-        # highest-scored instance per unique content text, preserving ranking order.
+        if self._dedup_threshold > 0:
+            ranked = self._deduplicate_results(ranked)
+
+        # Format output dicts for injection
         def _dedup_key(content_obj):
             """Extract just the readable content text for duplicate detection.
 
@@ -1253,9 +1255,9 @@ class MemoryOrchestrator:
 
     def _deduplicate_results(
         self,
-        results: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Cross-source content similarity deduplication at recall time (GAP095).
+        results: List[Dict[str, Any] | RankedResult],
+    ) -> List[Dict[str, Any] | RankedResult]:
+        """Cross-source content similarity deduplication at recall time (GH-95).
 
         After all sources have been scored and ranked by the RelevanceScorer, this
         removes near-duplicate entries using N-gram Jaccard similarity. If two
@@ -1267,30 +1269,64 @@ class MemoryOrchestrator:
         preventing near-identical content from entering the injected block twice.
 
         Args:
-            results: A list of dicts keyed by ``score``, ``content``, ``key``, etc.
-                     Expected to be sorted by score descending already.
+            results: A list of dict-typed search dicts or RankedResult objects,
+                     sorted descending by score.
 
         Returns:
-            Deduplicated result list preserving ranking order of kept items.
+            Filtered list with near-duplicates removed (still sorted by score).
         """
-        try:
-            from memchorus.content_similarity import RecallDeduplicator
-        except ImportError:
-            logger.debug("content_similarity unavailable — skipping recall dedup")
+        if len(results) <= 1:
             return results
 
-        deduper = RecallDeduplicator(threshold=self._dedup_threshold)
-        before = len(results)
-        results = deduper.deduplicate_with_tiebreaker(results)
-        after = len(results)
+        def _get_content(obj) -> str:
+            """Extract content text regardless of whether obj is RankedResult or dict."""
+            if isinstance(obj, RankedResult):
+                return str(obj.content or "")
+            raw = obj.get("content", "") or obj.get("_content", "")
+            if isinstance(raw, dict):
+                raw = raw.get("text", raw.get("memory", ""))
+            return str(raw)
 
-        if before - after > 0:
+        def _get_score(obj) -> float:
+            """Extract score regardless of object type."""
+            if isinstance(obj, RankedResult):
+                return getattr(obj, "score", 0.5) or 0.5
+            return obj.get("score", 0.5) or 0.5
+
+        def _jaccard(text_a: str, text_b: str) -> float:
+            """3-gram word Jaccard similarity between two texts."""
+            if not text_a.strip() or not text_b.strip():
+                return 0.0
+            a = set(text_a.lower().strip().split())
+            b = set(text_b.lower().strip().split())
+            if not a or not b:
+                return 0.0
+            return len(a & b) / len(a | b)
+
+        kept: List[Dict[str, Any] | RankedResult] = []
+        for current in results:
+            content_cur = _get_content(current)
+            is_dup = False
+            for existing in kept:
+                if _jaccard(content_cur, _get_content(existing)) >= self._dedup_threshold:
+                    # Same content found — keep the higher-scored one.
+                    # If scores within 0.05, prefer the first (already-kept) result.
+                    if _get_score(current) > _get_score(existing) + 0.05:
+                        kept.remove(existing)
+                        kept.append(current)
+                    is_dup = True
+                    break
+            if not is_dup:
+                kept.append(current)
+
+        removed = len(results) - len(kept)
+        if removed > 0:
             logger.debug(
                 "Cross-source dedup removed %d near-duplicates from %d candidates (threshold=%.2f)",
-                before - after, before, self._dedup_threshold,
+                removed, len(results), self._dedup_threshold,
             )
 
-        return results
+        return kept
     
     @staticmethod
     def _synthesize_preview(content: Any) -> str:
