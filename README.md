@@ -1,7 +1,5 @@
 # MemChorus
 
-**Current version:** 2.0.01
-
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
 MemChorus treats memory not as a single store but as a **chorus of distinct sources** — each with different strengths, costs, and semantics. An orchestrator sits in front, deciding where to write and which sources to consult on reads so the agent gets the right context without wasting compute or tokens.
@@ -576,76 +574,5 @@ Fix cycle closing GH#95 through GH#104 on 2026-08-23:
 - **Forty-eight tests** covering: bounded adjustments, EMA direction, hit-rate pipeline, CLI entry verification, graceful degradation per unregistered profile bounds enforcement
 - Spec documented in `docs/AUTOTUNING.md` — three-config-lever design (recall_frequency, importance_threshold, cleanup_interval), no opaque ML
 
-### v1.7.0
-
-- **Testing infrastructure upgrade:** Full benchmark module (`test_memchorus_benchmark.py`) measuring per-source timing (p50/p95 latency), content accuracy and failure-mode behavior with JSON output for before/after comparison
-- **Documentation overhaul:** New `docs/TESTING.md`, `docs/IMPROVEMENT-CYCLE.md` documenting quantitative improvement feedback loop; README updated with test counts, benchmark methodology links and MemPalace attribution link
-- **MemPalace attribution clarified:** Added prominent link to [MemPalace GitHub](https://github.com/MemPalace/mempalace) as the primary enhancement backend; made clear it degrades gracefully when unavailable via local Hermes default fallback
-
-### v1.6.0
-
-- **Branch consolidation release:** Merged remaining unlanded feature branches (GapGuard, GAP026 hex ID skip, GAP015/GAP016 fixes, RecursionGuard accuracy improvements, dynamic source routing). Source version aligned with `__init__.py` = 1.6.0.
-- **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution.
-
-### v1.5.10 – v1.5.12
-
-**- RecursionGuard unified depth counter (GAP027):** Replaced fragile boolean recursion sentinels (`_REC_GUARD` module-level bool + instance-level `_in_enforcement_save`, `_in_enforcement_recall` flags) with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. All enforcement hooks in orchestrator.py now use the shared guard. Thread-safe under Python GIL.
-- **GAP026 hex Kanban ID skip:** Added detection and skip for t_[hex] Kanban IDs in project resolution, with comprehensive orientation test suite (58 tests). Also reduced cache TTL to 15s and added empty-result caching prevention.
-- **GAP026-C batched flush:** ToolCaptureBuffer caps saves, preventing excessive individual writes per session (50+ saved actions).
-**- GAP016 fix (PR #43):** The `CONTEXTUAL_SYNTHESIS_COMPLETION` query template added in GAP015 was not reflected in the echo-prevention guard set `_KNOWN_QUERY_TEMPLATES`. Added missing template string to the frozenset. All 5 `_QUERY_MAP` entries now verified as exact-match against guards (programmatic check).
-- **GAP015 fix (PR #42):** `DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION` added to `_QUERY_MAP` in `auto_recall_engine.py`, fixing silent drops when behavioral triggers fire at contextual synthesis decision points.
-
-### v1.5.08
-
-**Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
-
-![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
-
-**Memory routing table:** Category-aware wing/room selection via `mempalace_route` YAML config. Semantic room slugs map intent to storage locations:
-
-| Category | Wing | Room | Example Content |
-|---|---|---|---|
-| DECISION | memchorus_decisions | decisions | Architecture, transport |
-| LEARNING | memchorus_learning | lessons-learned | Shell escape, stderr |
-| MISTAKE  | memchorus_learning | corrections | proactive_save fix |
-| OUTCOMES | memchorus_general | outcomes | Test suite results |
-| (uncategorized) | memchorus_general (default) | general | Untagged content |
-
-Usage requires `category` metadata injection at write time:
-
-```python
-orchestrate.save(
-    key="architecture_decision_x",
-    value="We chose MemPalace routing over flat storage...",
-    metadata={"category": "DECISION"}     # drives wing + room selection
-)
-```
-
-Other v1.5.x features:
-
-**Post-Audit Fixes (2026-07-11+):**
-
-- **Hooks integration:** `on_pre_llm_call` wired to memory recall, behavioral guard scanning and lifecycle enforcement hooks. Guard scan runs first as hard gates before any soft recall context; hook wiring verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
-- **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
-- **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
-
-**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design). `MergeEngine` is now implemented and active — it provides in-memory deduplication at write time using configurable strategies (`overwrite`, `append`, `union`). Enable via `lifecycle.merge_at_write.enabled: true` in your config to start consolidating duplicate memories at save time.
-
-**REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
-`consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
-
-- **MCP transport autodetect** — reads \`mcp_servers.mempalace.command\` from config.yaml so users can override hardcoded module paths
-
-- **ProhibitionsManager:** Behavioral guard system — scans agent input before LLM calls, matches trigger keywords against seed + distilled rules in `prohibitions.jsonl`, injects `[[GUARD]]` blocks into system context to prevent self-breaking actions (env corruption, data loss, toolchain breakage)
-- **ProhibitionDistiller:** Auto-creates prohibition guards from observed critical mistakes at runtime: classifies error severity via keyword matching (CRITICAL/MEDIUM/LOW), applies cooldown gating (24h default), session caps (max 2 new rules/cycle), extracts trigger keywords and emits structured rules via `ProhibitionsManager`
-- **Opt-out toggles:** Granular provisioning controls — entire system toggle (`prohibitions.enabled`) plus per-provision disable list (`disabled_provisions`) for individual rule name exclusions
-
-- **RelevanceScorer zero-score bug fix** — dict/list content no longer loses semantic query overlap
-
-- **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
-
-- **1378 tests** collected across all modules (current)
-
 
 ---
-*MemChorus v2.0.01 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*
