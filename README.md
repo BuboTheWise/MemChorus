@@ -67,7 +67,7 @@ The system must stay functional even if every enhancement source disappears. The
 | `StorageResilience` | Retry-with-backoff and per-drawer isolation layer for ChromaDB/MemPalace saves; prevents transient failures from aborting entire batches |
 | `MemPalacePersistentSession` | Long-lived MCP session keeping the server alive across calls to prevent ChromaDB compactor crashes from repeated spawn-and-kill cycles |
 | `Orientation` | Session-start recall that injects project context (KG triples + semantic search, limited to 5 items) with 15s cache TTL |
-| `WorkflowCompliance` | Automated verification that dev feedback loops (squash-merge -> push -> install-from-SHA -> verify) completed; surfaces gaps as metadata |
+| `WorkflowCompliance` | Automated verification that development lifecycle (branch -> implement -> test -> review -> merge -> push -> install-from-SHA) completed; surfaces compliance gaps as metadata |
 | `ProhibitionsManager` | Behavioral guard system — scans agent input before LLM calls, matches trigger keywords against seed + distilled rules, injects [[GUARD]] blocks into system context to prevent self-breaking actions (env corruption, data loss, toolchain breakage) |
 | `ProhibitionDistiller` | Auto-creates prohibition guards from observed critical mistakes at runtime: classifies error severity via keyword matching (CRITICAL/LOW), applies cooldown gating (24h default), extracts trigger keywords and emits structured rules via `ProhibitionsManager` |
 
@@ -107,43 +107,52 @@ The orchestrator exposes three core operations:
 
 Graceful degradation is built in at every level. If MemPalace is unreachable, the system falls back to Hermes default files transparently. No source failure brings down the whole layer.
 
-### Feedback Loop Injection Path (Extensibility)
-
-Custom feedback loops defined in `~/.hermes/custom_loops/*.yaml` are loaded at bootstrap and injected into the same hook surface that powers memory recall:
-
+### Behavioral Guard Injection Path
+ 
+Before every LLM call, the `on_pre_llm_call` hook fires three sequential phases:
+ 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant Hook as pre_llm_call Hook
-    participant Loader as YAML Loader
-    participant Detector as Feedback Detector
-    participant Escalation as Escalation Engine
+    participant Guard as ProhibitionsManager
+    participant Recall as AutoRecallEngine
+    participant Distill as ProhibitionDistiller
     participant LLM as LLM API
-
+ 
     Agent->>Hook: user_message arrives
-    Hook->>Loader: load_definitions() (cached after first call)
-    Loader->>Loader: scan config/custom_loops/*.yaml
-    Loader-->>Hook: validated loop definitions
-    Hook->>Detector: evaluate_conditions(user_message, state)
-    Detector->>Detector: check conversation_length, repetition_entropy, keyword_pattern
-    alt conditions match
-        Detector->>Escalation: determine_level(loop_name, trigger_count)
-        Escalation->>Escalation: check cooldown window
-        alt within cooldown
-            Escalation-->>Hook: skip (cooldown active)
-        else cooldown expired
-            Escalation->>Escalation: advance escalation step
-            Escalation-->>Hook: correction_prompt (filled template)
-        end
+    Hook->>Guard: scan_text(user_message, rules)
+    alt guard match
+        Guard-->>Hook: [[GUARD]] blocks (hard gates)
     else no match
-        Detector-->>Hook: pass through (no intervention)
+        Guard-->>Hook: clear (proceed)
     end
-    Hook->>Hook: inject into pre_llm_call context string
+    Hook->>Recall: query relevant memories by domain
+    Recall-->>Hook: scored context results
+    Hook->>Hook: compose injected context string
     Hook->>LLM: augmented prompt sent
-    Note over Loader,Escalation: Memory recall and feedback loops share<br/>the same injection path — soft context,<br/>not authoritative system-prompt override
+    Note over Guard,Distill: Guards run FIRST as hard gates before<br/>any soft recall context is composed.
 ```
 
-**Key property:** Feedback loop corrections travel through the exact same `pre_llm_call` context channel as memory recall — they are soft nudges injected into the prompt, never hard overrides. Malformed YAML definitions log warnings and get disabled silently; they cannot crash the gateway process.
+**Guard scan:** ProhibitionsManager loads seed rules from `prohibitions.jsonl` plus any distilled rules created at runtime. Input text is scanned against trigger keywords; CRITICAL matches inject `[[GUARD]]` blocks into the prompt — hard gates that block self-breaking actions (environment corruption, data loss, toolchain breakage) rather than soft suggestions that can be ignored.
+
+**Distillation:** When post-action storage encounters a CRITICAL mistake (via MistakeDetector classification), ProhibitionDistiller automatically converts it into an enforceable prohibition rule subject to cooldown gating (24h default) and per-session caps (max 2 new rules) to prevent guard explosion.
+
+### Lifecycle Opt-Out Toggles
+
+The prohibitions system supports granular opt-out controls via the `prohibitions` config block. Individual provisions can be disabled by name using `disabled_provisions`, or the entire system toggled off with `enabled: false`:
+ 
+```yaml
+prohibitions:
+  enabled: true                        # master toggle (default: true)
+  distillation:
+    enabled: true                      # enable automatic rule creation from mistakes
+    minimum_severity: 3                # only CRITICAL becomes a rule     (default: 3)
+    max_rules_per_session: 2           # cap new guards per cycle         (default: 2)
+    cooldown_hours: 24.0              # same-pattern cooling window      (default: 24h)
+  disabled_provisions:                 # opt-out specific rule names
+    - "no_force_pip"                   # example: allow pip --force-reinstall
+```
 
 ## Behavioral Enforcement Pipeline
 
@@ -603,7 +612,7 @@ Other v1.5.x features:
 
 **Post-Audit Fixes (2026-07-11+):**
 
-- **Hooks integration:** `on_pre_llm_call` wired to memory recall and lifecycle enforcement hooks. Previously feedback corrections were silently bypassed; the hook wiring logic was verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
+- **Hooks integration:** `on_pre_llm_call` wired to memory recall, behavioral guard scanning and lifecycle enforcement hooks. Guard scan runs first as hard gates before any soft recall context; hook wiring verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
 - **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
 - **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
 
@@ -612,12 +621,11 @@ Other v1.5.x features:
 **REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
 `consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
 
-**REQ-8.2: Feedback Loop E2E Test Coverage** (recommended, v1.6.x)
-An integration test verifying that loaded custom feedback flows from `hooks.on_pre_llm_call()` → feedback detector → correction injection should exist to prevent regression on the B-1 bug class.
-
 - **MCP transport autodetect** — reads \`mcp_servers.mempalace.command\` from config.yaml so users can override hardcoded module paths
 
-- **Feedback loop auto-load** at bootstrap with \`LoadSummary\` diagnostics for load-time visibility
+- **ProhibitionsManager:** Behavioral guard system — scans agent input before LLM calls, matches trigger keywords against seed + distilled rules in `prohibitions.jsonl`, injects `[[GUARD]]` blocks into system context to prevent self-breaking actions (env corruption, data loss, toolchain breakage)
+- **ProhibitionDistiller:** Auto-creates prohibition guards from observed critical mistakes at runtime: classifies error severity via keyword matching (CRITICAL/MEDIUM/LOW), applies cooldown gating (24h default), session caps (max 2 new rules/cycle), extracts trigger keywords and emits structured rules via `ProhibitionsManager`
+- **Opt-out toggles:** Granular provisioning controls — entire system toggle (`prohibitions.enabled`) plus per-provision disable list (`disabled_provisions`) for individual rule name exclusions
 
 - **RelevanceScorer zero-score bug fix** — dict/list content no longer loses semantic query overlap
 

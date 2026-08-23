@@ -1,0 +1,57 @@
+# MemChorus Configuration Example (v2.0)
+#
+# Place at ~/.hermes/memchorus_config.yaml or profile-specific equivalent.
+# All keys are optional — omitted sub-keys fall back to defaults.
+
+# --- Lifecycle Management ---
+# Opt-in layer for sweep/eviction/merge cycles. Disabled by default.
+lifecycle:
+  enabled: false                     # master toggle (default: false)
+  sweep_interval_hours: 8            # sweep frequency           (default: 8)
+
+  retention_days:                    # per-profile TTL mappings
+    ephemeral: 7                     # short-lived scratch       (default: 7)
+    context_sensitive_pref: 30        # contextual prefs          (default: 30)
+    long_lived_knowledge: 180         # persistent knowledge      (default: 180)
+    large_data_block: 30             # bulk data payloads        (default: 30)
+    user_preference: null            # never expire              (default: null)
+    relationship_graph: null         # never expire              (default: null)
+
+  eviction:                          # removal thresholds
+    importance_min: 0.15             # drop below this score     (default: 0.15)
+    duplicate_cluster_max: 3        # max identical copies      (default: 3)
+    similarity_min: 0.75            # merge floor               (default: 0.75)
+
+  archive:                           # soft-delete policy
+    grace_days: 30                   # days before archival      (default: 30)
+    score_penalty: -0.7              # relevance penalty         (default: -0.7)
+
+  merge_at_write:                    # dedup at save time
+    enabled: true                    # consolidate duplicates    (default: true)
+
+  audit:                             # NDJSON structured log
+    enabled: true                    # emit audit entries        (default: true)
+    log_path: ~/.hermes/memchorus_audit.jsonl
+    max_entries: 10000               # rotation threshold        (default: 10000)
+
+# --- Behavioral Prohibitions ---
+# Hard guard system that scans agent input BEFORE LLM calls.
+# Loads seed rules from prohibitions.jsonl + distilled rules created at runtime.
+prohibitions:
+  enabled: true                      # master toggle             (default: true)
+  
+  distillation:                      # automatic rule creation from CRITICAL mistakes
+    enabled: true                    # activate auto-distillation (default: true)
+    minimum_severity: 3              # floor for distillation    (default: 3 = CRITICAL only)
+    max_rules_per_session: 2         # cap new rules per cycle   (default: 2)
+    cooldown_hours: 24.0            # repeat-pattern window     (default: 24h)
+
+  disabled_provisions:               # opt-out specific seed rules by name
+    # Uncomment to disable individual provisions:
+    # - "no_force_pip"              # allow pip --force-reinstall
+    # - "no_venv_delete"            # allow deleting venv site-packages
+    # - "no_bare_rmp"               # allow rm without backup strategy
+
+# --- Feedback Loop (removed in v1.9.0) ---
+# The custom_loops/ YAML feedback system was replaced by the prohibitions guard system.
+# Legacy `feedback_loop` keys are ignored if present. Use `prohibitions` instead.

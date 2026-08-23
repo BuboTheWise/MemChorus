@@ -10,6 +10,11 @@ AI Agent (Hermes / OpenClaw / custom)
 
 MemoryOrchestrator._bem: "BehavioralEnforcementManager\n(internal, toggle-enabled)"
 
+prohibitions: Prohibitions System {
+  "ProhibitionsManager": "Load + scan seed/distilled rules\ninject [[GUARD]] blocks"
+  "ProhibitionDistiller": "Auto-create guards from CRITICAL mistakes\n(cooldown gating, session caps)"
+}
+
 backends: Memory Backends {
   "Hermes Default (JSON/YAML)"
   "MemPalace (MCP)"
@@ -20,3 +25,5 @@ AI Agent* -> MemoryOrchestrator: save / retrieve / search
 MemoryOrchestrator -> backends."Hermes Default (JSON/YAML)"
 MemoryOrchestrator -> backends."MemPalace (MCP)"
 MemoryOrchestrator -> backends."Custom Sources (vector DB, etc.)"
+AI Agent* -> prohibitions."ProhibitionsManager": pre_llm_call guard scan
+prohibitions."ProhibitionDistiller" -> prohibitions."ProhibitionsManager": distilled rules
