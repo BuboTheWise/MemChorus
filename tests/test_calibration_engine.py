@@ -28,9 +28,6 @@ from memchorus.calibration_engine import (
     DEFAULT_TUNING_DIR,
 )
 
-# Module-level path helpers for CLI subprocess tests
-_TEST_REPO_ROOT = Path(__file__).resolve().parent.parent
-_TEST_SRC_PATH = _TEST_REPO_ROOT / "src"
 
 
 class TestCalibrationState:
@@ -277,15 +274,30 @@ class TestCLIEntryPoint:
 
     @staticmethod
     def _env(tmp_home: str) -> dict:
+        """Return a subprocess-safe environment for CLI tests.
+
+        Clears PYTHONPATH workspace entries and sets HOME to an isolated temp
+        directory so no real config is touched.  Because overriding HOME breaks
+        Python's automatic discovery of user site-packages (which live under
+        ~/.local), we explicitly preserve the installed site-packages path."""
         base = os.environ.copy()
         base["HOME"] = tmp_home
-        base["PYTHONPATH"] = str(_TEST_SRC_PATH)
+        # Strip workspace-source paths from PYTHONPATH so these tests exercise
+        # the installed package, not adjacent src/ trees.  Keep site-packages
+        # reachable even though HOME override would normally block it.
+        pp = base.get("PYTHONPATH", "") or ""
+        cleaned = [p for p in pp.split(os.pathsep) if "MemChorus" not in p] if pp else []
+        # Ensure user site-packages remains findable despite HOME override
+        sp = os.path.expanduser(f"~/.local/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+        if os.path.isdir(sp) and sp not in cleaned:
+            cleaned.append(sp)
+        base["PYTHONPATH"] = os.pathsep.join(cleaned)
         return base
 
     def test_main_help(self, tmp_path):
-        """--help returns exit code 0 and expected output."""
+        """--help returns exit code 0 and expected output (tested via entry point)."""
         result = subprocess.run(
-            [sys.executable, "-m", "memchorus.calibration_engine", "--help"],
+            ["memchorus-recalibrate", "--help"],
             capture_output=True,
             text=True,
             env=self._env(str(tmp_path)),
@@ -294,9 +306,9 @@ class TestCLIEntryPoint:
         assert "profile" in result.stdout.lower()
 
     def test_main_profile_output(self, tmp_path):
-        """Running with --profile produces expected output format."""
+        """Running with --profile produces expected output format (tested via entry point)."""
         result = subprocess.run(
-            [sys.executable, "-m", "memchorus.calibration_engine", "--profile", "test_cli"],
+            ["memchorus-recalibrate", "--profile", "test_cli"],
             capture_output=True,
             text=True,
             env=self._env(str(tmp_path)),
