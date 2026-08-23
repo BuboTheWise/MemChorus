@@ -168,6 +168,18 @@ class MemoryOrchestrator:
         self.memory_sources: Dict[str, MemorySource] = {}
         self._default_source_name = self.config.get('default_source', 'hermes_default')
 
+        # GAP095: cross-source deduplication at recall time
+        # GH-100: configurable penalty patterns for low-signal content at recall
+        recall_config = self.config.get("recall", {})
+        if isinstance(recall_config, dict):
+            self._dedup_threshold = float(recall_config.get("dedup_threshold", 0.85))
+            # GH-100: pass penalty_patterns to scorer (None means use built-in defaults)
+            penalty_patterns = recall_config.get("penalty_patterns")
+        else:
+            # Allow top-level 'recall.dedup_threshold' as a dotted string key fallback
+            self._dedup_threshold = float(self.config.get("recall.dedup_threshold", 0.85))
+            penalty_patterns = None
+
         # Relevance scoring engine (Gap G1/G2 fix)
         half_life_days = self.config.get('half_life_days', 30.0)
         fast_window_days = self.config.get('fast_window_days', None)
@@ -176,6 +188,7 @@ class MemoryOrchestrator:
             half_life_days=half_life_days,
             fast_window_days=fast_window_days,
             fast_retention_pct=fast_retention_pct,
+            penalty_patterns=penalty_patterns,
         )
 
         # Behavioral enforcement pipeline
@@ -196,14 +209,6 @@ class MemoryOrchestrator:
         self._retrieve_cache: OrderedDict = OrderedDict()
         self._cache_ttl = float(self.config.get('cache_ttl_seconds', 60.0))
         self._cache_max_size = int(self.config.get('cache_max_size', 256))
-
-        # GAP095: cross-source deduplication at recall time
-        recall_config = self.config.get("recall", {})
-        if isinstance(recall_config, dict):
-            self._dedup_threshold = float(recall_config.get("dedup_threshold", 0.85))
-        else:
-            # Allow top-level 'recall.dedup_threshold' as a dotted string key fallback
-            self._dedup_threshold = float(self.config.get("recall.dedup_threshold", 0.85))
 
         # GAP008: configurable source priority for retrieval
         self._priority_order: List[str] = list(self.config.get('priority_order', []))
