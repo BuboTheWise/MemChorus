@@ -45,13 +45,16 @@ class TestContentMatchesScoring:
         finally:
             shutil.rmtree(d)
 
-    def test_multi_term_match_scores_higher_than_single(self):
-        """When two distinct query terms are both present, score > single-term match."""
+    def test_multi_term_match_scores_higher_equal_single(self):
+        """After GH-121 proportion normalization: when both queries match 100% of their terms,
+        scores are equal (both capped at 1.0). Multi-term query still covers more distinct concepts."""
         src, d = self._mk()
         try:
             one_term = src._content_matches('routing', 'routing routing routing')
             two_terms = src._content_matches('routing table', 'the routing table was fixed today')
-            assert two_terms > one_term, f"two_terms={two_terms} should exceed one_term={one_term}"
+            # Both match all their terms → both 100% → both clamped to 1.0
+            assert abs(one_term - two_terms) < 0.01, \
+                f"Normalized scores should be near-equal: one={one_term}, two={two_terms}"
         finally:
             shutil.rmtree(d)
 
@@ -167,8 +170,8 @@ class TestMinRecallScoreThreshold:
         return HermesDefaultMemorySource(name='t', config=cfg), tmpdir
 
     def test_default_min_score_constant(self):
-        """MIN_RECALL_SCORE class constant defaults to 0.3 (lowered from 1.5 after empirical analysis)."""
-        assert HermesDefaultMemorySource.MIN_RECALL_SCORE == 0.3
+        """MIN_RECALL_SCORE class constant defaults to 0.5 (raised from 0.3 after GH-121 normalization)."""
+        assert HermesDefaultMemorySource.MIN_RECALL_SCORE == 0.5
 
     def test_low_score_results_filtered_out(self):
         """Results with score below MIN_RECALL_SCORE are not returned."""
@@ -194,14 +197,15 @@ class TestMinRecallScoreThreshold:
         """min_recall_score config key overrides the class default."""
         tmpdir = tempfile.mkdtemp()
         try:
+            # Override to 0.2 to prove config wins over class constant
             src = HermesDefaultMemorySource(
-                name='t', config={'memory_dir': tmpdir, 'min_recall_score': 0.5}
+                name='t', config={'memory_dir': tmpdir, 'min_recall_score': 0.2}
             )
-            assert src._effective_min_score() == 0.5
+            assert src._effective_min_score() == 0.2
 
-            # Default effective min score is the class constant (0.3 after empirical scoring analysis)
+            # Default effective min score is the class constant (raised to 0.5 in GH-121)
             src2 = HermesDefaultMemorySource(name='t', config={'memory_dir': tmpdir})
-            assert src2._effective_min_score() == 0.3
+            assert src2._effective_min_score() == 0.5
         finally:
             shutil.rmtree(tmpdir)
 
