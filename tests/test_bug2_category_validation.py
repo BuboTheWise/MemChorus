@@ -37,10 +37,15 @@ class TestValidateCategoryTypeSafe:
         with pytest.raises(ValueError, match="unknown"):
             MemoryOrchestrator._validate_category_type_safe("random_cat")
 
-    def test_similar_but_wrong_case_raises_valueerror(self):
-        """'learning' (lowercase) should NOT match 'LEARNING'."""
-        with pytest.raises(ValueError, match="unknown"):
-            MemoryOrchestrator._validate_category_type_safe("learning")
+    def test_lowercase_normalized_to_uppercase(self):
+        """GH-122: 'learning' (lowercase) is normalised to 'LEARNING' — accepted, not rejected."""
+        result = MemoryOrchestrator._validate_category_type_safe("learning")
+        assert result == "LEARNING"
+
+    def test_mixed_case_normalized_to_uppercase(self):
+        """GH-122: 'Learning' (mixed) is normalised to 'LEARNING'."""
+        result = MemoryOrchestrator._validate_category_type_safe("Learning")
+        assert result == "LEARNING"
 
     def test_arbitrary_string_rejected(self):
         with pytest.raises(ValueError):
