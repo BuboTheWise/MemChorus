@@ -45,9 +45,10 @@ class HermesDefaultMemorySource(MemorySource):
 
     # Minimum score threshold — results below this floor are filtered out before
     # being returned to the orchestrator so that low-confidence noise is suppressed.
-    # P1-1 (2026-07-19): Lowered from 1.5 → 0.3 after empirical scoring analysis proved
-    # legitimate signal memories score 0.4–0.7 against real query maps. The old floor was
-    MIN_RECALL_SCORE = 0.3
+    # P1-1 (2026-07-19): Lowered from 1.5 → 0.3 after empirical scoring analysis.
+    # GH-121: _content_matches now normalises to [0, 1], so this threshold means
+    #  "at least ~50% of query terms must match" for a memory to qualify.
+    MIN_RECALL_SCORE = 0.5
 
     def __init__(self, name: str = "hermes_default", data_dir: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         """
@@ -107,22 +108,24 @@ class HermesDefaultMemorySource(MemorySource):
           1. Normalize underscores and spaces to hyphens in both query and
              content so that e.g. 'project_python_version' matches the
              sanitized filename 'project-python-version'.
-          2. Split the (normalized) query into individual terms (lowercased).
-          3. For each term, count substring occurrences in the content text.
-             Each distinct term found contributes to the score (substring
-             matching is deliberately permissive — 'fix' does match 'suffix').
-          4. Bonus: add +0.5 for every extra occurrence beyond the first per term
-             (term frequency bonus, capped at +2 bonus to avoid runaway scoring).
+          2. Split the (normalised) query into individual terms (lowercased).
+          3. For each term, check if it appears in the content text. Count
+             matched distinct terms as a proportion of total terms.
+          4. Bonus: add up to +0.15 per extra occurrence beyond the first
+             per term (frequency signal), capped at +0.15 per term.
           5. Self-match penalty: if the content is essentially identical to
              the query (SequenceMatcher ratio > 0.9), halve the final score
-             so that query-echo artifacts don't dominate results.
+             so query-echo artifacts don't dominate results.
+
+        The result is clamped to [0, 1]. A value of 1 means ~all query terms
+        appear in the content with high frequency; 0 means no terms matched.
 
         Args:
             query: The search query string.
             content_text: Plain-text representation of the memory content.
 
         Returns:
-            float: Relevance score >= 0.  Zero means no match terms found.
+            float: Relevance score in [0, 1]. Zero means no match terms found.
         """
         # Normalize underscores/spaces to hyphens so queries like
         # 'project_python_version' match sanitized keys like
@@ -133,18 +136,29 @@ class HermesDefaultMemorySource(MemorySource):
         if not terms:
             return 0.0
 
-        score = 0.0
+        matched = 0
+        total_terms = len(terms)
+        freq_bonus = 0.0
         for term in terms:
             count = c_norm.count(term)
             if count > 0:
-                score += 2.0 + min(count - 1, 4) * 0.5
+                matched += 1
+                # Extra occurrences add a small frequency bonus, capped at +0.15
+                # per term to keep the total within [0, 1] budget
+                freq_bonus += min(count - 1, 3) * 0.05
+
+        # Base score: fraction of query terms that appeared in content
+        base = matched / total_terms
+
+        # Add frequency bonus (max ~0.45 for a 3-term query with heavy repeats)
+        score = base + (freq_bonus / max(total_terms, 1)) * 0.3
 
         # Self-match / query-echo penalty
         ratio = _difflib.SequenceMatcher(None, q_norm, c_norm).ratio()
         if ratio > 0.9:
             score *= 0.5
 
-        return score
+        return round(max(0.0, min(score, 1.0)), 4)
 
     def _effective_min_score(self) -> float:
         """Return the effective minimum recall score from config override."""
