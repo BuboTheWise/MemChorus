@@ -566,5 +566,76 @@ class TestClearOrientationCache(unittest.TestCase):
         self.assertEqual(len(_ori_mod._cache._cache), 0)
 
 
+class TestClearProjectBothKeyShapes(unittest.TestCase):
+    """FIX-3 regression: a SINGLE clear_project(project) must invalidate entries
+    cached under BOTH the env_task-set and env_task-unset key shapes.
+
+    Before the fix the unset branch keyed its entry on
+    ``os.environ.get('HERMES_TASK', '')`` while the set branch keyed on
+    ``_resolve_project(env_task)``. Because ``clear_project`` matches by exact
+    project string, ``clear_project(resolved)`` evicted only one shape and the
+    other leaked. The test below sets HERMES_TASK to a value that DIFFERS from
+    the resolved project, so on the old code the two branches produced two
+    distinct keys and one survived the clear (len would stay 1). On the fixed
+    code both branches key on the same resolved name, so the single clear
+    removes everything (len == 0).
+    """
+
+    @staticmethod
+    def _make_orch():
+        class FakeOrch:
+            def search(self, query_str, limit=5):
+                return [{"key": "hit", "content": query_str}]
+        return FakeOrch()
+
+    def test_single_clear_project_invalidates_both_branches(self):
+        import memchorus.orientation as _mod
+
+        # Deterministic resolved project for the callers to pass to clear_project.
+        ws = "/tmp/fix-3/test-project"
+        resolved = os.path.basename(os.path.normpath(ws))  # "test-project"
+
+        orig_ws = os.environ.get("HERMES_WORKSPACE")
+        orig_task = os.environ.get("HERMES_TASK")
+        os.environ["HERMES_WORKSPACE"] = ws
+        # Deliberately divergent: on the OLD code the unset branch keyed on this,
+        # so clear_project("test-project") could not reach it. The fix ignores it.
+        os.environ["HERMES_TASK"] = "legacy-task-value"
+        try:
+            orch = self._make_orch()
+
+            # Write an entry under the env_task-SET branch.
+            orientation_search(env_task=resolved, orchestrator=orch)
+            # Write an entry under the env_task-UNSET branch.
+            orientation_search(env_task=None, orchestrator=orch)
+
+            # Sanity: at least one non-empty entry is present (both branches
+            # should have resolved the same project and cached it).
+            self.assertGreaterEqual(
+                len(_mod._cache._cache), 1,
+                "expected at least one cached entry before the clear",
+            )
+
+            # The single, targeted clear the caller makes on a project switch...
+            _mod._cache.clear_project(resolved)
+
+            # ...must remove the entry. Assert it is GONE (not merely no-exception).
+            self.assertEqual(
+                len(_mod._cache._cache), 0,
+                f"clear_project({resolved!r}) left {len(_mod._cache._cache)} entry(ies) "
+                "-- the unset-branch key leaked",
+            )
+        finally:
+            if orig_ws is None:
+                os.environ.pop("HERMES_WORKSPACE", None)
+            else:
+                os.environ["HERMES_WORKSPACE"] = orig_ws
+            if orig_task is None:
+                os.environ.pop("HERMES_TASK", None)
+            else:
+                os.environ["HERMES_TASK"] = orig_task
+            clear_orientation_cache()
+
+
 if __name__ == "__main__":
     unittest.main()

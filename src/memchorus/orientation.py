@@ -208,8 +208,14 @@ def orientation_search(
     if not queries:
         return []  # silent skip -- no project detected
 
+    # Resolve the project ONCE and key on that single normalized value for BOTH
+    # the env_task-set and env_task-unset paths. clear_project() matches keys by
+    # exact project string, so every entry must carry the same resolved name the
+    # caller would pass to clear_project -- otherwise the unset branch would leak
+    # entries that a single clear_project(project) cannot invalidate.
+    project = _resolve_project(env_task) or ""
     cache_key = _CacheKey(
-        project=_resolve_project(env_task) if env_task else os.environ.get("HERMES_TASK", ""),
+        project=project,
         query_types=tuple(q["type"] for q in queries),
     )
 
