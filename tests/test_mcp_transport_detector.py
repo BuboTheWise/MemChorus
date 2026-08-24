@@ -58,8 +58,18 @@ class TestShapeAHermesConfigSingleString:
         args = result.get("args", [])
         assert len(args) >= 2  # at least ['-m', 'foo']
 
-    def test_dead_command_path_falls_back(self):
-        """A non-existent command binary triggers fallback (returns None)."""
+    def test_dead_command_path_falls_back(self, monkeypatch):
+        """A non-existent command binary triggers fallback (returns None).
+
+        The detector falls back to shutil.which('mempalace-mcp') on PATH when
+        the configured binary is missing. To keep the test independent of what
+        happens to be installed on the host machine, disable the fallback so
+        it cannot accidentally succeed."""
+        # _fallback_to_path does 'from shutil import which' locally, so we
+        # bypass that by patching the method itself rather than shutil.which.
+        monkeypatch.setattr(
+            mms._McpTransportDetector, "_fallback_to_path", staticmethod(lambda: None)
+        )
         content = (
             "mcp_servers:\n"
             "  mempalace:\n"
