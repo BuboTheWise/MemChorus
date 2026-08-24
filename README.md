@@ -551,7 +551,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.03 (current — 2026-08-25)
+### v2.0.04 (current — 2026-08-25)
 
 - Merged GH-96 recall char-cap feature (score-based entry selection, configurable limit) and GH-103 MCP resilience + cross-source merge + profile isolation tests. All branches cleaned up.
 
