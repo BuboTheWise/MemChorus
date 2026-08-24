@@ -1,5 +1,7 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
+# Version uses double-zero patch convention (X.Y.ZZ). Pip wheel filenames
+# normalise to semver on install, but the runtime __version__ string stays accurate.
 __version__ = "2.0.03"
 __author__ = "MemChorus Project"
 __email__ = "memchorus@nous.systems"
@@ -124,11 +126,7 @@ __all__ = [
     "AutoRecallEngine",
     "AutoStorageEngine",
     "BehavioralEnforcementManager",
-    # Lifecycle management
-    "AuditLogger",
-    "LifecycleManager",
-    "SweepScheduler",
-    # Behavioral prohibitions guard system
+    # Prohibition guard system
     "Prohibition",
     "ProhibitionsManager",
     "GuardVerdict",
