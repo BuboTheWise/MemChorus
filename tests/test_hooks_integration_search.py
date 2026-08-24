@@ -27,9 +27,16 @@ from memchorus.orchestrator import MemoryOrchestrator
 @pytest.fixture
 def real_orchestrator(tmp_path):
     """A real MemoryOrchestrator backed by a temporary hermes_default source.
-    MemPalace is disabled to prevent live-palace data contamination (GAP045)."""
+    MemPalace is disabled to prevent live-palace data contamination (GAP045).
+
+    min_recall_score is set permissively so these integration tests are resilient
+    to shifts in the global MIN_RECALL_SCORE constant (raised from 0.3 to 0.5
+    in GH-121 normalisation)."""
     orch_config = {
-        "hermes_default_config": {"memory_dir": str(tmp_path / "test_mem.json")},
+        "hermes_default_config": {
+            "memory_dir": str(tmp_path / "test_mem.json"),
+            "min_recall_score": 0.1,
+        },
         "enforce_on_read": False,
         "enforce_on_write": False,
     }
