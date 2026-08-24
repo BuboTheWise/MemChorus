@@ -283,14 +283,22 @@ class TestCLIEntryPoint:
         base = os.environ.copy()
         base["HOME"] = tmp_home
         # Strip workspace-source paths from PYTHONPATH so these tests exercise
-        # the installed package, not adjacent src/ trees.  Keep site-packages
-        # reachable even though HOME override would normally block it.
+        # the installed package, not adjacent src/ trees.  Because HOME is
+        # overridden we also need to preserve the actual memchorus install path
+        # (works for both system user-site and venv site-packages).
         pp = base.get("PYTHONPATH", "") or ""
         cleaned = [p for p in pp.split(os.pathsep) if "MemChorus" not in p] if pp else []
-        # Ensure user site-packages remains findable despite HOME override
-        sp = os.path.expanduser(f"~/.local/lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
-        if os.path.isdir(sp) and sp not in cleaned:
-            cleaned.append(sp)
+        
+        # Dynamically find where memchorus lives so -m resolves correctly even
+        # when HOME override would normally block discovery.
+        try:
+            import memchorus as _mc
+            mc_site = os.path.dirname(os.path.dirname(_mc.__file__))  # parent of site-packages/memchorus
+            if mc_site and mc_site not in cleaned:
+                cleaned.append(mc_site)
+        except (ImportError, TypeError):
+            pass
+        
         base["PYTHONPATH"] = os.pathsep.join(cleaned)
         return base
 
