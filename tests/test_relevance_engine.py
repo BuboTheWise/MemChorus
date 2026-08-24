@@ -145,5 +145,41 @@ class TestScoreDoesNotDropToZero(unittest.TestCase):
                            f"Good overlap should score higher ({s_good} vs {s_bad})")
 
 
+class TestScoreRecencyNaiveIsoTimestamps(unittest.TestCase):
+    """Regression: naive (offset-less) ISO-8601 timestamps must not crash the scorer.
+
+    Pre-fix, _score_recency parsed a naive datetime and then subtracted it from an
+    offset-aware now, raising TypeError outside the parse-time except block.
+    """
+
+    NAIVE_ISO = "2026-08-24T12:00:00"
+    AWARE_ISO = "2026-08-24T12:00:00+00:00"
+
+    def setUp(self):
+        self.scorer = RelevanceScorer()
+
+    def test_naive_iso_timestamp_does_not_raise(self):
+        """Naive ISO string returns a bounded float instead of raising TypeError."""
+        score = self.scorer._score_recency(self.NAIVE_ISO)
+        self.assertIsInstance(score, float)
+        self.assertGreaterEqual(score, 0.0)
+        self.assertLessEqual(score, 1.0)
+
+    def test_naive_matches_aware_equivalent(self):
+        """Naive and aware forms of the same instant score identically (to the precision
+        affected by the tz fix — not by sub-microsecond clock drift between calls)."""
+        self.assertAlmostEqual(
+            self.scorer._score_recency(self.NAIVE_ISO),
+            self.scorer._score_recency(self.AWARE_ISO),
+            places=6,
+        )
+
+    def test_none_returns_neutral(self):
+        self.assertEqual(self.scorer._score_recency(None), 0.5)
+
+    def test_garbage_string_returns_neutral(self):
+        self.assertEqual(self.scorer._score_recency("not-a-timestamp"), 0.5)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

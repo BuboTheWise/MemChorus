@@ -338,6 +338,8 @@ class RelevanceScorer:
             return 0.5  # neutral
         try:
             ts = datetime.fromisoformat(timestamp_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             return 0.5
         delta = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
