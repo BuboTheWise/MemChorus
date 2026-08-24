@@ -519,6 +519,41 @@ class MemoryOrchestrator:
 
     _VALID_CATEGORY_VALUES: Set[str] = {c.value for c in ALL_CATEGORIES}
 
+    # GH-122: category / metadata enrichment helpers so public callers can
+    # influence how their memory is classified and routed.
+    @staticmethod
+    def _enrich_value_with_metadata(
+        value: Any,
+        category: Optional[str],
+        metadata: Optional[dict] = None,
+    ) -> Any:
+        """Attach validated category + metadata to a memory payload.
+
+        If *value* is already a dict, the extras are merged in-place.  For all
+        other types (str, int, etc.) a thin wrapper dict is returned so that
+        downstream storage backends still see structured data they can index."""
+        if category is None and metadata is None:
+            return value
+
+        if isinstance(value, dict):
+            result = dict(value)
+        else:
+            result = {"_content": value}
+
+        if category is not None:
+            cats = result.setdefault("categories", [])
+            if isinstance(cats, str):
+                cats = [cats]
+            if category not in cats:
+                cats.append(category)
+            result["categories"] = cats
+
+        if metadata:
+            for k, v in metadata.items():
+                result.setdefault(k, v)
+
+        return result
+
     @staticmethod
     def _validate_category_type_safe(cat: Any) -> Optional[str]:
         """Validate a single category value and return normalised string or None.
@@ -535,7 +570,7 @@ class MemoryOrchestrator:
         if value is not None and value in MemoryOrchestrator._VALID_CATEGORY_VALUES:
             return str(value)
 
-        cleaned = str(cat).strip()
+        cleaned = str(cat).strip().upper()
         if not cleaned:
             logger.warning("Empty category after cleaning (%r)", cat)
             return None
@@ -729,7 +764,9 @@ class MemoryOrchestrator:
              key: str,
              value: Any,
              source_name: Optional[str] = None,
-             profile: Optional[MemoryProfile] = None) -> bool:
+             profile: Optional[MemoryProfile] = None,
+             category: Optional[str] = None,
+             metadata: Optional[dict] = None) -> bool:
         """
         Save a memory to the appropriate source using intelligent placement.
 
@@ -752,34 +789,60 @@ class MemoryOrchestrator:
             value (Any): The memory content to store
             source_name (str, optional): Specific source to save to when caller overrides smart placement
             profile (MemoryProfile, optional): Classification hint; defaults to AUTO inference
+            category (str, optional): Explicit category tag (e.g. "DECISION", "LEARNING").
+                Validated against the allowed whitelist. If provided alongside metadata
+                containing a category key, this parameter takes precedence.
+            metadata (dict, optional): Arbitrary metadata dict to attach to the saved memory.
+                Common keys include ``category`` for routing and ``provenance`` for origin tracking.
 
         Returns:
             bool: True if successful storage occurred at any registered target, False otherwise
+
+        Raises:
+            ValueError: If an unsupported category is provided.
         """
         # --- explicit source override takes precedence ------------------
         self._save_call_count += 1
-        self._validate_categories_in_value(value)  # reject bad categories early
+
+        # GH-122: validate and inject explicit category before anything else
+        effective_category = None
+        if category is not None:
+            effective_category = self._validate_category_type_safe(category)
+        if metadata:
+            md_cat = metadata.get("category")
+            if md_cat is not None and effective_category is None:
+                effective_category = self._validate_category_type_safe(md_cat)
+
+        # Enrich value with validated category + metadata so internal validation catches it
+        stored_value = self._enrich_value_with_metadata(value, effective_category, metadata)
+        self._validate_categories_in_value(stored_value)  # reject bad categories early
+
+        # Auto-infer profile from the enriched payload (category info helps inference)
+        if profile is not None:
+            effective_profile = profile
+        else:
+            effective_profile = self._infer_profile(stored_value)
+
         saved = False
+
+        # --- explicit source override takes precedence ------------------
         if source_name:
             if source_name in self.memory_sources:
                 # Merge engine pre-save check
                 if self._merge_engine is not None:
-                    merge_result = self._merge_engine.pre_save_check(key, value, source_name)
+                    merge_result = self._merge_engine.pre_save_check(
+                        key, stored_value, source_name)
                     if not merge_result.should_proceed:
-                        value = merge_result.final_value
+                        stored_value = merge_result.final_value
                 src_obj = self.memory_sources[source_name]
-                saved = self._try_save_to(source_name, src_obj, key, value)
+                saved = self._try_save_to(source_name, src_obj, key, stored_value)
             # GAP008: invalidate cache on explicit-source write too -----
             if saved and key in self._retrieve_cache:
                 del self._retrieve_cache[key]
             return saved
 
-        # --- resolve profile (auto-infer from content when omitted) -----\
-        if profile is not None:
-            effective_profile = profile
-        else:
-            effective_profile = self._infer_profile(value)
-        
+        # --- resolve profile (auto-infer from content when omitted) ----- already done above
+
         # --- get ranked target sources for this profile ----------
         preferred_targets = _PROFILE_SOURCE_HINT.get(effective_profile, [])
 
@@ -798,16 +861,16 @@ class MemoryOrchestrator:
         # ---- merge engine pre-save check (before any source write) -----
         if self._merge_engine is not None:
             merge_result = self._merge_engine.pre_save_check(
-                key, value, profile=effective_profile
+                key, stored_value, profile=effective_profile
             )
             if not merge_result.should_proceed:
-                value = merge_result.final_value
+                stored_value = merge_result.final_value
 
         # ---- preferred targets first (skip disabled) -----------
         for t in final_targets:
             src = self.memory_sources.get(t)
             if src and _check_source_available(src) and self.is_source_enabled(t):
-                saved = self._try_save_to(t, src, key, value)
+                saved = self._try_save_to(t, src, key, stored_value)
                 if saved:
                     break
 
@@ -815,7 +878,7 @@ class MemoryOrchestrator:
         if not saved:
             for n, src in self.memory_sources.items():
                 if src and _check_source_available(src) and self.is_source_enabled(n):
-                    saved = self._try_save_to(n, src, key, value)
+                    saved = self._try_save_to(n, src, key, stored_value)
                     if saved:
                         break
 
@@ -831,7 +894,7 @@ class MemoryOrchestrator:
                 with self._guard as _depth:
                     em = self._get_enforcement_manager()
                     if em is not None:
-                        outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(value).__name__}."
+                        outcome_text = f"Saved memory '{key}' to orchestrator pipeline. Content type: {type(stored_value).__name__}."
                         _storage_result = em.enforce(outcome_text)
                         # Guard against recursive enforcement chains where errors may be an int
                         errors = getattr(_storage_result, 'errors', None)
