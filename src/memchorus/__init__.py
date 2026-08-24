@@ -1,6 +1,6 @@
 """Memory Orchestration Package — lazy-loaded submodules."""
 
-__version__ = "2.0.02"
+__version__ = "2.0.03"
 __author__ = "MemChorus Project"
 __email__ = "memchorus@nous.systems"
 
