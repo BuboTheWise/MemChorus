@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.06] - 2026-08-24
+
+### Fixed
+- **Producer UTC-aware timestamps (closes #124):** the `proactive_check` / `proactive_save` stamping sites in `hermes_memory_source.py` and `session_search_memory_source.py` used naive `datetime.datetime.now()` (no timezone), producing ambiguous ISO timestamps whose ordering and meaning were machine-local. All 7 sites now emit `datetime.now(tz=datetime.timezone.utc)`, so proactive timestamps carry explicit `+00:00` offsets and sort correctly across timezones.
+
 ## [2.0.05] - 2026-08-24
 
 ### Fixed
