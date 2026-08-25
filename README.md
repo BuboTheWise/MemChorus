@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.06 (current — 2026-08-24)
+### v2.0.07 (current — 2026-08-25)
+
+- `lifecycle_merge.MergeEngine` class docstring now documents the correct eviction defaults (`similarity_min 0.75`, `duplicate_cluster_max 3`) to match the constructor. Docs-only; no behavior change. Closes #127.
+
+### v2.0.06 (2026-08-24)
 
 - Producer timestamps are now UTC-aware: the `proactive_check` / `proactive_save` emission sites in the Hermes and Session-Search memory sources previously stamped naive `datetime.now()` values (no timezone), so their ISO timestamps were ambiguous across machines. All seven now emit `datetime.now(tz=timezone.utc)` — `+00:00` offsets, correct ordering, no local-timezone drift. Closes #124.
 
