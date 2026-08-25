@@ -253,15 +253,15 @@ def cli_main() -> int:
                         help=f"Absolute data directory (default: {{DEFAULT_DATA_DIR}}/<profile>)")  # noqa: E501
     parser.add_argument("--dry-run", action="store_true",
                         help="Print generated YAML to stdout instead of writing a file")
-    parser.add_argument("--enable-plugin", action="store_true", default=True,
-                        help="Add memchorus to plugins.enabled (default: yes)")
+    parser.add_argument("--disable-plugin", action="store_true", default=False,
+                        help="Do NOT add memchorus to plugins.enabled (default: add it)")
 
     args = parser.parse_args()
     profile = args.profile or os.environ.get("HERMES_KANBAN_PROFILE") or "default"
 
     if not args.dry_run:
         write_config(profile=profile, data_dir=args.data_dir)
-        if args.enable_plugin:
+        if not args.disable_plugin:
             enable_plugin(profile=profile)
     else:
         print(generate_config(profile=profile, data_dir=args.data_dir))

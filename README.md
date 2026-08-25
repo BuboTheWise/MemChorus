@@ -341,7 +341,7 @@ memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_
 memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
 memchorus-init --dry-run                      # preview the generated YAML without writing
 memchorus-init -p my_agent -d /opt/data       # custom data directory
-memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
+memchorus-init --disable-plugin               # do NOT add memchorus to plugins.enabled (default: add it)
 ```
 
 **Options:**
@@ -351,7 +351,7 @@ memchorus-init --enable-plugin                # add memchorus to plugins.enabled
 | `--profile <slug>` | `-p <slug>` | Agent/human profile slug. Defaults to `$HERMES_KANBAN_PROFILE` or `"default"` |
 | `--data-dir <path>` | `-d <path>` | Absolute data directory. Defaults to `{DEFAULT_DATA_DIR}/<profile>` |
 | `--dry-run` | — | Print generated YAML to stdout without writing a file |
-| `--enable-plugin` | — | Add `memchorus` to `plugins.enabled`. Default: `yes` |
+| `--disable-plugin` | — | Do NOT add `memchorus` to `plugins.enabled`. Default: `add it` |
 
 The command creates a routing config with namespaced wing maps, sets
 ``skip_mcp: false`` for live MemPalace transport, and optionally adds
@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.04 (current — 2026-08-25)
+### v2.0.05 (current — 2026-08-24)
+
+- Auto-initialization plugin toggle now actually works: `memchorus-init --enable-plugin` was always-on (a `store_true`/`default=True` bug), so plugin enablement could never be turned off. Replaced with a `--disable-plugin` toggle (off by default), fixing auto-init plugin enablement and the stale entry-point group comment in hooks.py. Closes #129 and #133.
+
+### v2.0.04 (2026-08-25)
 
 - Merged GH-96 recall char-cap feature (score-based entry selection, configurable limit) and GH-103 MCP resilience + cross-source merge + profile isolation tests. All branches cleaned up.
 

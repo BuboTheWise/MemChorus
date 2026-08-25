@@ -249,7 +249,7 @@ def _try_distill_prohibition(text: str, orchestrator) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Hook class — discovered by Hermes via entry_points["hermes.plugins.lifecycle"]
+# Hook class — discovered by Hermes via entry_points["hermes_agent.plugins"]
 # ---------------------------------------------------------------------------
 
 class MemChorusHooks:
