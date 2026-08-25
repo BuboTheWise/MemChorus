@@ -309,6 +309,85 @@ class TestEvictionDuplicateDetection(unittest.TestCase):
         self.assertEqual(total_handled, 5)
 
 
+class TestEvictionStructuralCleanup(unittest.TestCase):
+    """§4.1 — structural_cleanup must actually purge empty drawers (B4)."""
+
+    def setUp(self):
+        from memchorus.lifecycle_eviction import EvictionEngine
+
+        self.engine = EvictionEngine(
+            importance_min=0.15,
+            duplicate_cluster_max=3,
+            similarity_min=0.75,
+            archive_grace_days=30,
+            archive_score_penalty=-0.7,
+        )
+
+    def test_purge_fn_invoked_for_every_empty_drawer_and_counted(self):
+        """Acceptance 1: purge_fn is called per empty key; count == successful purges."""
+        calls = []
+
+        def purge_fn(source, drawer_key):
+            calls.append((source, drawer_key))
+            return True
+
+        audit = []
+
+        def audit_log(**kwargs):
+            audit.append(kwargs)
+
+        drawers = {
+            "mempalace": ["", ""],          # two empty (drained) drawers
+            "hermes_memory": [""],          # one empty drawer
+        }
+
+        count = self.engine.structural_cleanup(drawers, purge_fn, audit_log)
+
+        self.assertEqual(count, 3)
+        self.assertEqual(len(calls), 3)
+        # purge_fn(source, drawer_key) — source from the map key
+        self.assertIn(("mempalace", ""), calls)
+        self.assertIn(("hermes_memory", ""), calls)
+        self.assertEqual(len(audit), 3)
+        self.assertTrue(all(entry.get("purged") is True for entry in audit))
+
+    def test_nonempty_drawers_not_purged_and_not_counted(self):
+        """Acceptance 2: drawers still holding keys are left untouched."""
+        calls = []
+
+        def purge_fn(source, drawer_key):
+            calls.append((source, drawer_key))
+            return True
+
+        drawers = {
+            "mempalace": ["drawer_A", "drawer_B"],   # still holding content
+            "hermes_memory": ["drawer_C"],
+        }
+
+        count = self.engine.structural_cleanup(drawers, purge_fn, lambda **k: None)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(calls, [])
+
+    def test_purge_fn_none_does_not_raise_and_counts_zero(self):
+        """Acceptance 3: purge_fn=None degrades gracefully."""
+        drawers = {"mempalace": ["", ""] }
+
+        count = self.engine.structural_cleanup(drawers, None, lambda **k: None)
+
+        self.assertEqual(count, 0)
+
+    def test_failed_purge_call_is_not_counted(self):
+        """A purge_fn return of False is audit-logged but not counted."""
+        drawers = {"mempalace": ["", "drawer_D"]}
+
+        count = self.engine.structural_cleanup(
+            drawers, lambda source, key: False, lambda **k: None
+        )
+
+        self.assertEqual(count, 0)
+
+
 class TestEvictionArchiveState(unittest.TestCase):
     """Archive state tracking across phases."""
 
