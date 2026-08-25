@@ -228,7 +228,7 @@ class HermesDefaultMemorySource(MemorySource):
             # Format entries for simple storage
             formatted_entries = []
             for entry in entries:
-                timestamp = entry.get('timestamp', datetime.datetime.now().strftime('%Y-%m-%d'))
+                timestamp = entry.get('timestamp', datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y-%m-%d'))
                 content = entry.get('content', '')
                 formatted_entries.append(f"{timestamp}: {content}")
 
@@ -500,7 +500,7 @@ class HermesDefaultMemorySource(MemorySource):
                 'status': 'ready',
                 'found_memories': 0,
                 'source': self._name,
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
             }
 
         # Search for memories related to the decision context
@@ -521,7 +521,7 @@ class HermesDefaultMemorySource(MemorySource):
         return {
             'recommendations': recommendations,
             'source': self._name,
-            'timestamp': datetime.datetime.now().isoformat(),
+            'timestamp': datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
             'context_used': context
         }
 
@@ -546,12 +546,12 @@ class HermesDefaultMemorySource(MemorySource):
         # Log the proactive action if needed for tracking
         if success and context:
             # Create an action log in memory as a demonstration
-            action_key = f"action_{key}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            action_key = f"action_{key}_{datetime.datetime.now(tz=datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
             action_log = {
                 'action': 'proactive_save',
                 'memory_key': key,
                 'context': context,
-                'timestamp': datetime.datetime.now().isoformat(),
+                'timestamp': datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
                 'source': self._name
             }
             # Save the action log in a separate file to track proactive behavior
