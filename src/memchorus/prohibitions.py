@@ -175,7 +175,7 @@ _DEFAULT_SEED_RULES: List[Dict[str, Any]] = [
         "id": "guard-001-no-editable-install",
         "condition": "Never run pip install -e (editable install) inside ~/.hermes/ or any self-critical venv path. Always install from pushed GitHub commits only.",
         "trigger_keywords": ["pip install -e", "editable install", "pip install .", "-e ~/.hermes"],
-        "tool_call_check": r"pip\s+install\s+(?:\-e|\-\\s*e)\s+.*hermes",
+        "tool_call_check": r"pip\s+install\s+(?:-e|-\\s*e)\s+.*hermes",
         "severity": 3,
         "block_action": "Editable installs into self-critical venvs that break the CLI on path shifts",
         "rationale": "Aug 17 2026 incident: editable .pth shim in self-hosted venv caused ModuleNotFoundError for hermes_cli after path shift. Broken CLI = total agent outage until manual fix.",

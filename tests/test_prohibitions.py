@@ -146,6 +146,17 @@ class TestProhibition:
         rule._compile_patterns()
         assert not rule.matches_text("anything")
 
+    def test_guard001_tool_call_check_matches_editable_install_spacings(self):
+        import re
+        from memchorus.prohibitions import _DEFAULT_SEED_RULES
+        rule = next(
+            r for r in _DEFAULT_SEED_RULES
+            if r["id"] == "guard-001-no-editable-install"
+        )
+        pattern = re.compile(rule["tool_call_check"], re.IGNORECASE)
+        assert pattern.search("pip install -e ./hermes-agent")
+        assert pattern.search("pip install  -e  ./hermes-agent")
+
     def test_default_values(self):
         from memchorus.prohibitions import Prohibition as R3  # noqa: N806
         rule = R3(id="t6", condition="minimal")
