@@ -2,6 +2,13 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.05] - 2026-08-24
+
+### Fixed
+- **Auto-init plugin enablement toggle:** `memchorus-init --enable-plugin` used `action=store_true` with `default=True`, so the CLI branch was never actually disabled. Replaced with a `--disable-plugin` toggle (off by default) so plugin enablement is genuinely toggleable. Closes #129.
+- **Stale entry-point group reference:** a comment in `hooks.py` cited the plugin discovery group as `hermes.plugins.lifecycle`; corrected to the real group `hermes_agent.plugins` (as declared in `setup.py`). Closes #133.
+- **README CLI docs:** updated the `memchorus-init` example and option table to document the renamed `--disable-plugin` flag.
+
 ## [Unreleased — 2.0.1-pre] - 2026-08-21
 
 ### Fixed
