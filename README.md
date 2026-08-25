@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.07 (current — 2026-08-25)
+### v2.0.08 (current — 2026-08-25)
+
+- `guard-001-no-editable-install` prohibition rule — corrected the `tool_call_check` regex alternation typo. The second alternative was `\-\\s*e` (escaped dash + literal backslash before `\\s`), which made it unreachable in compiled form. Normalised to `-\\s*e` so both standard-spaced (`pip install -e …hermes`) and multi-spaced (`pip install  -e  …hermes`) invocations are matched. Added test `test_guard001_tool_call_check_matches_editable_install_spacings` to lock in the behaviour. Closes #130.
+
+### v2.0.07 (2026-08-25)
 
 - `lifecycle_merge.MergeEngine` class docstring now documents the correct eviction defaults (`similarity_min 0.75`, `duplicate_cluster_max 3`) to match the constructor. Docs-only; no behavior change. Closes #127.
 

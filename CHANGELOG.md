@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.08] - 2026-08-25
+
+### Fixed
+- **guard-001 regex alternation typo (closes #130):** the `tool_call_check` pattern in the `guard-001-no-editable-install` prohibition rule had a second regex alternative of `\-\\s*e` (escaped dash followed by a literal backslash before `\\s`). Because the alternative is anchored after `\\s+`, it could never match a real invocation — the first alternative `-e` was the only one that actually matched. Normalised to `-\\s*e`. Added `test_guard001_tool_call_check_matches_editable_install_spacings` to lock in `.search()` success on both `pip install -e ./hermes-agent` and `pip install  -e  ./hermes-agent`. No rule id/severity/condition/block_action/rationale changes.
+
 ## [2.0.07] - 2026-08-25
 
 ### Fixed
