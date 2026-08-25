@@ -387,7 +387,7 @@ class SessionSearchMemorySource(MemorySource):
                 'status': 'ready',
                 'found_memories': 0,
                 'source': self._name,
-                'timestamp': datetime.datetime.now().isoformat()
+                'timestamp': datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
             }
 
         query = ' '.join([str(v) for v in context.values() if v])
@@ -404,7 +404,7 @@ class SessionSearchMemorySource(MemorySource):
         return {
             'recommendations': recommendations,
             'source': self._name,
-            'timestamp': datetime.datetime.now().isoformat(),
+            'timestamp': datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
             'context_used': context
         }
 
