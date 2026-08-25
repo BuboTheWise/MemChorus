@@ -118,8 +118,8 @@ class MergeEngine:
     Config schema (from orchestrator config.merge_at_write):
         enabled: bool  (default True)
         strategy: "overwrite" | "append" | "union"  (default "overwrite")
-        eviction.similarity_min: float  (default 0.3)
-        eviction.duplicate_cluster_max: int  (default 5) -- min hits to trigger merge
+        eviction.similarity_min: float  (default 0.75)
+        eviction.duplicate_cluster_max: int  (default 3) -- min hits to trigger merge
     """
 
     STRATEGIES = {

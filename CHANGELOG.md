@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.07] - 2026-08-25
+
+### Fixed
+- **MergeEngine docstring defaults (closes #127):** the `lifecycle_merge.MergeEngine` class docstring documented `similarity_min 0.3` and `duplicate_cluster_max 5`, but the constructor actually uses `0.75` and `3`. The docstring was corrected to match the code; no behavior change.
+
 ## [2.0.06] - 2026-08-24
 
 ### Fixed
