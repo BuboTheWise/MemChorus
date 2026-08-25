@@ -498,7 +498,7 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1378 collected tests**.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 101 test files with **1,580 collected tests**.
 
 ### Benchmark Metrics (v1.7.0+)
 
