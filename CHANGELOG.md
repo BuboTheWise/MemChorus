@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.10] - 2026-08-25
+
+### Fixed
+- **Stale README test-suite counts (closes #128):** the Testing section claimed '90+ test modules with 1378 collected tests'. Corrected to the measured live collection: `101 test files with 1,585 collected tests` (verified against `pytest --co` on this branch). Docs-only; no code or behavior change. Bumps `__version__` 2.0.09 → 2.0.10 (the task's planned 2.0.06 had already been consumed by the UTC-timestamps fix).
+
 ## [2.0.09] - 2026-08-25
 
 ### Fixed
