@@ -168,7 +168,8 @@ class AutoRecallEngine:
         """Convenience wrapper: call BehavioralTrigger on *text*, then retrieve
         context for every detected decision point.
 
-        Returns a dict mapping DecisionPoint enum -> list of cached contexts.
+        Returns a dict keyed by decision-point type *name* (str, via
+        ``point.type.name``) -> the result list for that point.
         """
         if self._trigger is None:
             logger.warning("AutoRecallEngine has no trigger; cannot fire_for_text")
