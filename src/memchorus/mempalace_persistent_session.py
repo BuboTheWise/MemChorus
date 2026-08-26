@@ -50,7 +50,8 @@ class PersistentMcpSession:
 
         session = PersistentMcpSession(command=cmd, args=args, timeout=30)
         if session.start():
-            ok, data = session.call_tool("mempalace_search", {"query": "test"})
+            data = session.call_tool("mempalace_search", {"query": "test"})
+            # data is the parsed result dict, or None on failure
             # ... make more calls ...
             session.stop()
     """
@@ -101,8 +102,10 @@ class PersistentMcpSession:
     def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:  # type: ignore[misc]
         """Run one tool call through the persistent session.
 
-        Returns (True, parsed_dict) on success or (False, None) on failure.
-        The caller decides fallback policy.
+        Returns:
+            Dict[str, Any]: The parsed result payload on success.
+            None: On failure (session not alive, timeout, or no result).
+            The caller decides fallback policy.
         """
         if not self._state.alive:
             logger.warning("PersistentMcpSession.call_tool: session not alive")
