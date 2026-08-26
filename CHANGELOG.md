@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.09] - 2026-08-25
+
+### Fixed
+- **Relevance recency crash on naive ISO-8601 timestamps (closes #123):** `RelevanceScorer._score_recency` in `relevance_engine.py` compared offset-naive parsed datetimes against a timezone-aware "now", raising `TypeError` (and corrupting recall scores) whenever a memory timestamp carried no UTC offset. Naive parsed values are now normalised to UTC before the delta computation, matching the established pattern in `lifecycle_retention.py`. Added `TestScoreRecencyNaiveIsoTimestamps` regression suite: naive timestamps produce bounded float scores, naive and aware scoring agree to 6 decimal places, and `None`/unparseable input degrades to the neutral 0.5 floor.
+
 ## [2.0.08] - 2026-08-25
 
 ### Fixed
