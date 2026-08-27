@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.10 (current — 2026-08-25)
+### v2.0.11 (current — 2026-08-26)
+
+- **Orientation cache-key project unification (closes #125):** `orientation.py` now resolves the project value once and uses it identically when building the `_CacheRegistry` key in both the read and write paths. Previously the two paths could disagree (resolved vs. raw caller value), so a cache clear issued for one key shape left entries on the other shape serving stale results. New `TestClearProjectBothKeyShapes` regression suite locks in that a clear against either shape purges entries registered under the other and that a follow-up search re-runs. Docs/version bump only relative to behaviour; no API change.
+
+### v2.0.10 (2026-08-25)
 
 - README test-suite counts corrected to match live collection: `101 test files with 1,585 collected tests` (previously '90+ test modules / 1378 tests'). Docs-only fix; no behavior change. Closes #128.
 
