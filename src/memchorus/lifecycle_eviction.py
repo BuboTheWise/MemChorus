@@ -228,34 +228,59 @@ class EvictionEngine:
     def structural_cleanup(
         self,
         drawers_to_check: Dict[str, List[str]],
-        purge_fn: Callable[[str, str], bool],
-        audit_log: Callable[..., None],
+        purge_fn: Optional[Callable[[str, str], bool]] = None,
+        audit_log: Optional[Callable[..., None]] = None,
     ) -> int:
-        """§4.1 Drawer empty check — clean up empty drawers.
+        """§4.1 Drawer empty check — purge empty drawers.
+
+        Walks the supplied drawer map and deletes drawers that no longer
+        hold content, delegating the actual deletion to ``purge_fn``.
 
         Args:
             drawers_to_check: Mapping of ``source → list_of_drawer_keys``.
-                A drawer is considered "empty" if its key list is empty after
-                normal eviction processing.
-            purge_fn: Callback to delete a drawer/container.
-            audit_log: Audit logger callable.
+                A falsy (empty) drawer key marks a drawer that has been drained
+                by eviction and should now be purged; non-empty keys are left
+                untouched.
+            purge_fn: Callback ``purge_fn(source, drawer_key) -> bool`` that
+                performs the deletion and reports whether it succeeded.
+                When ``None``, empty drawers are still audit-logged but the
+                method degrades gracefully and counts 0 purges.
+            audit_log: Audit logger callable. Every empty drawer is recorded
+                here whether or not the purge itself succeeded.
 
         Returns:
-            Number of structural cleanups performed.
+            Number of drawers actually purged — i.e. the count of successful
+            (truthy) ``purge_fn`` calls. Unsuccessful or skipped purges are
+            not counted.
         """
         count = 0
         for source, drawers in drawers_to_check.items():
-            for drawer_key in drawers:
-                if not drawer_key:
-                    # Drawer key is empty — nothing to clean.
+            for drawer_key in drawers or []:
+                if drawer_key:
+                    # Drawer still holds content — nothing to clean.
                     continue
-                audit_log(
-                    action="structural_cleanup",
-                    memory_id=drawer_key,
-                    source=source,
-                    reason=PurgeReason.STRUCTURAL.value,
-                )
-                count += 1
+                if purge_fn is None:
+                    # No purger registered — log the attempt, do not count.
+                    if audit_log is not None:
+                        audit_log(
+                            action="structural_cleanup",
+                            memory_id=drawer_key,
+                            source=source,
+                            reason=PurgeReason.STRUCTURAL.value,
+                            purged=False,
+                        )
+                    continue
+                purged = bool(purge_fn(source, drawer_key))
+                if audit_log is not None:
+                    audit_log(
+                        action="structural_cleanup",
+                        memory_id=drawer_key,
+                        source=source,
+                        reason=PurgeReason.STRUCTURAL.value,
+                        purged=purged,
+                    )
+                if purged:
+                    count += 1
         return count
 
     # ------------------------------------------------------------------
