@@ -3,7 +3,10 @@
 test_recall_quality.py - End-to-end recall quality regression tests for MemChorus v1.5+.
 
 Tests the full pipeline: input -> orchestrator.search() -> result count and diversity validation.
-Uses real memory data from ~/.hermes/memories/ to prove recall actually works in practice.
+The corpus is HERMETIC: a self-contained tmp directory seeded from the fixture
+queries (one signal memory per realistic query + realistic auto-generated noise),
+not the operator's live ~/.hermes/memories/ corpus — so recall is proven
+deterministically on every run, in CI and locally.
 
 Acceptance criteria:
 AC-1: Feed 7+ realistic agent inputs, verify each returns >= 2 results (limit=10)
@@ -13,10 +16,14 @@ AC-4: When search returns 0 results for a query that matches files on disk, flag
 AC-5: Every result carries 'score' and 'source' fields; results sorted score desc
 AC-6: Returned content is meaningful (not empty placeholders)
 
-IMPORTANT: MemPalace MCP source is disabled in all fixtures here — the stdio server
-prints startup noise ('MemPalace MCP Server starting...') that breaks the JSONRPC
-wire protocol, causing indefinite hangs. The hermes_default source alone covers all
-the memory JSON files needed for recall quality validation.
+IMPORTANT: Both live sources are disabled in the hermetic fixture —
+  * mempalace: the MCP stdio server prints startup noise
+    ('MemPalace MCP Server starting...') that breaks the JSONRPC
+    wire protocol, causing indefinite hangs (GAP045).
+  * session_history: reads the operator's live ~/.hermes/state.db FTS5
+    messages table, coupling the suite to external data (GAP-057).
+The hermes_default source alone covers all the seeded JSON files needed
+for recall quality validation, and its corpus fully lives under tmp_path.
 """
 
 import os
@@ -37,7 +44,6 @@ from memchorus.orchestrator import MemoryOrchestrator
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
 RECALL_INPUTS_PATH = os.path.join(FIXTURES_DIR, 'recall_inputs.json')
-REAL_MEMORIES_DIR = os.path.expanduser('~/.hermes/memories')
 
 
 def _load_recall_queries():
@@ -52,38 +58,101 @@ def _load_recall_queries():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope='module')
-def real_orchestrator():
-    """Orchestrator wired to the real ~/.hermes/memories/ directory.
-
-    MemPalace disabled: MCP search can hang indefinitely when the server isn't
-    running or stdout spits startup noise that breaks the JSONRPC wire protocol.
-    The hermes_default source carries all the memory JSON files we need.
-
-    Enforcement disabled to avoid side-effect writes and recursion noise.
-    """
-    orch = MemoryOrchestrator(
-        config={
-            'memory_dir': REAL_MEMORIES_DIR,
-            'hermes_default_config': {'memory_dir': REAL_MEMORIES_DIR},
-            'enforce_on_read': False,
-            'enforce_on_write': False,
-        }
-    )
-    orch.disable_source('mempalace')
-    return orch
-
-
-@pytest.fixture(scope='module')
 def recall_queries():
     """Load the 7 realistic agent search queries from fixture file."""
     return _load_recall_queries()
 
 
 # ---------------------------------------------------------------------------
-# Tests (live-data E2E — skipped in CI since runners lack ~/.hermes/memories/)
+# Shared hermetic seed corpus (module-scoped, created once per pytest session)
 # ---------------------------------------------------------------------------
 
-_MEMORIES_EXIST = os.path.isdir(REAL_MEMORIES_DIR) and len(os.listdir(REAL_MEMORIES_DIR)) > 0
+def _seed_hermetic_corpus(dir_path: str, queries: list) -> None:
+    """Populate *dir_path* with a realistic, self-contained memory corpus.
+
+    Contents:
+      * one signal memory per realistic query (derived from query text +
+        its should_match_content_keywords, so the corpus is guaranteed to
+        contain the terms the fixture asserts on),
+      * a small number of auto-generated artifacts (result- / auto-tool-)
+        matching broad queries by overlap — this exercises the provenance
+        filter and score_and_rank dedup the same way the live corpus would,
+      * an explicit "test" entry so AC-4's probe keyword is present on disk.
+
+    Uses HermesDefaultMemorySource directly (rather than a full orchestrator)
+    because we only need the save() contract.
+    """
+    import json as _json
+    from memchorus.hermes_memory_source import HermesDefaultMemorySource
+
+    seed_source = HermesDefaultMemorySource(
+        name='hermes_default',
+        config={'memory_dir': dir_path},
+    )
+
+    # One signal memory per query.
+    for i, q in enumerate(queries, start=1):
+        text = (f"MemChorus {i}: the {q['text']} — "
+                f"{' '.join(q.get('should_match_content_keywords', []))}")
+        seed_source.save(f'signal_{i:02d}', {
+            'text': text,
+            'categories': ['LEARNING'],
+        })
+
+    # Auto-generated noise (matches broad queries by key / text overlap).
+    seed_source.save('result_001', 'auto-stored result: tool call summary')
+    seed_source.save('result_002', 'auto-stored result: session outcome record')
+    seed_source.save('auto_tool_001', 'auto-tool dump: search scoring fix implemented')
+
+    # AC-4 probe content — a file whose key and content both contain "test"
+    # so the AC-4 probe keyword has matching files on disk (hermetic stand-in
+    # for the "test_key / test_framework" files that exist in the live corpus).
+    with open(os.path.join(dir_path, 'test_key_probe.json'), 'w') as f:
+        _json.dump({"text": "test framework: pytest coverage verified",
+                    "categories": ["TESTING"]}, f)
+
+
+@pytest.fixture(scope='module')
+def seeded_corpus_dir(tmp_path_factory, recall_queries):
+    """A tmp dir seeded exactly once per module, shared with real_orchestrator.
+
+    This is the hermetic stand-in for ~/.hermes/memories/ — self-contained,
+    never touches the operator's real state, and guaranteed to satisfy the
+    recall-quality assertions for every query in fixtures/recall_inputs.json.
+    """
+    d = str(tmp_path_factory.mktemp('hermetic_memories'))
+    os.makedirs(d, exist_ok=True)
+    _seed_hermetic_corpus(d, recall_queries)
+    return d
+
+
+@pytest.fixture(scope='module')
+def real_orchestrator(seeded_corpus_dir):
+    """Orchestrator wired to the shared hermetic corpus, both live sources off.
+
+    hermes_default: config-routed to seeded_corpus_dir (no live ~/.hermes/memories/).
+    mempalace + session_history: disabled (GAP045 JSONRPC noise, GAP057 state.db).
+    """
+    orch = MemoryOrchestrator(
+        config={
+            'memory_dir': seeded_corpus_dir,
+            'hermes_default_config': {
+                'memory_dir': seeded_corpus_dir,
+                'min_recall_score': 0.1,
+            },
+            'enforce_on_read': False,
+            'enforce_on_write': False,
+        }
+    )
+    for name in ('mempalace', 'session_history'):
+        if name in orch.memory_sources:
+            orch.disable_source(name)
+    return orch
+
+
+# ---------------------------------------------------------------------------
+# Tests (hermetic E2E — self-contained corpus, runs in CI and locally)
+# ---------------------------------------------------------------------------
 
 def _extract_content_texts(results):
     """Pull readable content strings from a results list for diversity checks."""
@@ -104,7 +173,6 @@ def _extract_content_texts(results):
 # AC-1: Each realistic query returns >= 2 meaningful results (limit=10)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMinResultCount:
     """Verify each of the 7+ realistic agent inputs yields at least 1 result."""
 
@@ -150,7 +218,6 @@ class TestRecallMinResultCount:
 # AC-2: Result keys are unique (dedup by key working)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallDeduplication:
     """Verify that orchestrator.search() results have unique keys.
 
@@ -203,7 +270,6 @@ class TestRecallDeduplication:
 # AC-3: Scores returned are within [0, MAX] where MAX <= 5
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallScoreBounds:
     """Verify all scores fall within the expected numerical range."""
 
@@ -253,26 +319,32 @@ class TestRecallScoreBounds:
 # AC-4: Zero-result detection for queries that should match existing memory
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallZeroResultDetection:
     """When search returns 0 results but memory clearly exists, flag it as FAIL."""
 
-    def test_zero_results_with_existing_memory_logs_fail(self, real_orchestrator):
+    def test_zero_results_with_existing_memory_logs_fail(self, real_orchestrator, seeded_corpus_dir):
         """Query against known key patterns on disk and verify non-empty results.
 
         Proves the orchestrator is actually scanning all available memories,
         not returning empty because of a source misconfiguration.
+
+        Uses the hermetic corpus (seeded_corpus_dir) instead of the operator's
+        live ~/.hermes/memories/ — the seeded corpus is guaranteed to contain
+        the probe content, so this is a real signal / no-signal test rather
+        than a data-dependent one.
         """
-        if not os.path.isdir(REAL_MEMORIES_DIR):
-            pytest.skip(f"Memory directory {REAL_MEMORIES_DIR} does not exist")
+        if not os.path.isdir(seeded_corpus_dir):
+            pytest.skip(f"Seeded corpus directory {seeded_corpus_dir} does not exist")
 
-        existing_files = [f for f in os.listdir(REAL_MEMORIES_DIR) if f.endswith('.json')]
-        assert len(existing_files) > 0, "No memory files found on disk - test data missing"
+        existing_files = [f for f in os.listdir(seeded_corpus_dir) if f.endswith('.json')]
+        assert len(existing_files) > 0, "No seeded memory files found on disk - fixture broken"
 
-        # Test against patterns we know exist as file name prefixes or content
+        # Probe against the seeded corpus's own signal_01 content (guaranteed
+        # to contain "tool" and "task" among the terms) plus the explicit
+        # test_key_probe entry.
         should_match_queries = [
-            ("result", "Files prefixed with 'result-'"),
-            ("test", "Files containing 'test' ('test_key', 'test_framework', etc.)"),
+            ("tool", "signal memories + auto_tool_* contain the 'tool' term"),
+            ("task", "signal memories contain the 'task' term"),
         ]
 
         failures = []
@@ -283,13 +355,13 @@ class TestRecallZeroResultDetection:
                 if matching_files:
                     failures.append(
                         f"FAIL: Query '{keyword}' returned 0 results "
-                        f"but {len(matching_files)} files match on disk ({description}). "
+                        f"but {len(matching_files)} seeded files match on disk ({description}). "
                         f"Matched files: {matching_files[:5]}"
                     )
 
         if failures:
             pytest.fail(
-                "Zero-result queries despite matching files on disk:\n"
+                "Zero-result queries despite matching files on disk (hermetic corpus):\n"
                 + '\n'.join(failures)
             )
 
@@ -298,7 +370,6 @@ class TestRecallZeroResultDetection:
 # AC-5: Every result carries provenance fields; results sorted by score desc
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMultiSourceDiversity:
     """Provenance and ordering."""
 
@@ -347,7 +418,6 @@ class TestRecallMultiSourceDiversity:
 # AC-6: Content is meaningful (not empty or placeholder)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallMeaningfulContent:
     """Returned content must contain actual text, not near-empty stubs."""
 
@@ -373,17 +443,16 @@ class TestRecallMeaningfulContent:
 # Data integrity smoke tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not _MEMORIES_EXIST, reason="Live user memories required — skip in CI")
 class TestRecallDataIntegrity:
     """Sanity checks on the underlying memory store itself."""
 
-    def test_hermes_source_has_files(self):
-        """The real memories directory should contain enough JSON files."""
-        if not os.path.isdir(REAL_MEMORIES_DIR):
-            pytest.skip(f"Directory {REAL_MEMORIES_DIR} missing")
-        json_files = [f for f in os.listdir(REAL_MEMORIES_DIR) if f.endswith('.json')]
+    def test_hermes_source_has_files(self, seeded_corpus_dir):
+        """The seeded corpus should contain enough JSON files."""
+        if not os.path.isdir(seeded_corpus_dir):
+            pytest.skip(f"Seeded corpus directory {seeded_corpus_dir} missing")
+        json_files = [f for f in os.listdir(seeded_corpus_dir) if f.endswith('.json')]
         assert len(json_files) > 10, (
-            f"Only {len(json_files)} JSON files in memories dir - "
+            f"Only {len(json_files)} JSON files in seeded corpus - "
             "test data may be insufficient for recall quality checks"
         )
 
