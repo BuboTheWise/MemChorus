@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.11] - 2026-08-26
+
+### Fixed
+- **Orientation cache invalidation reached only one branch (closes #125):** in `orientation.py`, the per-key project identity for the `_CacheRegistry` key was computed separately in the cache-read path and the cache-write path, so a key written under the resolved project could be looked up under the raw caller value and vice-versa. `clear_orientation_cache()` / `clear_project()` therefore silently left entries on the other branch of the key, keeping stale results serving after a cache clear. The project value is now resolved once and used identically for both the lookup and the insert. Added `TestClearProjectBothKeyShapes` regression suite proving a clear issued against either key shape purges entries registered under the other, and that a subsequent search re-runs (cache miss) rather than returning the cleared entry. Bumps `__version__` 2.0.10 → 2.0.11.
+
 ## [2.0.10] - 2026-08-25
 
 ### Fixed
