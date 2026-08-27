@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.12] - 2026-08-26
+
+### Fixed
+- **`EvictionEngine.structural_cleanup` reported N cleanups while deleting nothing (closes #126):** `lifecycle_eviction.py` accepted a `purge_fn` callback but never invoked it, and the loop `continue`d on falsy drawer keys — the exact keys that represent drained, purge-eligible drawers — so the returned count accumulated against drawers that were actually left untouched. Empty (falsy) drawer keys are now purged through `purge_fn(source, drawer_key)`; the return count reflects only successful (truthy) purges; every attempt is audit-logged with a `purged=True/False` field. `purge_fn=None` degrades gracefully (attempt logged, 0 counted). Both `purge_fn` and `audit_log` are now `Optional[...] = None` so existing call sites that pass required values are unaffected. Added `TestEvictionStructuralCleanup` regression suite covering purge-fn invocation per empty key with count parity, non-empty drawers left un-purged and uncounted, `purge_fn=None` returning 0 without raising, and failed purges not being counted. Bumps `__version__` 2.0.11 → 2.0.12.
+
 ## [2.0.11] - 2026-08-26
 
 ### Fixed
