@@ -44,7 +44,15 @@ setup(
     ],
     extras_require={
         "mcp": [
-            "mcp>=1.0,<2.0",  # stdio transport for MemPalace MCP client (pin <2.0 to avoid breaking API)
+            # stdio transport for the MemPalace MCP client. MemChorus only imports
+            # StdioServerParameters, stdio_client and ClientSession (all lazy,
+            # inside functions) — every one of these symbols is present in both
+            # mcp 1.29.x and mcp 2.0.x, so the transport works across both major
+            # lines. Hermes base environments ship mcp 2.0.0; an upper pin of
+            # <2.0 forced pip to downgrade the shared venv on every
+            # `memchorus[mcp]` install and silently moved mcp out from under the
+            # rest of the agent runtime. Allow 2.x so both pin coherently.
+            "mcp>=1.29,<3.0",
         ],
         "dev": [
             "pytest>=7.0",

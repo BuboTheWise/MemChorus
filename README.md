@@ -371,7 +371,7 @@ MemChorus splits its runtime dependencies into a lean core plus optional extras 
 | Extra | Command | What it adds |
 |---|---|---|
 | **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
-| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
+| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.29,<3.0` so it coexists with the `mcp 2.0.0` that Hermes base environments already ship. |
 | **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
 
 You can combine extras: `"memchorus[mcp,dev]"` for full development.
@@ -381,7 +381,7 @@ You can combine extras: `"memchorus[mcp,dev]"` for full development.
 #### Version Compatibility Notes
 
 - **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
-- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
+- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.29,<3.0`. MemChorus' MCP usage is limited to `StdioServerParameters`, `stdio_client` and `ClientSession`, all of which are present in both the 1.29.x and 2.0.x API lines, so the transport works against either. The previous `<2.0` upper pin predated the confirmation that 2.0.x carries those symbols; it also forced a downgrade of any shared venv (e.g. the Hermes runtime) onto MCP 1.29.x during install, silently moving the pin out from under the rest of the stack. The widened range keeps both packages pin-compatible in a single environment.
 - If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
 
 ### MemPalace backend
@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.12 (current — 2026-08-26)
+### v2.0.13 (current — 2026-08-26)
+
+- **`[mcp]` extra pin conflict with Hermes base (closes #135):** the `[mcp]` extra in `setup.py` is now `mcp>=1.29,<3.0` (was `>=1.0,<2.0`). The old upper pin had been set defensively, before anyone confirmed that the client symbols MemChorus actually uses (`StdioServerParameters`, `stdio_client`, `ClientSession`) survive in MCP 2.x — they do. Hermes base environments already ship `mcp 2.0.0`, so the old pin was forcing `pip install "memchorus[mcp]"` to downgrade the shared venv onto MCP 1.29.x, silently moving the pin out from under the rest of the agent runtime. The widened range keeps both pins coherently resolvable in one environment. Verified: a venv at `mcp 2.0.0` installs `memchorus[mcp,dev]` without touching the installed `mcp`, and all six MemChorus modules import cleanly. No code change; dependency-range and docs update only.
+
+### v2.0.12 (2026-08-26)
 
 - **`EvictionEngine.structural_cleanup` parity (closes #126):** the method now actually purges drained drawers. Empty (falsy) drawer keys are deleted via the supplied `purge_fn(source, drawer_key)` callback; the returned count reflects only successful purges; every attempt is audit-logged with a `purged=True/False` field. `purge_fn=None` degrades gracefully to "attempt logged, 0 counted". Previously the loop `continue`d on falsy keys — the exact keys that represent drained, purge-eligible drawers — so the counter accumulated against drawers that were left untouched, reporting N cleanups while deleting nothing. New `TestEvictionStructuralCleanup` regression suite locks in purge-fn invocation per empty key with count parity, non-empty drawers left un-purged and uncounted, `purge_fn=None` returning 0 without raising, and failed purges not being counted.
 

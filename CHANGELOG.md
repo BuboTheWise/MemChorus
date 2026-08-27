@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.13] - 2026-08-26
+
+### Fixed
+- **`[mcp]` extra pinned `<2.0` while Hermes base already ships `mcp 2.0.0` (closes #135):** `setup.py` declared `mcp>=1.0,<2.0`, forcing pip to downgrade any shared venv (e.g. the live Hermes runtime) to MCP 1.29.x the moment `memchorus[mcp]` was installed, silently moving the pin out from under the rest of the agent stack. MemChorus only imports `StdioServerParameters`, `stdio_client` and `ClientSession` — all three symbols are present in both the 1.29.x and 2.0.x API lines — so the `<2.0` upper pin was a precaution that had no runtime basis and created a direct conflict with hermes-agent's `mcp==2.0.0`. The range is now `>=1.29,<3.0`, letting both pins coexist in one environment. Verified by installing `memchorus[mcp]` from a venv already at `mcp 2.0.0`: the venv keeps `mcp 2.0.0`, all six MemChorus modules import cleanly, and the MCP transport symbols remain present. No code change — dependency-range and docs only. Bumps `__version__` 2.0.12 → 2.0.13.
+
 ## [2.0.12] - 2026-08-26
 
 ### Fixed
