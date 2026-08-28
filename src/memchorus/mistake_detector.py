@@ -117,7 +117,15 @@ class MistakeDetector:
                 results.append(result)
 
         elapsed_us = (time.monotonic_ns() - start) / 1000
-        logger.debug("scan %d chars in %.2fμs → %d matches", len(user_text), elapsed_us, len(results))
+        # Gate the DEBUG emit: this runs on the hot path and is outside the
+        # timing window the perf test measures, but unguarded it still forces a
+        # record build + format call on every scan when any DEBUG handler is
+        # attached (e.g. pytest's logging plugin), tipping the budget.
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "scan %d chars in %.2fμs → %d matches",
+                len(user_text), elapsed_us, len(results),
+            )
         return results
 
     def classify_and_flag(self, user_text: str) -> Tuple[int, int]:

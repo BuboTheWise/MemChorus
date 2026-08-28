@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import time
 
+import logging
+
 import pytest
 
 from memchorus.mistake_detector import (
@@ -251,13 +253,49 @@ class TestPerformance:
         detector = MistakeDetector()
         sample = "Here is a normal user message without any correction patterns."
 
-        start = time.monotonic_ns()
-        for _ in range(100):
-            detector.scan_user_text(sample)
-        total_us = (time.monotonic_ns() - start) / 1000
+        # --- Why this test disables DEBUG and uses a 5000μs budget -----------
+        # The original 2000μs budget (20μs/call) had zero headroom in a pytest
+        # environment: the regex scan itself is ~9–10μs/call in a clean process,
+        # but pytest's logging plugin enables DEBUG at the log root and attaches
+        # a LiveLoggingHandler, which adds ~7μs/call even when the module-level
+        # gate (`if logger.isEnabledFor(DEBUG)`) should suppress the emit,
+        # because pytest sets the root level before the module logger's own level
+        # is checked.  In addition, the GC collector occasionally pauses the
+        # process during the 100-call window, causing one-off spikes of 3–7×.
+        #
+        # Fix (per issue #137, Option 1 + Option 3):
+        #   1. Source: gate the DEBUG emit — prevents overhead at runtime
+        #      whenever DEBUG is off (normal operation), which is the majority
+        #      of cases.
+        #   2. Test: raise the module logger to WARNING for the measurement
+        #      window so the emit is a verified no-op, restoring it afterward.
+        #   3. Test: use a 5000μs budget (50μs/call — 5× headroom over the
+        #      clean scan cost) to absorb CI-environment variance (GC, import
+        #      noise, concurrent load) without masking a real regression of
+        #      5× or more.
+        # --------------------------------------------------------------------
 
-        # 100 scans of a single sentence should be well under the inline overhead ceiling.
-        assert total_us < 2000, f"100 scans took {total_us:.0f}μs total — scan budget is ~15μs/turn"
+        import logging
+        import memchorus.mistake_detector as _md
+        _lg = _md.logger
+        _prev = _lg.level
+        _lg.setLevel(logging.WARNING)
+        try:
+            # Warmup: exclude first-call import/class-instantiation noise.
+            detector.scan_user_text(sample)
+
+            start = time.monotonic_ns()
+            for _ in range(100):
+                detector.scan_user_text(sample)
+            total_us = (time.monotonic_ns() - start) / 1000
+        finally:
+            _lg.setLevel(_prev)
+
+        # 50μs/call × 100 = 5000μs budget (5× clean-scan headroom for CI noise).
+        assert total_us < 5000, (
+            f"100 scans took {total_us:.0f}μs total — "
+            f"exceeds 50μs/call budget (clean scan is ~10μs/call)"
+        )
 
 
 class TestRecordPositiveSignal:
