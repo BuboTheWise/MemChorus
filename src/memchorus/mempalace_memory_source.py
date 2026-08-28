@@ -817,8 +817,47 @@ class _McpClient:
             [data] if isinstance(data, dict) else []
         )
 
+    # Textual rejection markers used when an MCP response carries no
+    # structured ``success`` field. The word ``"wing"`` itself is deliberately
+    # NOT in this list — a real wing name can contain it — but the rejection
+    # phrases *"unknown wing" / "does not exist"* are. (#136)
+    _DRAWER_ERR_WORDS = (
+        "error",
+        "failed",
+        "failure",
+        "not found",
+        "no such",
+        "does not exist",
+        "unknown wing",
+        "unknown room",
+        "empty",
+        "invalid",
+        "missing",
+        "rejected",
+    )
+
+    def _drawer_call_succeeded(self, result: Any) -> bool:
+        """Interpret a ``mempalace_add_drawer`` response as success/failure.
+
+        Prefers the structured ``success`` flag the MemPalace MCP server emits
+        (``{"success": True, ...}`` / ``{"success": False, "error": ...}``) and
+        only falls back to keyword scanning when that field is absent. (#136)
+        """
+        if isinstance(result, dict):
+            if "success" in result:
+                return bool(result.get("success"))
+            text = str(
+                result.get("result", result.get("error", ""))
+                if result.get("result") is not None or result.get("error") is not None
+                else result
+            ).lower()
+            return not any(word in text for word in self._DRAWER_ERR_WORDS)
+
+        text = str(result).lower()
+        return not any(word in text for word in self._DRAWER_ERR_WORDS)
+
     def add_drawer(self, wing: str, room: str, content: str) -> bool:
-        """mempalace_add_drawer -> True on success."""
+        """mempalace_add_drawer -> True only when the server accepted the write."""
         result = self.call_tool(
             "mempalace_add_drawer",
             {"wing": wing, "room": room, "content": content},
@@ -826,15 +865,7 @@ class _McpClient:
         if result is None:
             return False
 
-        text_result = (
-            str(result.get("result", ""))
-            if isinstance(result, dict)
-            else str(result)
-        ).lower()
-        for err_word in ("error", "failed", "not found"):
-            if err_word in text_result:
-                return False
-        return True
+        return self._drawer_call_succeeded(result)
 
     def kg_query(self, entity: str) -> Optional[List[Dict[str, Any]]]:
         """mempalace_kg_query -> list of fact dicts."""
@@ -900,6 +931,12 @@ class MemPalaceMemorySource(MemorySource):
     # Built-in routing tables — used when config provides no override or is empty.
     _WING_MAP_DEFAULT = _DEFAULT_WING_MAP
     _ROOM_MAP_DEFAULT = _DEFAULT_ROOM_MAP
+
+    # (#139) Recall-score floor. MemPalace reports ``similarity`` as a
+    # [0, 1]-scale figure (cosine distance mapped to similarity, higher =
+    # better) — so a *lower-bound* threshold keeps strong hits and drops the
+    # weak/off-topic ones, mirroring the siblings' MIN_RECALL_SCORE default.
+    MIN_RECALL_SCORE = 0.5
 
     def _ensure_connected(self) -> bool:
         """Establish MCP connection if it hasn't been established yet.
@@ -1054,6 +1091,7 @@ class MemPalaceMemorySource(MemorySource):
                 query=query, limit=limit, wing=wing, room=room
             )
             if mp_results:
+                min_score = self._resolve_min_recall_score()
                 for r in mp_results:
                     wing = r.get("wing", "unknown") if isinstance(r, dict) else None
                     room = r.get("room", "unknown") if isinstance(r, dict) else None
@@ -1070,7 +1108,15 @@ class MemPalaceMemorySource(MemorySource):
                         "source": self._name,
                     }
                     if "similarity" in r:
-                        entry["score"] = r["similarity"]
+                        try:
+                            entry["score"] = float(r["similarity"])
+                        except (TypeError, ValueError):
+                            entry["score"] = 0.0
+                    # (#139) Drop weak / off-topic results before injection.
+                    # Entries without a score (no similarity reported) are kept —
+                    # the floor only applies to scored MCP hits.
+                    if "score" in entry and entry["score"] < min_score:
+                        continue
                     results.append(entry)
                     seen_keys.add(comp_key)
 
@@ -1144,6 +1190,14 @@ class MemPalaceMemorySource(MemorySource):
             return json.dumps(value)
         except (TypeError, ValueError):
             return str(value)
+
+    def _resolve_min_recall_score(self) -> float:
+        """Effective recall floor, overridable via ``config['min_recall_score']``.
+
+        Mirrors ``HermesMemorySource`` / ``SessionSearchMemorySource`` so the
+        MemPalace source honours the same threshold contract. (#139)
+        """
+        return self.config.get("min_recall_score", self.MIN_RECALL_SCORE)
 
     @staticmethod
     def _from_str(text: str) -> Any:

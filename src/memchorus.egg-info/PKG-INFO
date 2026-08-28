@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: memchorus
-Version: 2.0.0
+Version: 2.0.15
 Summary: Memory orchestration system for Hermes agents
 Home-page: https://github.com/BuboTheWise/MemChorus
 Author: MemChorus Project
@@ -14,7 +14,7 @@ License-File: LICENSE
 Requires-Dist: pydantic<3.0,>=2.0
 Requires-Dist: pyyaml>=5.4
 Provides-Extra: mcp
-Requires-Dist: mcp<2.0,>=1.0; extra == "mcp"
+Requires-Dist: mcp<3.0,>=1.29; extra == "mcp"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-xdist>=3.0; extra == "dev"
@@ -31,8 +31,6 @@ Dynamic: requires-python
 Dynamic: summary
 
 # MemChorus
-
-Current version: 2.0.0
 
 Memory orchestration layer for AI agents that need persistent, intelligent context across sessions and tools.
 
@@ -99,7 +97,7 @@ The system must stay functional even if every enhancement source disappears. The
 | `StorageResilience` | Retry-with-backoff and per-drawer isolation layer for ChromaDB/MemPalace saves; prevents transient failures from aborting entire batches |
 | `MemPalacePersistentSession` | Long-lived MCP session keeping the server alive across calls to prevent ChromaDB compactor crashes from repeated spawn-and-kill cycles |
 | `Orientation` | Session-start recall that injects project context (KG triples + semantic search, limited to 5 items) with 15s cache TTL |
-| `WorkflowCompliance` | Automated verification that dev feedback loops (squash-merge -> push -> install-from-SHA -> verify) completed; surfaces gaps as metadata |
+| `WorkflowCompliance` | Automated verification that development lifecycle (branch -> implement -> test -> review -> merge -> push -> install-from-SHA) completed; surfaces compliance gaps as metadata |
 | `ProhibitionsManager` | Behavioral guard system — scans agent input before LLM calls, matches trigger keywords against seed + distilled rules, injects [[GUARD]] blocks into system context to prevent self-breaking actions (env corruption, data loss, toolchain breakage) |
 | `ProhibitionDistiller` | Auto-creates prohibition guards from observed critical mistakes at runtime: classifies error severity via keyword matching (CRITICAL/LOW), applies cooldown gating (24h default), extracts trigger keywords and emits structured rules via `ProhibitionsManager` |
 
@@ -139,43 +137,52 @@ The orchestrator exposes three core operations:
 
 Graceful degradation is built in at every level. If MemPalace is unreachable, the system falls back to Hermes default files transparently. No source failure brings down the whole layer.
 
-### Feedback Loop Injection Path (Extensibility)
-
-Custom feedback loops defined in `~/.hermes/custom_loops/*.yaml` are loaded at bootstrap and injected into the same hook surface that powers memory recall:
-
+### Behavioral Guard Injection Path
+ 
+Before every LLM call, the `on_pre_llm_call` hook fires three sequential phases:
+ 
 ```mermaid
 sequenceDiagram
     participant Agent
     participant Hook as pre_llm_call Hook
-    participant Loader as YAML Loader
-    participant Detector as Feedback Detector
-    participant Escalation as Escalation Engine
+    participant Guard as ProhibitionsManager
+    participant Recall as AutoRecallEngine
+    participant Distill as ProhibitionDistiller
     participant LLM as LLM API
-
+ 
     Agent->>Hook: user_message arrives
-    Hook->>Loader: load_definitions() (cached after first call)
-    Loader->>Loader: scan config/custom_loops/*.yaml
-    Loader-->>Hook: validated loop definitions
-    Hook->>Detector: evaluate_conditions(user_message, state)
-    Detector->>Detector: check conversation_length, repetition_entropy, keyword_pattern
-    alt conditions match
-        Detector->>Escalation: determine_level(loop_name, trigger_count)
-        Escalation->>Escalation: check cooldown window
-        alt within cooldown
-            Escalation-->>Hook: skip (cooldown active)
-        else cooldown expired
-            Escalation->>Escalation: advance escalation step
-            Escalation-->>Hook: correction_prompt (filled template)
-        end
+    Hook->>Guard: scan_text(user_message, rules)
+    alt guard match
+        Guard-->>Hook: [[GUARD]] blocks (hard gates)
     else no match
-        Detector-->>Hook: pass through (no intervention)
+        Guard-->>Hook: clear (proceed)
     end
-    Hook->>Hook: inject into pre_llm_call context string
+    Hook->>Recall: query relevant memories by domain
+    Recall-->>Hook: scored context results
+    Hook->>Hook: compose injected context string
     Hook->>LLM: augmented prompt sent
-    Note over Loader,Escalation: Memory recall and feedback loops share<br/>the same injection path — soft context,<br/>not authoritative system-prompt override
+    Note over Guard,Distill: Guards run FIRST as hard gates before<br/>any soft recall context is composed.
 ```
 
-**Key property:** Feedback loop corrections travel through the exact same `pre_llm_call` context channel as memory recall — they are soft nudges injected into the prompt, never hard overrides. Malformed YAML definitions log warnings and get disabled silently; they cannot crash the gateway process.
+**Guard scan:** ProhibitionsManager loads seed rules from `prohibitions.jsonl` plus any distilled rules created at runtime. Input text is scanned against trigger keywords; CRITICAL matches inject `[[GUARD]]` blocks into the prompt — hard gates that block self-breaking actions (environment corruption, data loss, toolchain breakage) rather than soft suggestions that can be ignored.
+
+**Distillation:** When post-action storage encounters a CRITICAL mistake (via MistakeDetector classification), ProhibitionDistiller automatically converts it into an enforceable prohibition rule subject to cooldown gating (24h default) and per-session caps (max 2 new rules) to prevent guard explosion.
+
+### Lifecycle Opt-Out Toggles
+
+The prohibitions system supports granular opt-out controls via the `prohibitions` config block. Individual provisions can be disabled by name using `disabled_provisions`, or the entire system toggled off with `enabled: false`:
+ 
+```yaml
+prohibitions:
+  enabled: true                        # master toggle (default: true)
+  distillation:
+    enabled: true                      # enable automatic rule creation from mistakes
+    minimum_severity: 3                # only CRITICAL becomes a rule     (default: 3)
+    max_rules_per_session: 2           # cap new guards per cycle         (default: 2)
+    cooldown_hours: 24.0              # same-pattern cooling window      (default: 24h)
+  disabled_provisions:                 # opt-out specific rule names
+    - "no_force_pip"                   # example: allow pip --force-reinstall
+```
 
 ## Behavioral Enforcement Pipeline
 
@@ -356,7 +363,7 @@ For Hermes agents running under PEP 668 (externally-managed environments), use t
 
 **Do not use editable installs (`pip install -e .`) in production or shared environments.** Editable links create local path dependencies that break deployment reproducibility. Only use editable mode during active development of the MemChorus package itself.
 
-### Quick Bootstrap (new in v2.0.0)
+### Quick Bootstrap (new in v2.0.01)
 
 Once installed, run the bundled bootstrap command to generate a working
 routing configuration in one step — no manual YAML editing required:
@@ -366,7 +373,7 @@ memchorus-init --profile my_agent             # generates ~/.hermes/profiles/my_
 memchorus-init                                # defaults to $HERMES_KANBAN_PROFILE or "default"
 memchorus-init --dry-run                      # preview the generated YAML without writing
 memchorus-init -p my_agent -d /opt/data       # custom data directory
-memchorus-init --enable-plugin                # add memchorus to plugins.enabled (default: yes)
+memchorus-init --disable-plugin               # do NOT add memchorus to plugins.enabled (default: add it)
 ```
 
 **Options:**
@@ -376,7 +383,7 @@ memchorus-init --enable-plugin                # add memchorus to plugins.enabled
 | `--profile <slug>` | `-p <slug>` | Agent/human profile slug. Defaults to `$HERMES_KANBAN_PROFILE` or `"default"` |
 | `--data-dir <path>` | `-d <path>` | Absolute data directory. Defaults to `{DEFAULT_DATA_DIR}/<profile>` |
 | `--dry-run` | — | Print generated YAML to stdout without writing a file |
-| `--enable-plugin` | — | Add `memchorus` to `plugins.enabled`. Default: `yes` |
+| `--disable-plugin` | — | Do NOT add `memchorus` to `plugins.enabled`. Default: `add it` |
 
 The command creates a routing config with namespaced wing maps, sets
 ``skip_mcp: false`` for live MemPalace transport, and optionally adds
@@ -396,7 +403,7 @@ MemChorus splits its runtime dependencies into a lean core plus optional extras 
 | Extra | Command | What it adds |
 |---|---|---|
 | **none** (default) | `pip install memchorus` | Core orchestrator + HermesDefaultMemorySource. MemPalace source falls back to local JSON cache automatically. |
-| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.0,<2.0` because MCP 2.x introduced breaking API changes. |
+| **[mcp]** | `pip install "memchorus[mcp]"` | Live MCP stdio transport for real-time MemPalace knowledge graph and semantic search. Pins `mcp>=1.29,<3.0` so it coexists with the `mcp 2.0.0` that Hermes base environments already ship. |
 | **[dev]** | `pip install "memchorus[dev]"` | Test suite dependencies (`pytest`). |
 
 You can combine extras: `"memchorus[mcp,dev]"` for full development.
@@ -406,7 +413,7 @@ You can combine extras: `"memchorus[mcp,dev]"` for full development.
 #### Version Compatibility Notes
 
 - **Pydantic** is pinned to `>=2.0,<3.0`. This avoids breaking changes that Pydantic 3.x may introduce while remaining fully compatible with Hermes base environments.
-- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.0,<2.0` because the MCP 2.0 release ships with a different dependency set (`httpx2`, `mcp-types==2.0.0`) and breaking client API changes. The `<2.0` upper pin protects installed environments from silent breakage when pip resolves the latest available version.
+- **MCP** (when installed via the `[mcp]` extra) is pinned to `>=1.29,<3.0`. MemChorus' MCP usage is limited to `StdioServerParameters`, `stdio_client` and `ClientSession`, all of which are present in both the 1.29.x and 2.0.x API lines, so the transport works against either. The previous `<2.0` upper pin predated the confirmation that 2.0.x carries those symbols; it also forced a downgrade of any shared venv (e.g. the Hermes runtime) onto MCP 1.29.x during install, silently moving the pin out from under the rest of the stack. The widened range keeps both packages pin-compatible in a single environment.
 - If you install MemChorus without the `[mcp]` extra, the MemPalace memory source still works — it uses a local JSON cache as fallback. Install `memchorus[mcp]` only if your environment has a running MemPalace MCP server and you want live connectivity.
 
 ### MemPalace backend
@@ -523,7 +530,7 @@ pytest -v
 RUN_LIVE_MCP=1 pytest -v
 ```
 
-The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 90+ test modules with **1378 collected tests**.
+The test suite covers relevance scoring, graceful degradation when sources are down, profile isolation boundaries, orchestration logic, and end-to-end MCP failure recovery across 101 test files with **1,585 collected tests**.
 
 ### Benchmark Metrics (v1.7.0+)
 
@@ -576,7 +583,72 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.0 (current — production release)
+### v2.0.15 (current — 2026-08-28)
+
+- **MemPalace source robustness (closes #136, #139, #143):** three latent reliability gaps in the live MemPalace path are now fixed. (1) `_McpClient.add_drawer()` only keyword-matched the response text, so a server reply of `{"success": false, ...}` with no error word read as a phantom success and corrupted the local mirror. It now reads the MemPalace MCP server's structured `{"success": bool}` flag first and falls back to keyword scanning only when that field is absent. (2) `MemPalaceMemorySource` now enforces a `MIN_RECALL_SCORE` floor (default 0.5, overridable via `config['min_recall_score']`) on MCP search hits — weak / off-topic results (`similarity` below the floor) are dropped before injection, matching the sibling `HermesMemorySource` / `SessionSearchMemorySource` contract; `similarity` is higher=better, so the lower-bound keeps strong hits. (3) `hooks._format_context_block()` now unwraps structured content payloads (`{"text": ...}`, nested `{"content": ...}`) into clean strings via a `_unwrap_content_field()` helper with a `json.dumps` fallback, instead of leaking `{'key': ...}` dict reprs into the injected context block. New `test_mempalace_robustness_fixes.py` regression suite (28 tests) locks in structured-success detection, the recall floor (default/override/boundary/non-numeric), and content unwrapping (helper direct + end-to-end through the formatter). Bumps `__version__` 2.0.14 → 2.0.15.
+
+### v2.0.14 (2026-08-28)
+
+- **Hot-path DEBUG emit gated (closes #137):** `MistakeDetector.scan_user_text` no longer builds a formatted `logger.debug` record on every scan. The emit is now under `if logger.isEnabledFor(logging.DEBUG)`, so in normal (non-debug) operation it is a true no-op and costs only a level check. The `TestPerformance::test_scan_time_within_budget` budget was widened from 2000µs to 5000µs, with the test raising the module logger to WARNING for the measurement window so the emit is a verified no-op during the timing. This restores a stable, deterministic perf signal on CI where pytest's logging plugin attaches a DEBUG `LiveLoggingHandler` and previously put the 2000µs budget right on the floor (~50–90% of the ceiling with zero headroom), producing ~70% non-deterministic failures.
+
+### v2.0.13 (2026-08-26)
+
+- **`[mcp]` extra pin conflict with Hermes base (closes #135):** the `[mcp]` extra in `setup.py` is now `mcp>=1.29,<3.0` (was `>=1.0,<2.0`). The old upper pin had been set defensively, before anyone confirmed that the client symbols MemChorus actually uses (`StdioServerParameters`, `stdio_client`, `ClientSession`) survive in MCP 2.x — they do. Hermes base environments already ship `mcp 2.0.0`, so the old pin was forcing `pip install "memchorus[mcp]"` to downgrade the shared venv onto MCP 1.29.x, silently moving the pin out from under the rest of the agent runtime. The widened range keeps both pins coherently resolvable in one environment. Verified: a venv at `mcp 2.0.0` installs `memchorus[mcp,dev]` without touching the installed `mcp`, and all six MemChorus modules import cleanly. No code change; dependency-range and docs update only.
+
+### v2.0.12 (2026-08-26)
+
+- **`EvictionEngine.structural_cleanup` parity (closes #126):** the method now actually purges drained drawers. Empty (falsy) drawer keys are deleted via the supplied `purge_fn(source, drawer_key)` callback; the returned count reflects only successful purges; every attempt is audit-logged with a `purged=True/False` field. `purge_fn=None` degrades gracefully to "attempt logged, 0 counted". Previously the loop `continue`d on falsy keys — the exact keys that represent drained, purge-eligible drawers — so the counter accumulated against drawers that were left untouched, reporting N cleanups while deleting nothing. New `TestEvictionStructuralCleanup` regression suite locks in purge-fn invocation per empty key with count parity, non-empty drawers left un-purged and uncounted, `purge_fn=None` returning 0 without raising, and failed purges not being counted.
+
+### v2.0.11 (2026-08-26)
+
+- **Orientation cache-key project unification (closes #125):** `orientation.py` now resolves the project value once and uses it identically when building the `_CacheRegistry` key in both the read and write paths. Previously the two paths could disagree (resolved vs. raw caller value), so a cache clear issued for one key shape left entries on the other shape serving stale results. New `TestClearProjectBothKeyShapes` regression suite locks in that a clear against either shape purges entries registered under the other and that a follow-up search re-runs. Docs/version bump only relative to behaviour; no API change.
+
+### v2.0.10 (2026-08-25)
+
+- README test-suite counts corrected to match live collection: `101 test files with 1,585 collected tests` (previously '90+ test modules / 1378 tests'). Docs-only fix; no behavior change. Closes #128.
+
+### v2.0.09 (2026-08-25)
+
+- Recency scoring crash on naive ISO-8601 timestamps fixed in `relevance_engine.py`: offset-naive parsed datetimes are now normalised to UTC before the delta computation (previously a `TypeError` that corrupted recall scores), matching the existing `lifecycle_retention.py` pattern. New `TestScoreRecencyNaiveIsoTimestamps` regression suite locks in bounded scoring, naive==aware parity, and neutral 0.5 fallback for missing/garbage timestamps. Closes #123.
+
+### v2.0.08 (2026-08-25)
+
+- `guard-001-no-editable-install` prohibition rule — corrected the `tool_call_check` regex alternation typo. The second alternative was `\-\\s*e` (escaped dash + literal backslash before `\\s`), which made it unreachable in compiled form. Normalised to `-\\s*e` so both standard-spaced (`pip install -e …hermes`) and multi-spaced (`pip install  -e  …hermes`) invocations are matched. Added test `test_guard001_tool_call_check_matches_editable_install_spacings` to lock in the behaviour. Closes #130.
+
+### v2.0.07 (2026-08-25)
+
+- `lifecycle_merge.MergeEngine` class docstring now documents the correct eviction defaults (`similarity_min 0.75`, `duplicate_cluster_max 3`) to match the constructor. Docs-only; no behavior change. Closes #127.
+
+### v2.0.06 (2026-08-24)
+
+- Producer timestamps are now UTC-aware: the `proactive_check` / `proactive_save` emission sites in the Hermes and Session-Search memory sources previously stamped naive `datetime.now()` values (no timezone), so their ISO timestamps were ambiguous across machines. All seven now emit `datetime.now(tz=timezone.utc)` — `+00:00` offsets, correct ordering, no local-timezone drift. Closes #124.
+
+### v2.0.05 (2026-08-24)
+
+- Auto-initialization plugin toggle now actually works: `memchorus-init --enable-plugin` was always-on (a `store_true`/`default=True` bug), so plugin enablement could never be turned off. Replaced with a `--disable-plugin` toggle (off by default), fixing auto-init plugin enablement and the stale entry-point group comment in hooks.py. Closes #129 and #133.
+
+### v2.0.04 (2026-08-25)
+
+- Merged GH-96 recall char-cap feature (score-based entry selection, configurable limit) and GH-103 MCP resilience + cross-source merge + profile isolation tests. All branches cleaned up.
+
+### v2.0.02
+
+- `skip_init_sources` config flag for test isolation: orchestrator auto-registers live sources that pollute unit tests; new flag lets tests opt out while preserving backward compatibility. Fix branch merged and verified via pytest against installed artifact from pushed SHA.
+
+### v2.0.01 (2026-08-23)
+
+Fix cycle closing GH#95 through GH#104 on 2026-08-23:
+
+| Feature | Branch/PRs | Tests | SHA (squash merge) | Verified |
+|---|---|---|---|---|
+| Cross-source deduplication with Jaccard similarity | `feat/cross-source-dedup-#95` / PR #110 | 14 | 2d1a74d, fixed 413f567 | ✅ Installed runtime pass |
+| Configurable max recall block chars (2000 default) | `feat/GH-96-recall-char-cap` / PR #112 | 12 | 99b41c5, fixed 4b5e7e3 | ✅ Implemented and tested |
+| Domain-aware minimum recall score thresholds | `feat/domain-thresholds-#98` / PR #111 | 10 | ec1d646 | ✅ Installed runtime pass |
+| Two-tier recency scoring (recent vs mature) | `feat/GH-99-two-tier-recency` / PR #120 | 13 | a394ebf | ✅ Implemented and tested |
+| Feedback loop rebuild with persistence, fingerprinting | `feat/GH-101-feedback-loop-rebuild` / PR #112 | 13 | 5f62f9c | ✅ Installed runtime pass |
+| Prohibitions opt-out toggles (enabled / distillation_enabled) | `feat/GH-102-prohibitions-opt-out` / PR #113 | 10 | a08cd6c | ✅ Implemented and tested |
+| MCP resilience + cross-source merge + edge case tests | `feat/GH-103-test-coverage-enhancements` / PR #114 | 22 | 964008c | ✅ 527 results, 0 failures |
+| Architecture docs synced to v2.0 source reality | `fix/GH-104-docs-drift` / PR #115 | N/A | c6f220f | ✅ Docs now accurate |
 
 - **HitRateTracker:** Singleton that logs save/recall events per memory key, computes empirical hit-rate and decay curves, feeds downstream utility metrics to retention engine
 - **MistakeDetector:** Pattern-based classification engine for user corrections/rejections vs transient failures; flags errors for penalty adjustments on low-value saves
@@ -586,77 +658,5 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 - **Forty-eight tests** covering: bounded adjustments, EMA direction, hit-rate pipeline, CLI entry verification, graceful degradation per unregistered profile bounds enforcement
 - Spec documented in `docs/AUTOTUNING.md` — three-config-lever design (recall_frequency, importance_threshold, cleanup_interval), no opaque ML
 
-### v1.7.0
-
-- **Testing infrastructure upgrade:** Full benchmark module (`test_memchorus_benchmark.py`) measuring per-source timing (p50/p95 latency), content accuracy and failure-mode behavior with JSON output for before/after comparison
-- **Documentation overhaul:** New `docs/TESTING.md`, `docs/IMPROVEMENT-CYCLE.md` documenting quantitative improvement feedback loop; README updated with test counts, benchmark methodology links and MemPalace attribution link
-- **MemPalace attribution clarified:** Added prominent link to [MemPalace GitHub](https://github.com/MemPalace/mempalace) as the primary enhancement backend; made clear it degrades gracefully when unavailable via local Hermes default fallback
-
-### v1.6.0
-
-- **Branch consolidation release:** Merged remaining unlanded feature branches (GapGuard, GAP026 hex ID skip, GAP015/GAP016 fixes, RecursionGuard accuracy improvements, dynamic source routing). Source version aligned with `__init__.py` = 1.6.0.
-- **Documentation alignment:** Restored optional dependencies table and Pydantic/MCP version compatibility notes lost during merge conflict resolution.
-
-### v1.5.10 – v1.5.12
-
-**- RecursionGuard unified depth counter (GAP027):** Replaced fragile boolean recursion sentinels (`_REC_GUARD` module-level bool + instance-level `_in_enforcement_save`, `_in_enforcement_recall` flags) with a single `RecursionGuard` depth counter using proper nesting semantics via context manager pattern. All enforcement hooks in orchestrator.py now use the shared guard. Thread-safe under Python GIL.
-- **GAP026 hex Kanban ID skip:** Added detection and skip for t_[hex] Kanban IDs in project resolution, with comprehensive orientation test suite (58 tests). Also reduced cache TTL to 15s and added empty-result caching prevention.
-- **GAP026-C batched flush:** ToolCaptureBuffer caps saves, preventing excessive individual writes per session (50+ saved actions).
-**- GAP016 fix (PR #43):** The `CONTEXTUAL_SYNTHESIS_COMPLETION` query template added in GAP015 was not reflected in the echo-prevention guard set `_KNOWN_QUERY_TEMPLATES`. Added missing template string to the frozenset. All 5 `_QUERY_MAP` entries now verified as exact-match against guards (programmatic check).
-- **GAP015 fix (PR #42):** `DecisionPoint.CONTEXTUAL_SYNTHESIS_COMPLETION` added to `_QUERY_MAP` in `auto_recall_engine.py`, fixing silent drops when behavioral triggers fire at contextual synthesis decision points.
-
-### v1.5.08
-
-**Multi-Wing Routing:** Category-aware wing/room selection via `mempalace_routing` YAML config. Semantic room slugs map intent to storage locations:
-
-![Multi-Wing Routing](diagrams/images/multi_wing_routing.svg)
-
-**Memory routing table:** Category-aware wing/room selection via `mempalace_route` YAML config. Semantic room slugs map intent to storage locations:
-
-| Category | Wing | Room | Example Content |
-|---|---|---|---|
-| DECISION | memchorus_decisions | decisions | Architecture, transport |
-| LEARNING | memchorus_learning | lessons-learned | Shell escape, stderr |
-| MISTAKE  | memchorus_learning | corrections | proactive_save fix |
-| OUTCOMES | memchorus_general | outcomes | Test suite results |
-| (uncategorized) | memchorus_general (default) | general | Untagged content |
-
-Usage requires `category` metadata injection at write time:
-
-```python
-orchestrate.save(
-    key="architecture_decision_x",
-    value="We chose MemPalace routing over flat storage...",
-    metadata={"category": "DECISION"}     # drives wing + room selection
-)
-```
-
-Other v1.5.x features:
-
-**Post-Audit Fixes (2026-07-11+):**
-
-- **Hooks integration:** `on_pre_llm_call` wired to memory recall and lifecycle enforcement hooks. Previously feedback corrections were silently bypassed; the hook wiring logic was verified live during runtime effectiveness checks — all architectural claims confirmed true against behavior.
-- **Consolidation safety guard (commit 3ce19ee):** `consolidate_key()` now prevents total data loss when all source retrievals fail during dedup — if no preferred target survives, all copies are preserved with a warning log instead of being deleted.
-- **Critical orchestrator fixes (commit 074edbe):** Four bugs in routing logic, eviction behavior, and consistency guarantees resolved. See commit for detailed fix descriptions.
-
-**Merge-at-Write Status:** The `merge_at_write` configuration is recognized by `LifecycleManager` (§5.1 of the lifecycle design). `MergeEngine` is now implemented and active — it provides in-memory deduplication at write time using configurable strategies (`overwrite`, `append`, `union`). Enable via `lifecycle.merge_at_write.enabled: true` in your config to start consolidating duplicate memories at save time.
-
-**REQ-7.4: Consolidation Safety Guarantee** (new spec, v1.5.x)
-`consolidate_key()` shall never delete all copies of a key when retrieval fails from every source. If no preferred target survives selection during the preference resolution loop, the method returns without deletion and logs a warning for observability. Callers see `surviving=[]`, `removed_sources=[]`, `deleted_count=0`.
-
-**REQ-8.2: Feedback Loop E2E Test Coverage** (recommended, v1.6.x)
-An integration test verifying that loaded custom feedback flows from `hooks.on_pre_llm_call()` → feedback detector → correction injection should exist to prevent regression on the B-1 bug class.
-
-- **MCP transport autodetect** — reads \`mcp_servers.mempalace.command\` from config.yaml so users can override hardcoded module paths
-
-- **Feedback loop auto-load** at bootstrap with \`LoadSummary\` diagnostics for load-time visibility
-
-- **RelevanceScorer zero-score bug fix** — dict/list content no longer loses semantic query overlap
-
-- **Lifecycle management layer** (opt-in, \`lifecycle.enabled: false\` default) — LifecycleManager, SweepScheduler, AuditLogger with per-profile retention (\`ephemeral\`, \`operational\`, \`long_lived\`, \`knowledge_permanent\`), content-assessment-driven eviction, two-phase soft-delete/archive before hard-deletion, and merge-at-write deduplication hooks
-
-- **1378 tests** collected across all modules (current)
-
 
 ---
-*MemChorus v2.0.0 — A project by the MemChorus Project, inspired by [MemPalace](https://github.com/MemPalace/mempalace)*

@@ -904,6 +904,43 @@ def _resolve_char_limit() -> int:
     # Layer 3: global default
     return _DEFAULT_MAX_BLOCK_CHARS
 
+def _unwrap_content_field(value: Any) -> str:
+    """Unwrap raw content coming out of memory sources into a clean string.
+
+    Memory sources occasionally return structured payloads instead of plain
+    strings — e.g. ``{"key": ..., "content": {"text": "..."}}`` or
+    ``{"text": "..."}``.  Naive ``str(value)`` turns those into ``{'key': ...}``
+    dict reprs that are useless inside an injected context block (#143).
+
+    Resolution order:
+      1. ``value`` is already a ``str`` -> returned as-is
+      2. ``value`` is a ``dict`` containing a string ``text`` field -> that text
+      3. ``value`` is a ``dict`` whose ``content`` field resolves to a string
+         (recursing through nested wrappers, with depth guard)
+      4. ``value`` is a ``dict`` / list -> compact JSON
+      5. anything else -> ``str(value)``
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        direct = value.get("text")
+        if isinstance(direct, str) and direct:
+            return direct
+        if "content" in value and isinstance(value["content"], (dict, list)):
+            inner = _unwrap_content_field(value["content"])
+            if inner:
+                return inner
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, (list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
 def _format_context_block(items: List[Dict[str, Any]]) -> str:
     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
 
@@ -929,10 +966,12 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
             continue
         seen_keys.add(key)
         score = float(item.get("score", 0.0))
-        content_raw = item.get("content") or ""
-        # Defensive: some memory sources return nested dicts instead of strings
-        if not isinstance(content_raw, str):
-            content_raw = str(content_raw)
+        content_raw = item.get("content")
+        if content_raw in (None, ""):
+            content_raw = item.get("text") or ""
+        # Unwrap structured payloads (e.g. {"text": ...}, nested {"content": ...})
+        # into a human-readable string rather than a raw dict repr (#143).
+        content_raw = _unwrap_content_field(content_raw)
         raw_content = content_raw.rstrip()
 
         # --- Per-entry budget enforcement (line-boundary aware) --------------

@@ -551,7 +551,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.14 (current — 2026-08-28)
+### v2.0.15 (current — 2026-08-28)
+
+- **MemPalace source robustness (closes #136, #139, #143):** three latent reliability gaps in the live MemPalace path are now fixed. (1) `_McpClient.add_drawer()` only keyword-matched the response text, so a server reply of `{"success": false, ...}` with no error word read as a phantom success and corrupted the local mirror. It now reads the MemPalace MCP server's structured `{"success": bool}` flag first and falls back to keyword scanning only when that field is absent. (2) `MemPalaceMemorySource` now enforces a `MIN_RECALL_SCORE` floor (default 0.5, overridable via `config['min_recall_score']`) on MCP search hits — weak / off-topic results (`similarity` below the floor) are dropped before injection, matching the sibling `HermesMemorySource` / `SessionSearchMemorySource` contract; `similarity` is higher=better, so the lower-bound keeps strong hits. (3) `hooks._format_context_block()` now unwraps structured content payloads (`{"text": ...}`, nested `{"content": ...}`) into clean strings via a `_unwrap_content_field()` helper with a `json.dumps` fallback, instead of leaking `{'key': ...}` dict reprs into the injected context block. New `test_mempalace_robustness_fixes.py` regression suite (28 tests) locks in structured-success detection, the recall floor (default/override/boundary/non-numeric), and content unwrapping (helper direct + end-to-end through the formatter). Bumps `__version__` 2.0.14 → 2.0.15.
+
+### v2.0.14 (2026-08-28)
 
 - **Hot-path DEBUG emit gated (closes #137):** `MistakeDetector.scan_user_text` no longer builds a formatted `logger.debug` record on every scan. The emit is now under `if logger.isEnabledFor(logging.DEBUG)`, so in normal (non-debug) operation it is a true no-op and costs only a level check. The `TestPerformance::test_scan_time_within_budget` budget was widened from 2000µs to 5000µs, with the test raising the module logger to WARNING for the measurement window so the emit is a verified no-op during the timing. This restores a stable, deterministic perf signal on CI where pytest's logging plugin attaches a DEBUG `LiveLoggingHandler` and previously put the 2000µs budget right on the floor (~50–90% of the ceiling with zero headroom), producing ~70% non-deterministic failures.
 

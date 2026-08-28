@@ -2,6 +2,16 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.15] - 2026-08-28
+
+### Fixed
+- **MemPalace source robustness (closes #136, #139, #143):** three latent reliability gaps in the live MemPalace path are now fixed. **#136** — `_McpClient.add_drawer()` only keyword-matched the response text, so a server reply of `{"success": false, ...}` with no error word (e.g. `{"success": false, "drawer_id": "d1"}`) read as a phantom success and corrupted the local mirror; it now reads the MemPalace MCP server's structured `{"success": bool}` flag first (and `{"error": ...}` context on failure) and falls back to keyword scanning only when the `success` field is absent. **#139** — `MemPalaceMemorySource` now enforces a `MIN_RECALL_SCORE` floor (default 0.5, overridable via `config['min_recall_score']`) on MCP search hits: `similarity` is higher=better (cosine distance mapped to similarity), so the lower-bound threshold keeps strong hits and drops weak/off-topic ones, mirroring the `HermesMemorySource` / `SessionSearchMemorySource` contract; entries without a reported similarity are kept. **#143** — `hooks._format_context_block()` now unwraps structured content payloads (`{"text": ...}`, nested `{"content": ...}`) into clean strings via a new `_unwrap_content_field()` helper (with a `json.dumps` fallback for arbitrary mappings/lists), instead of leaking `{'key': ...}` dict reprs into the injected context block. New `tests/test_mempalace_robustness_fixes.py` regression suite (28 tests) locks in structured-success detection, the recall floor (default/override/boundary/non-numeric), and content unwrapping (helper direct + end-to-end through the formatter). Bumps `__version__` 2.0.14 → 2.0.15.
+
+## [2.0.14] - 2026-08-28
+
+### Fixed
+- **Hot-path DEBUG emit gated (closes #137):** `MistakeDetector.scan_user_text` no longer builds a formatted `logger.debug` record on every scan; the emit is now under `if logger.isEnabledFor(logging.DEBUG)`. The `TestPerformance::test_scan_time_within_budget` budget was widened from 2000µs to 5000µs with the module logger raised to WARNING for the measurement window, restoring a stable deterministic perf signal on CI. Bumps `__version__` 2.0.13 → 2.0.14.
+
 ## [2.0.13] - 2026-08-26
 
 ### Fixed
