@@ -319,6 +319,146 @@ class TestJaccardSimilarity:
         assert abs(sim_lower - 1.0) < 1e-9
 
 
+class TestContainmentSimilarity:
+    """Unit tests for the containment (overlap / smaller-set) primitive (GH-142).
+
+    Containment is what Jaccard cannot see: a short entry fully subsumed by a
+    long document scores ~1.0 on containment regardless of the denominator
+    blow-up that shrinks the Jaccard value below any sane threshold.
+    """
+
+    def test_identical_strings_return_one(self):
+        from memchorus.content_similarity import containment_similarity
+        assert abs(containment_similarity("apple pie", "apple pie") - 1.0) < 1e-9
+
+    def test_short_substring_of_long_scores_one(self):
+        """Short doc fully contained in long doc → containment 1.0.
+
+        The canonical GH-142 case: the shorter set is a subset of the longer,
+        so overlap == min(|a|,|b|) and the ratio is exactly 1.0 even though the
+        union-based Jaccard of the same pair is well below 1.0.
+        """
+        from memchorus.content_similarity import containment_similarity, jaccard_similarity
+        short = "use the standard deployment workflow for all production releases"
+        long_ = ("remember to always use the standard deployment workflow for all "
+                 "production releases and verify against the checklist before "
+                 "tagging the final version")
+        cont = containment_similarity(short, long_)
+        jac = jaccard_similarity(short, long_)
+        # The whole point of GH-142: containment clears 1.0 while Jaccard does not
+        # (bigram Jaccard of a contained subset is materially below 1.0).
+        assert abs(cont - 1.0) < 1e-9, f"containment should be 1.0, got {cont}"
+        assert jac < 1.0, f"jaccard of a strict subset should be < 1.0, got {jac}"
+
+    def test_symmetric(self):
+        from memchorus.content_similarity import containment_similarity
+        a = "alpha beta gamma delta"
+        b = "beta gamma"
+        assert containment_similarity(a, b) == containment_similarity(b, a)
+
+    def test_disjoint_strings_return_zero(self):
+        from memchorus.content_similarity import containment_similarity
+        assert containment_similarity("alpha beta", "gamma delta") == 0.0
+
+    def test_empty_string_returns_zero(self):
+        from memchorus.content_similarity import containment_similarity
+        assert containment_similarity("", "anything at all") == 0.0
+
+    def test_case_insensitive(self):
+        from memchorus.content_similarity import containment_similarity
+        assert abs(containment_similarity("Hello World", "hello world extra words here") - 1.0) < 1e-9
+
+
+class TestCrossSourceContainmentDedupGH142:
+    """GH-142: long-doc / near-duplicate containment gap at recall time.
+
+    The recall-time dedupe in ``MemoryOrchestrator._deduplicate_results``
+    historically used word-set Jaccard only (union denominator), which silently
+    let a short entry that is fully subsumed by a long document slip through as
+    two lines. These tests pin the containment OR-gate: the same pair must now
+    collapse, while genuinely distinct entries must survive.
+    """
+
+    def _sources_with_data(self, orc, source_a_data, source_b_data):
+        src_a = DummySource("source_a", source_a_data)
+        src_b = DummySource("source_b", source_b_data)
+        orc.memory_sources["source_a"] = src_a
+        orc.memory_sources["source_b"] = src_b
+
+    def test_default_containment_equals_threshold(self):
+        """Default _dedup_containment mirrors _dedup_threshold (0.85)."""
+        o = orc_mod.MemoryOrchestrator(config={'enforce_on_read': False, 'enforce_on_write': False})
+        assert abs(o._dedup_containment - 0.85) < 1e-9, \
+            f"containment default should mirror threshold, got {o._dedup_containment}"
+
+    def test_custom_containment_config(self):
+        """recall.dedup_containment is respected when set explicitly."""
+        config = {
+            'enforce_on_read': False,
+            'enforce_on_write': False,
+            "recall": {"dedup_threshold": 0.85, "dedup_containment": 0.70},
+        }
+        o = orc_mod.MemoryOrchestrator(config=config)
+        assert abs(o._dedup_containment - 0.70) < 1e-6
+
+    def test_long_doc_containing_short_entry_collapses(self, orc):
+        """A long doc that fully contains a short one must dedup to one line.
+
+        This is the exact failure reported in GH-142. The short text is a strict
+        word-subset of the long text, so word-set Jaccard is ~0.5 (< 0.85) but
+        containment is 1.0 (>= 0.85) — the containment OR-gate is what fires now.
+        Without the containment gate this pair returned as two separate results.
+        """
+        short = "use the standard deployment workflow for all production releases"
+        long_ = ("remember to always use the standard deployment workflow for all "
+                 "production releases and verify against the checklist before "
+                 "tagging the version to ship tomorrow afternoon")
+        data_a = [{"key": "short_entry", "content": {"text": short},
+                   "source": "source_a", "score": 0.92}]
+        data_b = [{"key": "long_entry", "content": {"text": long_},
+                   "source": "source_b", "score": 0.80}]
+        self._sources_with_data(orc, data_a, data_b)
+        results = orc.search("deployment workflow", limit=10)
+        assert len(results) == 1, \
+            f"Containment must collapse long-doc/subset entry to one line; got {len(results)}: {[r.get('key') for r in results]}"
+
+    def test_distinct_entries_still_preserved(self, orc):
+        """Genuinely distinct content is NOT collapsed by the containment gate."""
+        data_a = [{"key": "db_a", "content": {"text": "Database connection pool uses PostgreSQL 15 read replicas behind the primary"},
+                   "source": "source_a", "score": 0.90}]
+        data_b = [{"key": "db_b", "content": {"text": "Marketing campaign for the new onboarding flow launches next quarter in three regions"},
+                   "source": "source_b", "score": 0.85}]
+        self._sources_with_data(orc, data_a, data_b)
+        results = orc.search("infrastructure", limit=10)
+        assert len(results) == 2, \
+            f"Two distinct entries must survive the containment gate: got {len(results)}: {[r.get('key') for r in results]}"
+
+    def test_mixed_subset_and_distinct(self, orc):
+        """Subset pair collapses; distinct pair survives, in one search call."""
+        short = "use the standard deployment workflow for all production releases"
+        long_ = ("remember to always use the standard deployment workflow for all "
+                 "production releases and verify against the checklist before shipping")
+        data_a = [
+            {"key": "subset_short", "content": {"text": short}, "source": "source_a", "score": 0.92},
+            {"key": "db_unique", "content": {"text": "Database connection pool uses PostgreSQL 15 read replicas behind the primary"},
+             "source": "source_a", "score": 0.88},
+        ]
+        data_b = [
+            {"key": "subset_long", "content": {"text": long_}, "source": "source_b", "score": 0.80},
+            {"key": "mkt_unique", "content": {"text": "Marketing campaign for the new onboarding flow launches next quarter in three regions"},
+             "source": "source_b", "score": 0.78},
+        ]
+        self._sources_with_data(orc, data_a, data_b)
+        results = orc.search("deployment database marketing", limit=10)
+        keys = {r.get("key") for r in results}
+        # The subset pair must be gone (collapsed to its single survivor).
+        assert not ({k for k in keys if k in ("subset_short", "subset_long")} >= {"subset_short", "subset_long"}), \
+            f"Both members of the subset pair survived — containment gate missed it: {keys}"
+        # The two distinct entries must both survive.
+        assert "db_unique" in keys and "mkt_unique" in keys, \
+            f"Distinct entries were wrongly collapsed: {keys}"
+
+
 class BenchmarkCrossSourceDedup:
     """Benchmark showing reduced output size on multi-source queries (#95 criterion).
 

@@ -436,13 +436,28 @@ def _score_importance(text: str, categories: List[SignificanceCategory]) -> floa
 # ---------------------------------------------------------------------------
 
 
-def _gen_key(text: str, categories: List[SignificanceCategory]) -> str:
-    """Content-hash key with category tags and short timestamp."""
+def _gen_key(text: str, categories: List[SignificanceCategory],
+             source: str = "", title: str = "") -> str:
+    """Content-hash key with category tags.
+
+    GH-142 (option 2): the key is derived from a canonical sha over
+    (source, title, body) so re-saving the *same* content maps to the *same*
+    key and the backend overwrites (merge) instead of stacking a second copy.
+    The previous implementation embedded a 4-char timestamp suffix, which forced
+    identical content re-saved across sessions onto distinct keys — the stacking
+    this card removes.  The content hash is now the sole disambiguator (64-bit,
+    so two genuinely-different payloads still land on distinct keys), and there
+    is no time component at all: same content ⇒ same key, stable forever.
+    """
     tag = "|".join(c.value for c in (categories or [SignificanceCategory.LEARNING]))
-    raw = f"{tag}:{text.strip()[:200]}"
-    h = format(hash(raw) & 0xFFFFFFFF, 'x')[:8]  # fast, not cryptographic
-    ts = str(int(_time_mod.time()))[-4:]
-    return f"{tag}_{h}_{ts}"
+    import hashlib
+    canonical = "\x1f".join([
+        " ".join((source or "").lower().split()),
+        " ".join((title or "").lower().split()),
+        " ".join((text or "").lower().split()),
+    ])
+    h = hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:16]
+    return f"{tag}_{h}"
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +482,23 @@ def _jaccard_similarity(a: str, b: str) -> float:
     intersection = len(bag_a & bag_b)
     union = len(bag_a | bag_b)
     return intersection / union
+
+
+def _containment_similarity(a: str, b: str) -> float:
+    """Return containment (overlap / smaller set size) of meaningful-word bags.
+
+    GH-142 option 2: when one saved entry is a strict subset of the incoming
+    text (the long-doc case), Jaccard returns a low value because the union is
+    large — but containment returns ~1.0, so the OR-gate in ``_check_dedup``
+    still merges.  Returns 0.0 when either bag is empty.
+    """
+    bag_a = _text_to_bag(a)
+    bag_b = _text_to_bag(b)
+    if not bag_a or not bag_b:
+        return 0.0
+    overlap = len(bag_a & bag_b)
+    smaller = min(len(bag_a), len(bag_b))
+    return overlap / smaller if smaller else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -747,6 +779,13 @@ class AutoStorageEngine:
         for stored_text, stored_key, _ts in self._dedup_cache:
             ratio = _jaccard_similarity(text, stored_text)  # type: ignore[union-attr]
             if ratio >= self.dedup_similarity_threshold:
+                return {"key": stored_key}
+            # GH-142 option 2: containment OR-gate. A short saved entry fully
+            # contained in the incoming text (or vice-versa) scores a low
+            # Jaccard (large union) but near-1.0 containment, so we still merge
+            # the long-doc case that Jaccard alone would let through.
+            containment = _containment_similarity(text, stored_text)  # type: ignore[union-attr]
+            if containment >= self.dedup_similarity_threshold:
                 return {"key": stored_key}
 
         return None

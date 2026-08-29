@@ -173,11 +173,17 @@ class MemoryOrchestrator:
         recall_config = self.config.get("recall", {})
         if isinstance(recall_config, dict):
             self._dedup_threshold = float(recall_config.get("dedup_threshold", 0.85))
+            # GH-142: containment fallback — treat subsumption as duplicate even
+            # when full word-Jaccard sits just under _dedup_threshold (long-doc case).
+            self._dedup_containment = float(recall_config.get(
+                "dedup_containment", self._dedup_threshold))
             # GH-100: pass penalty_patterns to scorer (None means use built-in defaults)
             penalty_patterns = recall_config.get("penalty_patterns")
         else:
             # Allow top-level 'recall.dedup_threshold' as a dotted string key fallback
             self._dedup_threshold = float(self.config.get("recall.dedup_threshold", 0.85))
+            self._dedup_containment = float(self.config.get(
+                "recall.dedup_containment", self._dedup_threshold))
             penalty_patterns = None
 
         # Relevance scoring engine (Gap G1/G2 fix)
@@ -1356,12 +1362,23 @@ class MemoryOrchestrator:
         self,
         results: List[Dict[str, Any] | RankedResult],
     ) -> List[Dict[str, Any] | RankedResult]:
-        """Cross-source content similarity deduplication at recall time (GH-95).
+        """Cross-source content similarity deduplication at recall time (GH-95 / GH-142).
 
         After all sources have been scored and ranked by the RelevanceScorer, this
-        removes near-duplicate entries using N-gram Jaccard similarity. If two
-        results exceed ``self._dedup_threshold`` similarity, only the higher-scored
-        one is kept (recency tiebreaker when scores are within 0.05).
+        removes near-duplicate entries.  Two complementary gates decide a
+        duplicate (GH-142, either may fire):
+
+        1. **Jaccard** — ``|a ∩ b| / |a ∪ b|`` on word sets, gated at
+           ``self._dedup_threshold`` (default 0.85).  Catches near-identical docs
+           of comparable length.
+        2. **Containment** — ``|a ∩ b| / min(|a|, |b|)``, gated at
+           ``self._dedup_containment`` (defaults to the same as the threshold).
+           Catches the long-doc case that Jaccard misses: a short entry fully
+           subsumed by a long document scores low on Jaccard (union denominator)
+           but ~1.0 on containment, so it still collapses to a single line.
+
+        When two results match, only the higher-scored one is kept (recency
+        tiebreaker when scores are within 0.05).
 
         This is O(K^2) where K is the number of ranked candidates (typically
         15-25), so the overhead is negligible compared to the token savings from
@@ -1393,7 +1410,12 @@ class MemoryOrchestrator:
             return obj.get("score", 0.5) or 0.5
 
         def _jaccard(text_a: str, text_b: str) -> float:
-            """3-gram word Jaccard similarity between two texts."""
+            """Word-set Jaccard similarity between two texts, |a∩b| / |a∪b|.
+
+            Whole-word sets (not n-grams) — cheap and robust at recall time.
+            See ``content_similarity.jaccard_similarity`` for the n-gram variant
+            used by RecallDeduplicator.
+            """
             if not text_a.strip() or not text_b.strip():
                 return 0.0
             a = set(text_a.lower().strip().split())
@@ -1402,12 +1424,40 @@ class MemoryOrchestrator:
                 return 0.0
             return len(a & b) / len(a | b)
 
+        def _containment(text_a: str, text_b: str) -> float:
+            """Word-set containment: |a ∩ b| / min(|a|, |b|).
+
+            GH-142: catches the long-doc case Jaccard misses — a short entry
+            fully subsumed by a long document scores ~low on Jaccard (union
+            denominator) but ~1.0 here (overlap against the smaller set).
+            """
+            a = set(text_a.lower().strip().split())
+            b = set(text_b.lower().strip().split())
+            if not a or not b:
+                return 0.0
+            small = min(len(a), len(b))
+            return len(a & b) / small
+
+        def _is_duplicate(text_a: str, text_b: str) -> bool:
+            """Two texts are duplicates if EITHER metric clears its gate.
+
+            Jaccard gates near-identical docs of comparable length; containment
+            gates subsumption where one doc sits inside the other.  The union of
+            the two is strictly more permissive than Jaccard alone and is what
+            makes the long-doc / near-duplicate case collapse to a single line.
+            """
+            if _jaccard(text_a, text_b) >= self._dedup_threshold:
+                return True
+            if _containment(text_a, text_b) >= (self._dedup_containment or 0.0):
+                return True
+            return False
+
         kept: List[Dict[str, Any] | RankedResult] = []
         for current in results:
             content_cur = _get_content(current)
             is_dup = False
             for existing in kept:
-                if _jaccard(content_cur, _get_content(existing)) >= self._dedup_threshold:
+                if _is_duplicate(content_cur, _get_content(existing)):
                     # Same content found — keep the higher-scored one.
                     # If scores within 0.05, prefer the first (already-kept) result.
                     if _get_score(current) > _get_score(existing) + 0.05:

@@ -92,6 +92,56 @@ def jaccard_similarity(text_a: str, text_b: str, n: int = 2) -> float:
     return len(intersection) / len(union)
 
 
+def containment_similarity(text_a: str, text_b: str) -> float:
+    """Word-set overlap coefficient (containment) between two texts in [0.0, 1.0].
+
+    Containment is ``|tokens_a ∩ tokens_b| / min(|tokens_a|, |tokens_b|)``.  Unlike
+    Jaccard (which divides by the *union*), containment measures how much of the
+    *smaller* document is reproduced inside the other.  That is exactly the
+    long-doc case Jaccard silently misses: a 15-line entry that is fully subsumed
+    by a 60-line document scores only ~0.25 on Jaccard (the big denominator) yet
+    scores 1.0 on containment, because every distinctive word of the short entry
+    appears in the long one.
+
+    Returns 1.0 when the shorter text's word set is entirely contained in the
+    longer, 0.0 when they share no words or either is empty.  Case-insensitive.
+    """
+    tokens_a = set(re.findall(r'\w+', text_a.lower()))
+    tokens_b = set(re.findall(r'\w+', text_b.lower()))
+
+    if not tokens_a or not tokens_b:
+        return 0.0
+
+    small = min(len(tokens_a), len(tokens_b))
+    if small == 0:
+        return 0.0
+
+    intersection = len(tokens_a & tokens_b)
+    return intersection / small
+
+
+def canonical_content_fingerprint(source: str, title: str, body: str) -> str:
+    """Stable, canonical content hash derived from source + title + body.
+
+    GH-142 (option 2): used to seed the storage key so re-saving the *same*
+    source content collapses to one entry instead of stacking a second copy.
+    The inputs are normalised (case-folded, whitespace-collapsed) before hashing,
+    so cosmetic re-wording of surrounding metadata does not change the key, while
+    a genuinely different body still does.
+
+    Returns a 16-hex-char sha256 prefix (64 bits) — collision-resistant enough
+    for entry-level dedup without a full cryptographic digest in every key.
+    """
+    import hashlib
+
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().split())
+
+    canonical = "\x1f".join([_norm(source), _norm(title), _norm(body)])
+    digest = hashlib.sha256(canonical.encode("utf-8", "replace")).digest()
+    return digest.hex()[:16]
+
+
 class RecallDeduplicator:
     """Post-GAP095 deduplication engine for cross-source recall results.
 
