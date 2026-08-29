@@ -44,11 +44,8 @@ jobs:
           echo "Routing tests collected: ${COUNT}"
           test "${COUNT}" -ge 30 || { echo "FAIL: routing coverage too low"; exit 1; }
 
-      - name: Verify version sync (init vs README)
-        run: |
-          CANONICAL=$(PYTHONPATH=src python -c "import memchorus; print(memchorus.__version__)")
-          echo "Canonical version: ${CANONICAL}"
-          grep -q "${CANONICAL}" README.md || { echo "FAIL: README missing ${CANONICAL}"; exit 1; }
+      - name: Verify version sync (setup.py / README / __init__.py)
+        run: python3 scripts/check_version_sync.py
 
       - name: Verify key imports and routing overlay structure
         run: |
