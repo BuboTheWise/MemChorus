@@ -2,7 +2,7 @@
 
 # Version uses double-zero patch convention (X.Y.ZZ). Pip wheel filenames
 # normalise to semver on install, but the runtime __version__ string stays accurate.
-__version__ = "2.0.18"
+__version__ = "2.0.19"
 __author__ = "MemChorus Project"
 __email__ = "memchorus@nous.systems"
 
