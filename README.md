@@ -42,6 +42,19 @@ The design is driven by two questions:
 
 The system must stay functional even if every enhancement source disappears. The Hermes default memory files (`MEMORY.md`, `USER.md`) form the resilient foundation that keeps an agent alive with core context regardless of what else breaks.
 
+> ### The North Star
+> MemChorus is meant to give you the most **human-like memory**: one that lets you make better
+> **contextual decisions in real time**, **not repeat work**, stay **efficient**, and **grow** the
+> more it is used. That is the shared acceptance bar for all recall and store work — every change is
+> judged against the pillar it serves.
+>
+> It is codified in [`docs/north-star.md`](docs/north-star.md): the four pillars written as
+> *observable* behaviors (what "good" looks like, and how you tell it's off), the issue→pillar map
+> for the `#136`–`#143` wave, the rule that every fix must state which pillar it advances, and the
+> `north-star` triage label. Read it before triaging or reviewing any memory change.
+>
+> *(Reference: [`#144`](https://github.com/BuboTheWise/MemChorus/issues/144).)*
+
 ## High-Level Architecture
 
 ![High-Level Architecture](diagrams/images/architecture.svg)
