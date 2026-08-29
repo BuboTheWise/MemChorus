@@ -555,6 +555,29 @@ class MemoryOrchestrator:
         return result
 
     @staticmethod
+    def _attach_payload_locator(value: Any, key: str, source_name: Optional[str] = None) -> Any:
+        """Issue #140 — attach a compact locator field to *value*, if one can be
+        extracted.
+
+        Delegates to :func:`memchorus.locator.attach_locator`, which builds the
+        card-schema locator {source, path_or_url, title, topics, gist} from
+        explicit / structured / body-text sources and stores it on the payload
+        dict ALONGSIDE the body.  For non-dict payloads the body is wrapped so
+        it stays fully recoverable.  Never raises; returns the input unchanged
+        when there is nothing extractable, so ordinary saves (plain strings
+        without provenance) are byte-identical to before.
+        """
+        try:
+            from memchorus.locator import attach_locator
+        except Exception:  # pragma: no cover - module is co-shipped
+            return value
+        try:
+            return attach_locator(value, key=key, source_name=source_name or "")
+        except Exception as exc:  # pragma: no cover - never fail a save
+            logger.debug("locator attach failed for key=%r: %s", key, exc)
+            return value
+
+    @staticmethod
     def _validate_category_type_safe(cat: Any) -> Optional[str]:
         """Validate a single category value and return normalised string or None.
 
@@ -815,6 +838,11 @@ class MemoryOrchestrator:
 
         # Enrich value with validated category + metadata so internal validation catches it
         stored_value = self._enrich_value_with_metadata(value, effective_category, metadata)
+        # Issue #140: attach a compact locator alongside the body so recall can
+        # inject a "go-read-it" pointer instead of the full blob.  Source-agnostic
+        # — it rides on the payload dict, so whichever backend persists it stores
+        # the locator alongside the body.  No-op when nothing extractable.
+        stored_value = self._attach_payload_locator(stored_value, key, source_name)
         self._validate_categories_in_value(stored_value)  # reject bad categories early
 
         # Auto-infer profile from the enriched payload (category info helps inference)

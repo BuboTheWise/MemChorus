@@ -974,6 +974,22 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         content_raw = _unwrap_content_field(content_raw)
         raw_content = content_raw.rstrip()
 
+        # --- Issue #140: locator-first injection -------------------------------
+        # When a locator was stored alongside the body and the body is long,
+        # replace the blob with the compact "go-read-it" locator line
+        # (gist/title/topics + path_or_url pointer, ≤ ~150 chars).  The full
+        # content stays retrievable on demand via retrieve(key), so the agent
+        # loses no information — it just stops paying for the full blob in
+        # every prompt.  Degrades to the legacy blob path on any error.
+        try:
+            from memchorus import locator as _locator_mod
+            loc = _locator_mod.has_locator(item)
+            if loc and _locator_mod.should_inject_locator(raw_content, loc):
+                _src = item.get("source") or item.get("source_name") or ""
+                raw_content = _locator_mod.format_locator(loc, source_name=_src, key=key)
+        except Exception:  # pragma: no cover - locator path must never break recall
+            pass
+
         # --- Per-entry budget enforcement (line-boundary aware) --------------
         if len(raw_content) > _MAX_CONTENT_CHARS:
             content_lines = raw_content.split("\n")
