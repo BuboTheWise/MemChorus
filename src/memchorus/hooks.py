@@ -27,6 +27,9 @@ import json
 import logging
 import re
 import os
+import threading
+import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -904,6 +907,154 @@ def _resolve_char_limit() -> int:
     # Layer 3: global default
     return _DEFAULT_MAX_BLOCK_CHARS
 
+
+# ---------------------------------------------------------------------------
+# Cross-turn injection suppression window (GH-141)
+#
+# Recall re-injected the same entries (unchanged content) on consecutive turns,
+# wasting prompt budget. GH-141 adds a bounded LRU + TTL window cache of
+# recently-injected (key, content_hash) pairs, keyed per Hermes profile so
+# windows never cross-contaminate between agents. When a key is within the
+# window AND its content hash is unchanged since the last render, the block
+# emits ONE compact marker line instead of the full body. Changed content or
+# TTL expiry restores the full body.
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SUPPRESSION_WINDOW = 5      # entries
+_DEFAULT_SUPPRESSION_TTL_S = 180.0   # seconds — short enough to re-render on a new session
+_MAX_WINDOW_SIZE = 200               # hard cap regardless of config (memory safety)
+
+_SUPPRESSION_MARKER = "↳ (shown earlier)"
+
+
+def _hash_content(content: str) -> str:
+    """Stable digest of rendered content — used to detect unchanged re-injection."""
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+class _SuppressionWindow:
+    """Bounded LRU + TTL cache of recently-injected (key, content_hash) pairs.
+
+    Thread-safe. ``mark()`` records a render (evicting expired / over-cap
+    entries first), ``suppressed()`` reports whether a re-render of the same
+    key + same hash should collapse to a marker line.
+    """
+
+    __slots__ = ("_window_size", "_ttl_seconds", "_entries", "_lock")
+
+    def __init__(self, window_size: int = _DEFAULT_SUPPRESSION_WINDOW,
+                 ttl_seconds: float = _DEFAULT_SUPPRESSION_TTL_S):
+        self._window_size = max(1, min(int(window_size), _MAX_WINDOW_SIZE))
+        self._ttl_seconds = max(0.0, float(ttl_seconds))
+        self._entries: "OrderedDict[Any, Tuple[str, float]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def _prune_expired(self) -> None:
+        now = time.time()
+        stale = [k for k, (_h, ts) in self._entries.items()
+                 if (now - ts) > self._ttl_seconds]
+        for k in stale:
+            del self._entries[k]
+
+    def suppressed(self, key: Any, content_hash: str) -> bool:
+        """True if this key+hash was already rendered within the window."""
+        with self._lock:
+            rec = self._entries.get(key)
+            if rec is None:
+                return False
+            stored_hash, ts = rec
+            if (time.time() - ts) > self._ttl_seconds:
+                del self._entries[key]
+                return False
+            return stored_hash == content_hash
+
+    def mark(self, key: Any, content_hash: str) -> None:
+        """Record a full-body render (or a marker render) for this key."""
+        with self._lock:
+            self._prune_expired()
+            self._entries.pop(key, None)
+            self._entries[key] = (content_hash, time.time())
+            while len(self._entries) > self._window_size:
+                self._entries.popitem(last=False)  # evict least-recently-used
+
+
+# One window per Hermes profile so agents don't share suppression state.
+_suppression_windows: Dict[str, _SuppressionWindow] = {}
+_suppression_windows_lock = threading.Lock()
+
+
+def _resolve_profile_name() -> str:
+    """Hermes profile identifier used to scope the suppression window."""
+    try:
+        from memchorus import _sanitize_profile
+        return _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
+    except Exception:
+        return os.environ.get("HERMES_PROFILE", "default") or "default"
+
+
+def _resolve_suppression_settings() -> "tuple[int, float]":
+    """(window_size, ttl_seconds) from per-profile config.yaml.
+
+    Keys: memchorus.suppression.window_size / .ttl_seconds (or legacy memchorus.recall).
+    Env overrides: MEMCHORUS_SUPPRESSION_WINDOW, MEMCHORUS_SUPPRESSION_TTL.
+    Returns defaults when unset.
+    """
+    window_size, ttl = _DEFAULT_SUPPRESSION_WINDOW, _DEFAULT_SUPPRESSION_TTL_S
+    profile = _resolve_profile_name()
+    try:
+        cfg_path = _Path.home() / ".hermes" / "profiles" / profile / "config.yaml"
+        if not cfg_path.exists():
+            cfg_path = _Path.home() / ".hermes" / "config.yaml"
+        if cfg_path.exists():
+            data = _yml.safe_load(cfg_path.read_text()) or {}
+            memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
+            sup_cfg = memchorus_cfg.get("suppression", {}) if isinstance(memchorus_cfg, dict) else {}
+            if isinstance(sup_cfg, dict):
+                ws = sup_cfg.get("window_size")
+                if isinstance(ws, int) and ws > 0:
+                    window_size = ws
+                ts = sup_cfg.get("ttl_seconds")
+                if isinstance(ts, (int, float)) and ts >= 0:
+                    ttl = float(ts)
+            recall_cfg = memchorus_cfg.get("recall", {}) if isinstance(memchorus_cfg, dict) else {}
+            if isinstance(recall_cfg, dict):
+                ws = recall_cfg.get("suppression_window")
+                if isinstance(ws, int) and ws > 0 and window_size == _DEFAULT_SUPPRESSION_WINDOW:
+                    window_size = ws
+    except Exception:
+        pass  # config errors never break recall — fall back to defaults
+
+    if os.environ.get("MEMCHORUS_SUPPRESSION_WINDOW"):
+        try:
+            window_size = int(os.environ["MEMCHORUS_SUPPRESSION_WINDOW"])
+        except ValueError:
+            pass
+    if os.environ.get("MEMCHORUS_SUPPRESSION_TTL"):
+        try:
+            ttl = float(os.environ["MEMCHORUS_SUPPRESSION_TTL"])
+        except ValueError:
+            pass
+    return window_size, ttl
+
+
+def _get_suppression_window() -> _SuppressionWindow:
+    """Fetch (or create) the per-profile suppression window instance."""
+    profile = _resolve_profile_name()
+    with _suppression_windows_lock:
+        win = _suppression_windows.get(profile)
+        if win is None:
+            ws, ttl = _resolve_suppression_settings()
+            win = _SuppressionWindow(ws, ttl)
+            _suppression_windows[profile] = win
+        return win
+
+
+def _clear_suppression_windows() -> None:
+    """Reset all windows (used by tests; safe at any time)."""
+    with _suppression_windows_lock:
+        _suppression_windows.clear()
+
+
 def _unwrap_content_field(value: Any) -> str:
     """Unwrap raw content coming out of memory sources into a clean string.
 
@@ -956,9 +1107,13 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
 
     max_chars = _resolve_char_limit()
 
-    # Build formatted lines with per-entry budget enforcement + key dedup
-    lines_with_score: List[Tuple[str, float]] = []
+    # Build formatted lines with per-entry budget enforcement + key dedup.
+    # Each entry is (line, score, key_or_None, hash_or_None) — identity is only
+    # present for full-body entries so the post-drop pass can mark precisely
+    # those that actually rendered (markers never re-mark; dropped entries don't).
+    entries: List[Tuple[str, float, Optional[Any], Optional[str]]] = []
     seen_keys: set = set()
+    window = _get_suppression_window()
 
     for item in items:
         key = item.get("key") or str(item)
@@ -973,6 +1128,14 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         # into a human-readable string rather than a raw dict repr (#143).
         content_raw = _unwrap_content_field(content_raw)
         raw_content = content_raw.rstrip()
+
+        # --- Cross-turn suppression (GH-141): if this exact key+content was
+        # already rendered recently (per profile), collapse to a marker line
+        # instead of repeating the full body in the next turn's block.
+        content_hash = _hash_content(raw_content)
+        if window.suppressed(key, content_hash):
+            entries.append((f"- {key}: {_SUPPRESSION_MARKER}", score, None, None))
+            continue
 
         # --- Per-entry budget enforcement (line-boundary aware) --------------
         if len(raw_content) > _MAX_CONTENT_CHARS:
@@ -996,11 +1159,11 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
                     raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
 
         line = f"- **{key}** — {raw_content}"
-        lines_with_score.append((line, score))
+        entries.append((line, score, key, content_hash))
 
     # Sort by score ascending so we can pop lowest-scored first if over budget
-    lines_with_score.sort(key=lambda pair: pair[1])
-    lines = [pair[0] for pair in lines_with_score]
+    entries.sort(key=lambda e: e[1])
+    lines = [e[0] for e in entries]
 
     joined = "\n".join(lines)
     dropped_count = 0
@@ -1010,20 +1173,26 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
     _header_len = len("[MemChorus injected context]\n")
     _footer_len = len("\n[/MemChorus injected block]")
 
-    while lines and len(joined) + _header_len + _footer_len > max_chars:
+    while entries and len(joined) + _header_len + _footer_len > max_chars:
         # Remove the lowest-scored entry (at the front after ascending sort)
-        lines.pop(0)
+        entries.pop(0)
         dropped_count += 1
+        lines = [e[0] for e in entries]
         joined = "\n".join(lines)
 
-    # Re-sort remaining lines descending by score so highest-ranked appears first
+    # Re-sort remaining entries descending by score so highest-ranked appears first
     if dropped_count > 0:
-        scores_remaining = [pair[1] for pair in lines_with_score[dropped_count:]]
-        indexed_lines = list(zip(lines, scores_remaining))
-        indexed_lines.sort(key=lambda pair: -pair[1])
-        lines = [pair[0] for pair in indexed_lines]
+        entries.sort(key=lambda e: -e[1])
+        lines = [e[0] for e in entries]
         joined = "\n".join(lines)
         joined += f"\n... (truncated, budget exceeded — {dropped_count} entries dropped)"
+
+    # Mark only the full-body entries that actually rendered into this block
+    # (skips markers and any that were dropped by the budget pass) so the
+    # cross-turn suppression window is render-accurate.
+    for _line, _score, _key, _hash in entries:
+        if _key is not None and _hash is not None:
+            window.mark(_key, _hash)
 
     return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
 
