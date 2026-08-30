@@ -97,7 +97,9 @@ jobs:
           # of the hermes-source adapter, failing on master before this change):
           #   tests/test_hermes_source_integration.py::test_search_multi_word_query_matches_any_term_in_content
           # Deselect it so the Windows signal is not masked; remove this line once fixed.
-          python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts=" `
+          # Run the full suite WITHOUT -x on Windows so every remaining failure
+          # is reported in a single pass (stop-on-first was masking the list).
+          python -m pytest tests/ --tb=short --durations=20 --override-ini="addopts=" `
             --deselect "tests/test_hermes_source_integration.py::test_search_multi_word_query_matches_any_term_in_content"
 
       - name: Verify routing test coverage threshold
