@@ -62,11 +62,21 @@ class TestParameterBounds:
 class TestComputeAdjustments:
     """Verify adjustments are computed correctly for various hit ratios."""
 
-    def test_low_hit_ratio_adjusts_relevance_threshold(self):
-        """hit_ratio < 0.25 → adjustment computed; verify actual delta matches _compute_delta output."""
+    def test_low_hit_ratio_raises_min_relevance(self):
+        """hit_ratio < 0.25 → over-saving → min_relevance_score must RISE.
+
+        Issue #138 AC-4: the direction sign for ``min_relevance_score`` must be
+        POSITIVE (raise the importance floor) when the hit ratio is below the
+        LOW bound, because a low recall rate means we are storing memories
+        that we never use — a higher floor suppresses them.
+
+        Regression guard: pre-#138 the sign was inverted (low ratio produced a
+        negative delta, lowering min_relevance) — this test pins the post-fix
+        intent.
+        """
         adaptive = AdaptiveThreshold()
         adaptive.stats.total_saves = 100
-        adaptive.stats.total_recalls = 15  # ratio = 0.15
+        adaptive.stats.total_recalls = 15  # ratio = 0.15 (< 0.25 LOW bound)
 
         current = {
             "min_relevance_score": 0.3,
@@ -75,27 +85,45 @@ class TestComputeAdjustments:
         }
         adjusted = adaptive.compute_adjustments(current)
 
-        # Code direction: low ratio → negative delta for relevance score (line 153-157)
-        # Verify parameter moved from baseline and stays within bounds
-        assert adjusted["min_relevance_score"] != current["min_relevance_score"], \
-            "Low hit ratio should produce a measurable adjustment"
+        # Sign assertion (AC-4):
+        assert adjusted["min_relevance_score"] > current["min_relevance_score"], (
+            f"low hit ratio (0.15) must RAISE min_relevance_score; "
+            f"current={current['min_relevance_score']} adjusted={adjusted['min_relevance_score']}"
+        )
 
-    def test_high_hit_ratio_adjusts_relevance_threshold(self):
-        """hit_ratio > 0.75 → parameter adjusts, verifies movement + stays in bounds."""
+        # Bounds must always hold
+        bounds = PARAM_BOUNDS["min_relevance_score"]
+        assert bounds.minimum <= adjusted["min_relevance_score"] <= bounds.maximum
+
+    def test_high_hit_ratio_lowers_min_relevance(self):
+        """hit_ratio > 0.75 → healthy recall → min_relevance_score must FALL.
+
+        Companion to ``test_low_hit_ratio_raises_min_relevance``.
+        Reciprocal of the low-ratio case: high hit ratio means recall is
+        working, so we allow more borderline saves to pass (lower floor).
+        """
         adaptive = AdaptiveThreshold()
         adaptive.stats.total_saves = 40
-        adaptive.stats.total_recalls = 36  # ratio = 0.9
+        adaptive.stats.total_recalls = 36  # ratio = 0.9 (> 0.75 HIGH bound)
 
         current = {
-            "min_relevance_score": 0.3,
+            "min_relevance_score": 0.7,
             "dedup_similarity_threshold": 0.6,
             "retention_scan_interval_days": 14.0,
         }
+        # Start high so the low-ratio mirror is not a degenerate no-op at the
+        # 0.1 bound.
         adjusted = adaptive.compute_adjustments(current)
 
-        # Verify parameter moved from baseline and stays within bounds
-        assert adjusted["min_relevance_score"] != current["min_relevance_score"], \
-            "High hit ratio should produce a measurable adjustment"
+        # Sign assertion (AC-4 reverse):
+        assert adjusted["min_relevance_score"] < current["min_relevance_score"], (
+            f"high hit ratio (0.9) must LOWER min_relevance_score; "
+            f"current={current['min_relevance_score']} adjusted={adjusted['min_relevance_score']}"
+        )
+
+        # Bounds must always hold
+        bounds = PARAM_BOUNDS["min_relevance_score"]
+        assert bounds.minimum <= adjusted["min_relevance_score"] <= bounds.maximum
 
     def test_parameters_stay_within_bounds(self):
         """Adjustments must not exceed ParameterBounds limits."""

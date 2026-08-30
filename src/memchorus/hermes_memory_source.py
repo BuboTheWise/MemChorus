@@ -161,8 +161,33 @@ class HermesDefaultMemorySource(MemorySource):
         return round(max(0.0, min(score, 1.0)), 4)
 
     def _effective_min_score(self) -> float:
-        """Return the effective minimum recall score from config override."""
-        return self.config.get('min_recall_score', self.MIN_RECALL_SCORE)
+        """Return the effective minimum recall score.
+
+        Precedence (first match wins):
+          1. Explicit ``config['min_recall_score']`` override (preserves backward
+             compatibility with deployments that pin the floor manually).
+          2. Tuned ``min_relevance_score`` from ``CalibrationEngine.get_adjusted_params()``
+             for this profile — this is the auto-tuning value produced by
+             ``apply_and_persist()`` and stored at
+             ``~/.hermes/data/memchorus/_tuning/<profile>.yaml``.
+          3. The static class default ``MIN_RECALL_SCORE`` (v1.7.0 baseline).
+        """
+        if 'min_recall_score' in self.config:
+            return self.config.get('min_recall_score', self.MIN_RECALL_SCORE)
+
+        # Consult the auto-tuned value for this profile (issue #138).
+        try:
+            import os as _os
+            from memchorus.calibration_engine import CalibrationEngine
+            profile = _os.environ.get('HERMES_PROFILE') or 'default'
+            tuned = CalibrationEngine.get_adjusted_params(profile)
+            tuned_value = tuned.get('min_relevance_score')
+            if isinstance(tuned_value, (int, float)):
+                return float(tuned_value)
+        except Exception:  # noqa: BLE001 — degrade silently; never fail a recall
+            pass
+
+        return self.MIN_RECALL_SCORE
 
     @staticmethod
     def _safe_key(key: str) -> str:
