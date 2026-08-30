@@ -504,7 +504,15 @@ def test_search_multi_word_query_matches_any_term_in_content():
     """
     tmpdir = tempfile.mkdtemp(prefix='hermes_multiword_search_')
     try:
-        src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
+        # Pin the recall floor — the live #138 auto-tuning raises
+        # ``min_relevance_score`` past 0.5 (e.g. 0.545), which would filter out
+        # the 0.5-scoring 1-of-2 any-match result and break the assertion.
+        # The test documents the ANY-match scoring behaviour, not the tuned floor,
+        # so pin it locally.
+        src = HermesDefaultMemorySource(
+            name='test_source',
+            config={'memory_dir': tmpdir, 'min_recall_score': 0.5},
+        )
 
         # Contains 'routing' but not 'bug'
         assert src.save('entry-alpha', {'detail': 'routing table is empty'}) is True

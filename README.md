@@ -564,7 +564,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.22 (current — 2026-08-30)
+### v2.0.23 (current — 2026-08-30)
+
+- **Test isolation hardening:** `test_no_tracker_returns_zeros` in `tests/test_calibration_engine.py` now simulates the `ImportError` path (`patch.dict(sys.modules, {"memchorus.hit_rate_tracker": None})`) instead of relying on the shared on-disk sidecar being empty. The old test depended on `~/.hermes/memories/_hit_rate_index.json` being `{}` — any prior runtime-verify or live agent run that wrote real entries into the index (the card's own DONE gate) would make this test fail with `assert saves == 0` seeing the actual count. The fix is intent-faithful to the test name ("when HitRateTracker is **unavailable**") and makes the test hermetic regardless of local machine state. No source changes; no API changes. Full suite: all previously passing tests still pass; the one pre-existing multi-word adapter failure (tracked separately) is unchanged. Bumps `__version__` 2.0.22 → 2.0.23.
+
+### v2.0.22 (2026-08-30)
 
 - **Live recall-feedback loop closed (final joint for #138):** the `on_session_end` hook now actually invokes the auto-tuning feedback surface — routing the recalled-keys buffer through `MemoryOrchestrator.mark_relevant_injected_as_stale()` on a user pushback turn and `mark_relevant_injected_as_useful()` on a clean turn, with the call sites at the live teardown path in `src/memchorus/hooks.py`. This is the record joint that was previously only present as orchestrator methods with test coverage but no caller, so the per-key `HitRateTracker` index (`_hit_rate_index.json`) now gains real entries from normal save/recall operation without a manual recalibrate run. Feedback bookkeeping degrades silently and can never propagate an exception into session teardown. (2) *Test isolation:* `TestGracefulDegradation` now resets the shared `MistakeDetector` singleton's `total_noise_flags`/`total_useful_flags` counters (13 lines in `tests/test_calibration_engine.py`) so ordering-dependent xdist runs no longer leak aggregate mistake flags into `test_no_mistake_detector_returns_zeros`. Full suite: 1666 passed, 12 skipped (1 pre-existing known multi-word adapter failure at base, tracked separately). Bumps `__version__` 2.0.21 → 2.0.22.
 
