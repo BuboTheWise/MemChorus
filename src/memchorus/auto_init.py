@@ -154,7 +154,7 @@ def write_config(profile: Optional[str] = None,
     tmp = dst.with_suffix(".tmp")
     try:
         tmp.write_text(desired)
-        tmp.rename(dst)
+        os.replace(tmp, dst)
     except OSError as exc:
         print(f"[error] failed to write {dst}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
@@ -219,7 +219,7 @@ def enable_plugin(profile: Optional[str] = None) -> bool:
     tmp = cfg_path.with_suffix(".tmp")
     try:
         tmp.write_text("".join(lines))
-        tmp.rename(cfg_path)
+        os.replace(tmp, cfg_path)
     except OSError as exc:
         print(f"[error] failed to update {cfg_path}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
