@@ -194,7 +194,8 @@ class TestMinRecallScoreThreshold:
             shutil.rmtree(d)
 
     def test_config_override_min_recall_score(self):
-        """min_recall_score config key overrides the class default."""
+        """min_recall_score config key overrides the class default (and the calibration tier)."""
+        from unittest import mock
         tmpdir = tempfile.mkdtemp()
         try:
             # Override to 0.2 to prove config wins over class constant
@@ -203,9 +204,16 @@ class TestMinRecallScoreThreshold:
             )
             assert src._effective_min_score() == 0.2
 
-            # Default effective min score is the class constant (raised to 0.5 in GH-121)
-            src2 = HermesDefaultMemorySource(name='t', config={'memory_dir': tmpdir})
-            assert src2._effective_min_score() == 0.5
+            # No-config override: the calibration tier must be pinned so this
+            # assertion stays independent of ambient ~/.hermes tuning files.
+            # With the calibration lookup disabled the effective floor is the
+            # static class constant (0.5, raised in GH-121).
+            with mock.patch(
+                'memchorus.calibration_engine.CalibrationEngine'
+            ) as cal:
+                cal.get_adjusted_params.return_value = {}
+                src2 = HermesDefaultMemorySource(name='t', config={'memory_dir': tmpdir})
+                assert src2._effective_min_score() == 0.5
         finally:
             shutil.rmtree(tmpdir)
 

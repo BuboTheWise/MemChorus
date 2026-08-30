@@ -141,16 +141,26 @@ class AdaptiveThreshold:
         param_range = bounds.maximum - bounds.minimum
 
         if param == "min_relevance_score":
-            # Low hit_ratio (< 0.25): too much saved → raise min_relevance (save less)
-            # High hit_ratio (> 0.75): recall efficiency good → lower min_relevance (save more)
-            direction = -1 if ratio < self.HIT_RATIO_LOW_BOUND else (1 if ratio > self.HIT_RATIO_HIGH_BOUND else 0)
+            # Low hit_ratio (< 0.25): too much saved, few recalled → RAISE the
+            # relevance floor so future saves are higher-precision.
+            # High hit_ratio (> 0.75): recall efficiency is good → LOWER the
+            # floor to admit more (we weren't over-saving in the first place).
+            # Direction is the sign applied to the magnitude; a positive value
+            # raises the parameter, a negative lowers it.
+            direction = 1 if ratio < self.HIT_RATIO_LOW_BOUND else (-1 if ratio > self.HIT_RATIO_HIGH_BOUND else 0)
             magnitude = abs(ratio - 0.5) * param_range * volume_factor
         elif param == "dedup_similarity_threshold":
-            # Similar logic — high recall hits mean fewer saves needed, can lower dedup threshold
-            direction = -1 if ratio < self.HIT_RATIO_LOW_BOUND else (1 if ratio > self.HIT_RATIO_HIGH_BOUND else 0)
+            # Same semantics: low ratio (over-saving) → tighten dedup (raise the
+            # similarity threshold so near-duplicates are suppressed more
+            # aggressively); high ratio (good precision) → relax dedup so more
+            # saves get through.
+            direction = 1 if ratio < self.HIT_RATIO_LOW_BOUND else (-1 if ratio > self.HIT_RATIO_HIGH_BOUND else 0)
             magnitude = abs(ratio - 0.5) * param_range * 0.3  # gentler adjustments for similarity
         elif param == "retention_scan_interval_days":
-            # High volume + high recall → tighter scans; low recall → relax scans
+            # The inverse of the recall-side thresholds: a LOW ratio means we
+            # over-saved, so RELAX the scan interval (longer between sweeps);
+            # a HIGH ratio means recall is healthy, so TIGHTEN the interval
+            # (more frequent sweeps).
             direction = -1 if ratio > self.HIT_RATIO_HIGH_BOUND else (1 if ratio < self.HIT_RATIO_LOW_BOUND else 0)
             magnitude = abs(ratio - 0.5) * param_range * 0.2  # very gentle for intervals
         else:

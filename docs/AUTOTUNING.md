@@ -76,10 +76,12 @@ calibration_count: 3
 
 ## Integration Points
 
-- `MemoryOrchestrator.__init__()` loads CalibrationEngine if `_tuning/` directory exists. Falls back to static defaults otherwise (zero regression path for existing installs).
-- `full_recall()` calls `HitRateTracker.record_recallhit()` on each returned entry key inline.
-- `on_turn_end` hook fires MistakeDetector scan of user message text from current turn buffer.
-- Retention sweep calls CalibrationEngine once per cycle to compute + apply adjustments.
+- `MemoryOrchestrator.__init__()` exposes `CalibrationEngine.get_adjusted_params()` for this profile; both `HermesDefaultMemorySource` and `SessionSearchMemorySource` consult the tuned `min_relevance_score` in `_effective_min_score()` when no explicit `config['min_recall_score']` override is present (precedence: config override > tuned value > static `MIN_RECALL_SCORE`). Falls back to static defaults if the tuning module is missing or the call fails (zero-regression path).
+- `MemoryOrchestrator.search()` calls `HitRateTracker.record_recallhit()` on each ranked result key as it enters the result window, and stores the most recent result set's keys (bounded ≤ 128) on `_recent_recall_keys`.
+- `MemoryOrchestrator.mark_relevant_injected_as_useful()` / `mark_relevant_injected_as_stale()` call `HitRateTracker.record_useful()` / `record_stale()` per key in that buffer — the live positive/negative feedback surface (spec §10.2 step 1). Both are fully graceful: they return 0 and swallow any tracker error.
+- `on_turn_end` hook fires the MistakeDetector scan of user message text from the current turn buffer (noise/useful flag counters feed the calibration engine).
+- `on_session_end` hook flushes the HitRateTracker and invokes `MemoryOrchestrator.run_calibration_cycle()` (throttled by `last_calibrated_at`, default 24h; `force=True` bypasses the throttle), which calls `CalibrationEngine.apply_and_persist()` and writes the tuned YAML to `~/.hermes/data/memchorus/_tuning/<profile>.yaml`. The cycle never raises — it returns a structured summary dict.
+- `memchorus recalibrate` CLI entry point forces a calibration cycle on demand (manual trigger).
 
 ## Testing Requirements
 

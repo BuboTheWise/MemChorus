@@ -647,6 +647,29 @@ class MemChorusHooks:
         except Exception:  # pragma: no cover - graceful degradation
             pass  # tracking failures never interrupt session teardown
 
+        # Auto-tuning: low-frequency calibration trigger (spec §10.2 step 3,
+        # issue #138). Closes the loop: hit-rate index is flushed and
+        # CalibrationEngine.apply_and_persist() writes tuned parameters to
+        # ~/.hermes/data/memchorus/_tuning/<profile>.yaml. Throttled by
+        # last_calibrated_at (default 24h) — no manual CLI step needed.
+        try:
+            orchestrator2 = _get_orchestrator()
+            if orchestrator2 is not None:
+                result = orchestrator2.run_calibration_cycle(
+                    min_interval_hours=24.0, force=False)
+                if result.get("calibrated"):
+                    logger.info(
+                        "hooks: on_session_end calibration — profile=%r params=%s",
+                        result.get("profile"), result.get("params"),
+                    )
+                else:
+                    logger.debug(
+                        "hooks: on_session_end calibration skipped — %s",
+                        result.get("reason", "unknown"),
+                    )
+        except Exception:  # noqa: BLE001
+            pass  # calibration must never break session teardown
+
         return {
             "source": "memchorus_session_end",
             "teardown": "complete",
