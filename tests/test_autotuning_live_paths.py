@@ -216,6 +216,107 @@ class TestSessionEndCalibration:
 
 
 # ---------------------------------------------------------------------------
+# AC-1b (issue #138 review-fail fix): record_useful/record_stale wired to a
+# LIVE signal source
+# ---------------------------------------------------------------------------
+
+
+class TestLiveFeedbackWiring:
+    """on_session_end must route the MistakeDetector signal through the
+    production callers mark_relevant_injected_as_useful()/_stale() so the
+    HitRateTracker index accumulates flags for the recalled key — this closes
+    the review-fail defect where those methods had zero production callers and
+    boost_factor_for_key stayed pinned at 1.0.
+
+    These tests drive the REAL signal path (MemChorusHooks.on_session_end →
+    MistakeDetector → mark_relevant_injected_as_*) rather than calling mark_*
+    directly, per the review's acceptance criterion #2.
+    """
+
+    def _run_session_end(self, hooks_mod, history):
+        """Run on_session_end with the orchestrator injected via the hook's
+        _get_orchestrator seam, isolated from the capture batcher and from any
+        disk-bound calibration cycle."""
+        import memchorus.hooks as h
+        h._CAPTURE_BATCHER = None
+        stub = {
+            "calibrated": True,
+            "params": {"min_relevance_score": 0.3, "dedup_similarity_threshold": 0.7,
+                       "retention_scan_interval_days": 7},
+            "profile": "test",
+            "tuning_path": "/tmp/_stub_tuning.yaml",
+        }
+        with patch.object(h, "_get_orchestrator", return_value=self.orch):
+            with patch.object(self.orch, "run_calibration_cycle",
+                              return_value=dict(stub)) as cyc:
+                result = h.MemChorusHooks().on_session_end(conversation_history=history)
+        return result, cyc
+
+    def test_clean_turn_wires_useful_flags_into_index(self, orchestrate, _isolated_tracker):
+        self.orch = orchestrate
+        key = _unique_key("wireduseful")
+        orchestrate._recent_recall_keys = [key]
+        # Clean turn: no correction pattern should match.
+        history = [{"role": "user", "content": "please summarize the launch plan"}]
+        result, cyc = self._run_session_end("memchorus.hooks", history)
+        assert result is not None
+        assert result.get("teardown") == "complete"
+        stats = _isolated_tracker.get_hit_stats(key)
+        assert stats["useful_flags"] >= 1
+
+    def test_pushback_wires_stale_flags_into_index(self, orchestrate, _isolated_tracker):
+        self.orch = orchestrate
+        key = _unique_key("wiredstale")
+        orchestrate._recent_recall_keys = [key]
+        # Correction pattern: repetition_general (i already told ...)
+        history = [{"role": "user", "content": "I already told you this, stop repeating"}]
+        result, cyc = self._run_session_end("memchorus.hooks", history)
+        assert result is not None
+        assert result.get("teardown") == "complete"
+        stats = _isolated_tracker.get_hit_stats(key)
+        assert stats["noise_flags"] >= 1
+
+    def test_wiring_never_breaks_teardown_when_mark_raises(
+        self, orchestrate, _isolated_tracker
+    ):
+        self.orch = orchestrate
+        orchestrate._recent_recall_keys = [_unique_key("wiredboom")]
+
+        def _boom(*a, **kw):
+            raise RuntimeError("mark_* failure must not surface")
+
+        def _boom2(*a, **kw):
+            raise RuntimeError("mark_stale failure must not surface")
+
+        with patch.object(orchestrate, "mark_relevant_injected_as_useful", side_effect=_boom), \
+             patch.object(orchestrate, "mark_relevant_injected_as_stale", side_effect=_boom2):
+            result, cyc = self._run_session_end(
+                "memchorus.hooks",
+                [{"role": "user", "content": "please summarize"}],
+            )
+        assert result is not None
+        assert result.get("teardown") == "complete"
+
+    def test_empty_buffer_wires_zero_and_records_nothing(
+        self, orchestrate, _isolated_tracker
+    ):
+        self.orch = orchestrate
+        orchestrate._recent_recall_keys = []
+        with patch.object(orchestrate, "mark_relevant_injected_as_useful",
+                          return_value=0) as mu, \
+             patch.object(orchestrate, "mark_relevant_injected_as_stale",
+                          return_value=0) as ms:
+            result, cyc = self._run_session_end(
+                "memchorus.hooks",
+                [{"role": "user", "content": "please summarize"}],
+            )
+        assert result is not None
+        assert result.get("teardown") == "complete"
+        mu.assert_called_once()   # production caller was reached
+        assert mu.return_value == 0
+
+
+# ---------------------------------------------------------------------------
 # AC-3: save() success semantics
 # ---------------------------------------------------------------------------
 
