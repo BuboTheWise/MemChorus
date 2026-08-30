@@ -60,9 +60,12 @@ class TestScoringNormalisation:
 
 class TestEffectiveMinScoreDefaults:
     def test_default_config_uses_class_constant(self):
-        source = HermesDefaultMemorySource("test")
-        eff = source._effective_min_score()
-        assert eff == HermesDefaultMemorySource.MIN_RECALL_SCORE
+        from unittest import mock
+        with mock.patch('memchorus.calibration_engine.CalibrationEngine') as cal:
+            cal.get_adjusted_params.return_value = {}
+            source = HermesDefaultMemorySource("test")
+            eff = source._effective_min_score()
+            assert eff == HermesDefaultMemorySource.MIN_RECALL_SCORE
 
     def test_config_override_allows_lower(self):
         source = HermesDefaultMemorySource("test", config={"min_recall_score": 0.2})
