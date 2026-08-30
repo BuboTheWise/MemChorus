@@ -564,7 +564,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.21 (current — 2026-08-30)
+### v2.0.22 (current — 2026-08-30)
+
+- **Live recall-feedback loop closed (final joint for #138):** the `on_session_end` hook now actually invokes the auto-tuning feedback surface — routing the recalled-keys buffer through `MemoryOrchestrator.mark_relevant_injected_as_stale()` on a user pushback turn and `mark_relevant_injected_as_useful()` on a clean turn, with the call sites at the live teardown path in `src/memchorus/hooks.py`. This is the record joint that was previously only present as orchestrator methods with test coverage but no caller, so the per-key `HitRateTracker` index (`_hit_rate_index.json`) now gains real entries from normal save/recall operation without a manual recalibrate run. Feedback bookkeeping degrades silently and can never propagate an exception into session teardown. (2) *Test isolation:* `TestGracefulDegradation` now resets the shared `MistakeDetector` singleton's `total_noise_flags`/`total_useful_flags` counters (13 lines in `tests/test_calibration_engine.py`) so ordering-dependent xdist runs no longer leak aggregate mistake flags into `test_no_mistake_detector_returns_zeros`. Full suite: 1666 passed, 12 skipped (1 pre-existing known multi-word adapter failure at base, tracked separately). Bumps `__version__` 2.0.21 → 2.0.22.
+
+### v2.0.21 (2026-08-30)
 
 - **Portable atomic config write (closes #146 cluster 1):** the two atomic-write sites in `auto_init.py` (`write_config` and the enable-flag writer) now finalise the temp file with `os.replace()` instead of `Path.rename()`. On POSIX both are rename(2) and behave identically, but on Windows `Path.rename()` raises `WinError 183` when the target path already exists, so re-running the bootstrap over an already-initialised config could surface a spurious failure. `os.replace()` overwrites in place atomically. A new Windows-portability regression test (`tests/test_auto_init.py`) simulates the `FileExistsError[183]` condition and proves `os.replace` succeeds where `Path.rename` raises — so the behaviour is locked on every platform, not just Windows. Full suite: 1659 passed, 16 skipped. Bumps `__version__` 2.0.20 → 2.0.21.
 
