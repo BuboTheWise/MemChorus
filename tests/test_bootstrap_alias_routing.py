@@ -26,8 +26,11 @@ import os, sys, json, tempfile, pathlib
 
 os.environ["MEMCHORUS_AUTO_ENABLED"] = "true"
 
-# Point hermes_default adapter to a temp directory so we can verify file creation
-custom_dir = "__CUSTOM_DIR__"
+# Point hermes_default adapter to a temp directory so we can verify file creation.
+# The path is passed via an env var, NOT interpolated into this source: on Windows
+# the temp dir is C:\Users\..., and a literal "C:\U..." inside a python -c string
+# trips the \UXXXXXXXX unicode-escape codec (SyntaxError) before any test code runs.
+custom_dir = os.environ["MC_ALIAS_TEST_DIR"]
 os.environ["MEMCHORUS_CONFIG"] = json.dumps({
     "hermes_default": {
         "memory_dir": custom_dir,
@@ -97,13 +100,15 @@ class TestBootstrapKeyAliasRouting(unittest.TestCase):
     def test_hermes_default_key_routed_via_env(self):
         """AC-1: hermes_default in MEMCHORUS_CONFIG routes to hermes_default_config internally."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            script = BOOTSTRAP_ALIAS_SCRIPT.replace("__CUSTOM_DIR__", tmpdir)
+            script = BOOTSTRAP_ALIAS_SCRIPT
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env={**os.environ, "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
+                env={**os.environ,
+                     "MC_ALIAS_TEST_DIR": tmpdir,
+                     "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
             )
 
             stdout = result.stdout.strip()
@@ -120,13 +125,15 @@ class TestBootstrapKeyAliasRouting(unittest.TestCase):
     def test_files_materialize_at_custom_path(self):
         """AC-2: Memory files materialize at the overridden path with valid JSON."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            script = BOOTSTRAP_ALIAS_SCRIPT.replace("__CUSTOM_DIR__", tmpdir)
+            script = BOOTSTRAP_ALIAS_SCRIPT
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env={**os.environ, "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
+                env={**os.environ,
+                     "MC_ALIAS_TEST_DIR": tmpdir,
+                     "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
             )
 
             stdout = result.stdout.strip()
