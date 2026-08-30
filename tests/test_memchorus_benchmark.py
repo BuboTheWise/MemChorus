@@ -15,6 +15,7 @@ Usage:
 import json
 import statistics
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,7 +26,7 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-BENCHMARK_DIR = Path("/tmp/memchorus_benchmark_results")
+BENCHMARK_DIR = Path(tempfile.gettempdir()) / "memchorus_benchmark_results"
 
 # ── Test fixtures ─────────────────────────────────────────────────────────
 

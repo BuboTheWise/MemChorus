@@ -23,6 +23,7 @@ def _run(script_lines):
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
     tmp.write('\n'.join(script_lines))
     tmp.flush()
+    tmp.close()  # Windows: release handle before unlink (WinError 32 otherwise)
     try:
         return subprocess.run(
             [sys.executable, tmp.name],

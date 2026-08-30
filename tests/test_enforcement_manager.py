@@ -95,7 +95,14 @@ class TestFullPipeline(unittest.TestCase):
         self.assertIsInstance(result, EnforcementResult)
         self.assertGreaterEqual(result.triggered_points, 1)
         self.assertIsNotNone(result.storage_outcome)
-        self.assertGreater(result.timing_ms, 0.0)
+        # Timing is a performance side-channel, not a correctness signal. On
+        # faster platforms (esp. Windows runners) the mocked enforce() pipeline
+        # can complete in <1 ms, where time.time()'s coarser clock resolution
+        # rounds the delta to 0.0. Execution itself is already asserted above
+        # (trigger fired + storage captured), so assert the field is a valid,
+        # non-negative float rather than strictly positive.
+        self.assertIsInstance(result.timing_ms, float)
+        self.assertGreaterEqual(result.timing_ms, 0.0)
 
     def test_planning_text_gets_recall_and_storage(self) -> None:
         orch = _MockOrchestrator()
@@ -244,7 +251,11 @@ class TestEnforcementResult(unittest.TestCase):
         mgr = BehavioralEnforcementManager(orchestrator=orch)
 
         result = mgr.enforce("I finished the task and achieved the goal")
-        self.assertGreater(result.timing_ms, 0.0)
+        # See test_planning_text_triggers_pipeline: timing_ms may legitimately
+        # be 0.0 on fast/Windows runners (sub-millisecond pipeline + coarse
+        # time.time() resolution), so assert it's a valid non-negative float.
+        self.assertIsInstance(result.timing_ms, float)
+        self.assertGreaterEqual(result.timing_ms, 0.0)
 
 
 # ---------------------------------------------------------------------------
