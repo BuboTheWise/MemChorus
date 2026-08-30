@@ -21,6 +21,7 @@ src/memchorus/lifecycle_eviction.py
 src/memchorus/lifecycle_manager.py
 src/memchorus/lifecycle_merge.py
 src/memchorus/lifecycle_retention.py
+src/memchorus/locator.py
 src/memchorus/memory_source.py
 src/memchorus/mempalace_memory_source.py
 src/memchorus/mempalace_persistent_session.py
@@ -49,6 +50,7 @@ tests/test_auto_recall_engine.py
 tests/test_auto_storage_engine.py
 tests/test_auto_storage_internal_artifact_filter.py
 tests/test_auto_storage_provenance_tags.py
+tests/test_autotuning_live_paths.py
 tests/test_behavioral_integration.py
 tests/test_behavioral_trigger.py
 tests/test_boost_1_5x_ratio.py
@@ -64,6 +66,7 @@ tests/test_category_metadata_api.py
 tests/test_content_matching_quality.py
 tests/test_cross_source_dedup.py
 tests/test_cross_source_merge.py
+tests/test_cross_turn_suppression.py
 tests/test_detect_str_invariant.py
 tests/test_distiller.py
 tests/test_domain_thresholds.py
@@ -96,6 +99,7 @@ tests/test_lifecycle_engines.py
 tests/test_lifecycle_eviction.py
 tests/test_lifecycle_manager.py
 tests/test_lifecycle_merge.py
+tests/test_locator_storage.py
 tests/test_mcp_exceptiongroup_handling.py
 tests/test_mcp_failure_e2e.py
 tests/test_mcp_resilience.py

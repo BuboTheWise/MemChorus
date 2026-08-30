@@ -309,7 +309,7 @@ def test_read_memory_file_formats_correctly():
         src = HermesDefaultMemorySource(name='test_source', config={'memory_dir': tmpdir})
 
         # Create a file in the expected format
-        test_file = '/tmp/_read_mem_test.md'
+        test_file = os.path.join(tempfile.gettempdir(), '_read_mem_test.md')
         with open(test_file, 'w') as f:
             f.write('2024-01-15: First entry [tag1]\n')
             f.write('2024-02-20: Second entry [tag2, tag3]\n')
