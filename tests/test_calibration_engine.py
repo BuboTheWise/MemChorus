@@ -267,7 +267,11 @@ class TestGracefulDegradation:
         """When HitRateTracker is unavailable, aggregate returns zeroes."""
         engine = CalibrationEngine(profile_name="no_tracker")
 
-        saves, recalls = engine.aggregate_hit_rate_stats()
+        # Force the module import to fail (the degradation path aggregate_hit_rate_stats
+        # actually guards) so the result is independent of any on-disk sidecar this
+        # machine may carry — the sibling tests simulate unavailability the same way.
+        with patch.dict(sys.modules, {"memchorus.hit_rate_tracker": None}):
+            saves, recalls = engine.aggregate_hit_rate_stats()
         assert saves == 0
         assert recalls == 0
 
