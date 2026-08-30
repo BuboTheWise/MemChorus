@@ -478,7 +478,7 @@ class TestYamlConfigKeys(unittest.TestCase):
     def test_yaml_keys_populate_config(self):
         """When YAML has default_source and half_life_days, they flow into config."""
         import yaml as _yaml
-        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, dir='/tmp')
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
         tmp.write("default_source: hermes_default\nhalf_life_days: 14.0\ncache_ttl_seconds: 120\n")
         tmp.flush()
 
