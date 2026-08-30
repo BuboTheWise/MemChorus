@@ -287,14 +287,24 @@ class _McpTransportDetector:
             parts.append(os.path.expanduser(command_raw))
             parts.extend(cfg_args)
         elif not goto_fallback:
-            # Shape A (legacy): shlex.split the command string.
+            # Shape A (legacy): split the command string into argv parts.
             assert isinstance(command_raw, str)  # narrowed above
             try:
-                parts = shlex.split(command_raw)
+                if os.name != "nt":
+                    # POSIX: shlex handles quoting and shell-style escaping.
+                    parts = shlex.split(command_raw)
+                else:
+                    # Windows paths use backslashes, which POSIX shlex would
+                    # treat as escape characters and swallow (GH-146 Windows CI).
+                    # Split on unquoted whitespace and unquote each token:
+                    # "C:\x\python.exe" -m foo -> ['C:\\x\\python.exe', '-m', 'foo']
+                    parts = []
+                    for token in command_raw.strip().split():
+                        if len(token) >= 2 and token[0] in "'\"" and token[-1] == token[0]:
+                            token = token[1:-1]
+                        parts.append(token)
             except ValueError as exc:
-                logger.warning(
-                    "_McpTransportDetector: invalid command string in config.yaml: %s", exc
-                )
+                logger.warning("_McpTransportDetector: invalid command string in config.yaml: %s", exc)
                 goto_fallback = True
 
         if not goto_fallback and not parts:

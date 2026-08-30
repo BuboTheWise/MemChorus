@@ -218,7 +218,10 @@ class TestPythonBinDiscovery:
     """Verify the python_bin discovery chain in _McpClient."""
 
     def test_config_override_with_valid_path(self):
-        fake = "/usr/bin/python3"
+        # A real, existing, executable interpreter on every platform (Linux
+        # runners have /usr/bin/python3; Windows hosts do not — use
+        # sys.executable so the same test is meaningful everywhere, GH-146).
+        fake = sys.executable
         client = _McpClient(timeout=1, config={"python_bin": fake})
         assert client._python_bin == os.path.realpath(fake)
 
@@ -243,13 +246,16 @@ class TestPythonBinDiscovery:
 
     def test_mem_palace_config_passes_python_bin_to_client(self, tmp_cache):
         """MemPalaceMemorySource.__init__ must forward python_bin to _McpClient."""
+        # Cross-platform: /usr/bin/python3 does not exist on Windows hosts, so
+        # the override would be skipped and the assertion would fail (GH-146).
+        fake = sys.executable
         config = {
             "cache_dir": tmp_cache,
             "skip_mcp": True,
-            "python_bin": "/usr/bin/python3",
+            "python_bin": fake,
         }
         src = MemPalaceMemorySource(config=config)
-        assert src._client._python_bin == os.path.realpath("/usr/bin/python3")
+        assert src._client._python_bin == os.path.realpath(fake)
 
     def test_source_info_includes_python_bin(self, tmp_cache):
         """get_source_info should report which python_bin was resolved."""

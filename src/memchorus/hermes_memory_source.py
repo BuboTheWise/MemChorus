@@ -634,8 +634,44 @@ class HermesDefaultMemorySource(MemorySource):
             if len(files) <= limit and not force:
                 return
 
-            # Sort oldest-first by mtime so we evict the eldest entries
-            files.sort(key=lambda p: os.path.getmtime(p))
+            # Sort oldest-first so we evict the eldest entries first.  Primary key
+            # is the ISO-8601 UTC timestamp embedded in each log; tie-break by the
+            # context index (monotonic save sequence, present on action logs) and
+            # then by path.  Filesystem mtime is only a last-resort fallback,
+            # because Windows hosted runners have coarse mtime/clock resolution
+            # (multiple writes can share the same filesystem timestamp — GH-146).
+            import json as _json_mod
+            import datetime as _dt_mod
+
+            def _age_key(path: str):
+                ts = None
+                ctx_index = float("inf")
+                try:
+                    with open(path, "r") as fh:
+                        data = _json_mod.load(fh)
+                    raw = data.get("timestamp") if isinstance(data, dict) else None
+                    if raw:
+                        ts = _dt_mod.datetime.fromisoformat(
+                            str(raw).replace("Z", "+00:00")
+                        ).timestamp()
+                    ctx = data.get("context") if isinstance(data, dict) else None
+                    if isinstance(ctx, dict):
+                        idx = ctx.get("index")
+                        if isinstance(idx, bool) is False and idx is not None:
+                            try:
+                                ctx_index = float(idx)
+                            except (TypeError, ValueError):
+                                pass
+                except Exception:
+                    pass
+                if ts is not None:
+                    return (0, float(ts), ctx_index, path)
+                try:
+                    return (1, os.path.getmtime(path), ctx_index, path)
+                except OSError:
+                    return (2, 0.0, ctx_index, path)
+
+            files.sort(key=_age_key)
             excess = len(files) - limit
             for fp in files[:excess]:
                 try:

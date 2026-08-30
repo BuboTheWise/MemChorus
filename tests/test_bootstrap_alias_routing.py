@@ -26,55 +26,71 @@ import os, sys, json, tempfile, pathlib
 
 os.environ["MEMCHORUS_AUTO_ENABLED"] = "true"
 
-# Point hermes_default adapter to a temp directory so we can verify file creation
-custom_dir = "%(CUSTOM_DIR)s"
+# Point hermes_default adapter to a temp directory so we can verify file creation.
+# The path is passed via an env var, NOT interpolated into this source: on Windows
+# the temp dir is C:\Users\..., and a literal "C:\U..." inside a python -c string
+# trips the \UXXXXXXXX unicode-escape codec (SyntaxError) before any test code runs.
+custom_dir = os.environ["MC_ALIAS_TEST_DIR"]
 os.environ["MEMCHORUS_CONFIG"] = json.dumps({
     "hermes_default": {
         "memory_dir": custom_dir,
     },
 })
 
-# Trigger bootstrap in a fresh process
-from memchorus.auto_bootstrap import _bootstrap
-orchestrator = _bootstrap()
+import io, traceback
+_out = io.TextIOWrapper(sys.stdout.buffer, write_through=True, line_buffering=True)
 
-# Isolate test from live mempalace MCP calls
-orchestrator.disable_source('mempalace')
-
-if orchestrator is None:
-    print("FAIL: _bootstrap returned None", file=sys.stderr)
+def _die(msg, exc=None):
+    print("FAIL: " + msg, file=_out)
+    if exc is not None:
+        print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)), file=_out)
+    sys.stdout.flush()
     sys.exit(1)
 
-# Check the hermes_default adapter received our memory_dir override
-hd_source = orchestrator.memory_sources.get("hermes_default")
-if hd_source is None:
-    print("FAIL: hermes_default source not registered", file=sys.stderr)
-    sys.exit(1)
-
-actual_dir = hd_source.config.get("memory_dir", hd_source.config.get("_memory_dir"))
-print(f"adapter_memory_dir={actual_dir}")
-
-# Verify save() actually writes to that directory (AC-2)
 try:
-    orchestrator.save(key="alias_test_key", value="alias_test_value")
-    import time
-    time.sleep(0.3)  # allow async flush
-except Exception as e:
-    print(f"WARN: save failed (non-fatal for this check): {e}")
+    # Trigger bootstrap in a fresh process
+    from memchorus.auto_bootstrap import _bootstrap
+    orchestrator = _bootstrap()
 
-# Scan the custom directory for any .json files to prove materialization
-found_files = list(pathlib.Path(custom_dir).glob("*.json"))
-print(f"files_in_custom_dir={len(found_files)}")
-if found_files:
-    sample_content = found_files[0].read_text()
-    print(f"sample_file_valid_json={not bool(json.loads(sample_content)) or True}")
+    if orchestrator is None:
+        _die("_bootstrap returned None")
+
+    # Isolate test from live mempalace MCP calls
     try:
-        json.loads(sample_content)
-        print("sample_file_is_valid_json=true")
+        orchestrator.disable_source('mempalace')
     except Exception as e:
-        print(f"sample_file_is_valid_json=false|error={{e}}")
+        print("WARN: disable_source raised (continuing): %r" % e, file=_out)
 
-print("RESULT=PASS")
+    # Check the hermes_default adapter received our memory_dir override
+    hd_source = orchestrator.memory_sources.get("hermes_default")
+    if hd_source is None:
+        _die("hermes_default source not registered")
+
+    actual_dir = hd_source.config.get("memory_dir", hd_source.config.get("_memory_dir"))
+    print("adapter_memory_dir=" + str(actual_dir))
+
+    # Verify save() actually writes to that directory (AC-2)
+    try:
+        orchestrator.save(key="alias_test_key", value="alias_test_value")
+        import time
+        time.sleep(0.3)  # allow async flush
+    except Exception as e:
+        print("WARN: save raised (non-fatal for this check): %r" % e, file=_out)
+
+    # Scan the custom directory for any .json files to prove materialization
+    found_files = list(pathlib.Path(custom_dir).glob("*.json"))
+    print("files_in_custom_dir=" + str(len(found_files)))
+    if found_files:
+        sample_content = found_files[0].read_text()
+        try:
+            json.loads(sample_content)
+            print("sample_file_is_valid_json=true")
+        except Exception as e:
+            print("sample_file_is_valid_json=false|error=" + repr(e))
+
+    print("RESULT=PASS")
+except Exception as exc:
+    _die("uncaught exception in child bootstrap test", exc)
 '''
 
 
@@ -84,13 +100,15 @@ class TestBootstrapKeyAliasRouting(unittest.TestCase):
     def test_hermes_default_key_routed_via_env(self):
         """AC-1: hermes_default in MEMCHORUS_CONFIG routes to hermes_default_config internally."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            script = BOOTSTRAP_ALIAS_SCRIPT % {"CUSTOM_DIR": tmpdir}
+            script = BOOTSTRAP_ALIAS_SCRIPT
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env={**os.environ, "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
+                env={**os.environ,
+                     "MC_ALIAS_TEST_DIR": tmpdir,
+                     "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
             )
 
             stdout = result.stdout.strip()
@@ -107,17 +125,21 @@ class TestBootstrapKeyAliasRouting(unittest.TestCase):
     def test_files_materialize_at_custom_path(self):
         """AC-2: Memory files materialize at the overridden path with valid JSON."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            script = BOOTSTRAP_ALIAS_SCRIPT % {"CUSTOM_DIR": tmpdir}
+            script = BOOTSTRAP_ALIAS_SCRIPT
             result = subprocess.run(
                 [sys.executable, "-c", script],
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env={**os.environ, "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
+                env={**os.environ,
+                     "MC_ALIAS_TEST_DIR": tmpdir,
+                     "PYTHONPATH": str(pathlib.Path(__file__).resolve().parent.parent / "src")},
             )
 
             stdout = result.stdout.strip()
-            self.assertIn("RESULT=PASS", stdout)
+            stderr = result.stderr.strip()
+            self.assertIn("RESULT=PASS", stdout,
+                f"Bootstrap alias test failed. STDOUT:\n{stdout}\nSTDERR:\n{stderr}")
 
             # Parse file count from output
             for line in stdout.splitlines():

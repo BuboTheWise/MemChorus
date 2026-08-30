@@ -38,13 +38,17 @@ class TestShapeAHermesConfigSingleString:
     """Shape A: command is a single shell string that gets shlex.split()-ed."""
 
     def test_command_only_string_is_split(self):
+        # Use sys.executable (a real, executable path on every platform) rather
+        # than the Linux-only /usr/bin/env: the detector validates the resolved
+        # command exists and is executable before trusting it, so a hardcoded
+        # POSIX path falls through to PATH discovery (None) on Windows.
         content = (
             "mcp_servers:\n"
             "  mempalace:\n"
-            "    command: '/usr/bin/env python -m mempalace.test'\n"
+            f"    command: '{sys.executable} -m mempalace.test'\n"
         )
         result = _write_and_detect(content) or {}
-        assert result.get("command") == "/usr/bin/env"
+        assert result.get("command") == sys.executable
         assert "-m" in result.get("args", [])
 
     def test_missing_args_key_uses_shlex(self):

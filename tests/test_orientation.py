@@ -116,9 +116,12 @@ class TestCacheRegistry(unittest.TestCase):
         key = _CacheKey(project="A", query_types=("kg",))
         # Store with long TTL
         self.registry.put(key, [{"key": "r1"}], ttl_seconds=60.0)
-        # Override with short TTL -- should expire immediately
-        got = self.registry.get(key, ttl_override=0.001)
-        time.sleep(0.01)
+        # Backdate the entry timestamp by well over the override TTL so the
+        # expiry check fires deterministically (Windows clock resolution is
+        # coarser than 1 ms, so sleeping to expire a 1 ms TTL is flaky there).
+        entry = self.registry._cache[key]
+        entry.timestamp -= 1.0
+        # Override with short TTL -- must now be expired
         self.assertIsNone(self.registry.get(key, ttl_override=0.001))
 
     def test_lru_eviction_at_capacity(self):
