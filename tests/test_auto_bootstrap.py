@@ -481,6 +481,7 @@ class TestYamlConfigKeys(unittest.TestCase):
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
         tmp.write("default_source: hermes_default\nhalf_life_days: 14.0\ncache_ttl_seconds: 120\n")
         tmp.flush()
+        tmp.close()  # Windows: release handle before unlink (WinError 32 otherwise)
 
         # Patch _load_yaml_config to return our dict directly
         from memchorus import auto_bootstrap as ab_mod
