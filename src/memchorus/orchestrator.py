@@ -205,6 +205,12 @@ class MemoryOrchestrator:
         # GAP010: source enable/disable state (default-enabled on registration)
         self._source_enabled: Dict[str, bool] = {}
 
+        # Auto-tuning (§10.2, issue #138): keys from the most recent search/
+        # retrieve result set. Consumed by mark_relevant_injected_as_useful()/
+        # _stale() to record recall feedback into the HitRateTracker. Bounded
+        # (≤128 keys) and O(1) per search — negligible hot-path overhead.
+        self._recent_recall_keys: List[str] = []
+
         # GAP008: retrieval LRU cache — OrderedDict gives O(1) eviction
         self._retrieve_cache: OrderedDict = OrderedDict()
         self._cache_ttl = float(self.config.get('cache_ttl_seconds', 60.0))
@@ -920,6 +926,134 @@ class MemoryOrchestrator:
 
         return saved
 
+    # ------------------------------------------------------------------
+    # Auto-tuning feedback surface (issue #138, spec §10.2)
+    # ------------------------------------------------------------------
+
+    def mark_relevant_injected_as_useful(self) -> int:
+        """Record positive recall feedback for the keys most recently injected.
+
+        Live feedback path (spec §10.2 step 1): keys from the most recent
+        search result set are marked useful so the per-key hit-rate index
+        (persisted as _hit_rate_index.json) captures real usage.
+
+        Graceful degradation: returns 0 when tracking is unavailable or the
+        recent-keys buffer is empty (no search in this session yet). Never
+        propagates exceptions — feedback bookkeeping must not affect callers.
+        """
+        keys = list(self._recent_recall_keys)
+        if not keys:
+            return 0
+        _ensure_hit_rate_tracker()
+        if _HITRATE_TRACKER is None:
+            return 0
+        recorded = 0
+        for k in keys:
+            try:
+                _HITRATE_TRACKER.record_useful(k)
+                recorded += 1
+            except Exception:  # noqa: BLE001
+                pass  # tracking failure must never surface to the caller
+        return recorded
+
+    def mark_relevant_injected_as_stale(self) -> int:
+        """Record negative recall feedback for the keys most recently injected.
+
+        Counterpart of :meth:`mark_relevant_injected_as_useful` for memories
+        surfaced by recall but judged stale/noise. Same graceful-degradation
+        contract: returns 0 on empty buffer or unavailable tracker.
+        """
+        keys = list(self._recent_recall_keys)
+        if not keys:
+            return 0
+        _ensure_hit_rate_tracker()
+        if _HITRATE_TRACKER is None:
+            return 0
+        recorded = 0
+        for k in keys:
+            try:
+                _HITRATE_TRACKER.record_stale(k)
+                recorded += 1
+            except Exception:  # noqa: BLE001
+                pass
+        return recorded
+
+    def run_calibration_cycle(
+        self,
+        min_interval_hours: float = 24.0,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Low-frequency auto-calibration trigger (issue #138, spec §10.2 step 3).
+
+        Closes the auto-tuning loop without manual CLI:
+
+        1. Flushes the HitRateTracker so the per-profile _hit_rate_index.json
+           sidecar is persisted.
+        2. Runs :meth:`CalibrationEngine.apply_and_persist` for the active
+           profile, which aggregates tracker + mistake-flag signals and writes
+           the tuned parameters to
+           ``~/.hermes/data/memchorus/_tuning/<profile>.yaml``.
+
+        Throttled: skipped when the last calibration is less than
+        *min_interval_hours* old (low-frequency guarantee) unless *force* is
+        set. ``last_calibrated_at`` is read from the persisted tuning state, so
+        the throttle survives process restarts.
+
+        Returns a structured summary dict; ``{'calibrated': False, ...}`` on
+        every skip/failure path. Never raises — calibration is bookkeeping and
+        must not break session teardown.
+        """
+        from memchorus.calibration_engine import CalibrationEngine
+        import os as _os
+
+        summary: Dict[str, Any] = {"calibrated": False, "profile": "default"}
+        try:
+            profile = _os.environ.get("HERMES_PROFILE") or "default"
+            summary["profile"] = profile
+
+            tracker = None
+            _ensure_hit_rate_tracker()
+            tracker = _HITRATE_TRACKER
+
+            # Low-frequency gate: read persisted calibration timestamp.
+            if not force:
+                engine_probe = CalibrationEngine(profile_name=profile)
+                ts = engine_probe.state.last_calibrated_at
+                if ts:
+                    try:
+                        from datetime import datetime, timezone as _tz
+                        last = datetime.fromisoformat(str(ts))
+                        if last.tzinfo is None:
+                            last = last.replace(tzinfo=_tz.utc)
+                        age_hours = (datetime.now(_tz.utc) - last).total_seconds() / 3600.0
+                        if age_hours < float(min_interval_hours):
+                            summary["reason"] = "min_interval_not_reached"
+                            return summary
+                    except Exception:  # noqa: BLE001
+                        pass  # unparseable timestamp → allow recalibration
+
+            # Step 1: persist the live hit-rate index (non-fatal if it fails).
+            if tracker is not None:
+                try:
+                    tracker.flush()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            engine = CalibrationEngine(profile_name=profile)
+            adjusted = engine.apply_and_persist()
+            summary.update({
+                "calibrated": True,
+                "params": dict(adjusted),
+                "tuning_path": str(engine.tuning_path),
+            })
+            logger.info(
+                "run_calibration_cycle: profile=%r cycle=%d params=%s",
+                profile, engine.state.calibration_count, adjusted,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("run_calibration_cycle failed (degraded): %s", exc)
+        return summary
+
     def get_hit_rate_stats(self):
         """Return current hit-rate statistics for the orchestrator instance.
 
@@ -1205,6 +1339,14 @@ class MemoryOrchestrator:
         # --- G3 fix: content-level dedup AFTER scoring but BEFORE truncation ---
         if self._dedup_threshold > 0:
             ranked = self._deduplicate_results(ranked)
+
+        # Auto-tuning (§10.2): remember the most recent result set's keys so
+        # recall feedback (mark_relevant_injected_as_useful/_stale) can be
+        # recorded for exactly what was surfaced. Bounded to 128 keys;
+        # O(n) over the ranked set — negligible for typical result counts.
+        self._recent_recall_keys = [
+            getattr(r, "key", "") for r in ranked[:128]
+        ]
 
         # Format output dicts for injection
         def _dedup_key(content_obj):
