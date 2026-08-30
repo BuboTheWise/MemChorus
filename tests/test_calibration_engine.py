@@ -236,13 +236,24 @@ class TestGracefulDegradation:
 
     @pytest.fixture(autouse=True)
     def _reset_tracker(self):
-        """Clear the HitRateTracker singleton before and after each test
-        so cross-test pollution (evidenced by total_saves > 0) never leaks."""
+        """Clear the HitRateTracker and MistakeDetector singletons before and
+        after each test so cross-test pollution (evidenced by total_saves > 0 or
+        non-zero mistake flags) never leaks.  Both are process-level singletons;
+        any test module that drives the live classify_and_flag / register_save
+        path bumps their counters, and a reset here protects this class (and any
+        future class in this file) from that state."""
         from memchorus.hit_rate_tracker import HitRateTracker
+        from memchorus.mistake_detector import MistakeDetector
 
         HitRateTracker.reset()
+        det = MistakeDetector.get_instance()
+        det.total_noise_flags = 0
+        det.total_useful_flags = 0
         yield
         HitRateTracker.reset()
+        det = MistakeDetector.get_instance()
+        det.total_noise_flags = 0
+        det.total_useful_flags = 0
 
     def test_no_adaptive_returns_v170_defaults(self):
         """When AdaptiveThreshold is not importable, compute_adjustments returns v1.7.0 defaults."""

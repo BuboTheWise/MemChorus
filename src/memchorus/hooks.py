@@ -639,6 +639,33 @@ class MemChorusHooks:
                     total_noise += noise
                     total_useful += useful
 
+                # Live feedback wiring (spec §10.2 step 1, issue #138).
+                # The MistakeDetector signal above is the production caller for
+                # the per-key feedback surface: it routes the recalled-keys
+                # buffer through mark_relevant_injected_as_stale()/useful() so
+                # the HitRateTracker index captures real recall usefulness and
+                # boost_factor_for_key stops being pinned at 1.0.
+                #   - user pushed back on recall content (noise) -> keys were stale
+                #   - clean turn (no pushback)                  -> recall set was useful
+                if total_noise > 0:
+                    try:
+                        wired = orchestrator.mark_relevant_injected_as_stale()
+                        logger.info(
+                            "hooks: on_session_end auto-tuning — wired %d stale key(s) (noise=%d)",
+                            wired, total_noise,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass  # feedback bookkeeping must never break teardown
+                elif user_texts:
+                    try:
+                        wired = orchestrator.mark_relevant_injected_as_useful()
+                        logger.info(
+                            "hooks: on_session_end auto-tuning — wired %d useful key(s) (clean turn, %d user msg(s))",
+                            wired, len(user_texts),
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass  # feedback bookkeeping must never break teardown
+
                 if total_noise or total_useful:
                     logger.info(
                         "hooks: on_session_end auto-tuning — noise=%d useful=%d from %d user messages",
