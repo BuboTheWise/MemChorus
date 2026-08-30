@@ -151,6 +151,63 @@ class TestEnablePlugin:
         finally:
             ai._resolve_hermes_config = orig_res
 
+    def test_overwrites_existing_config_without_error(self, tmp_path, monkeypatch, capsys):
+        """Regression (GH-146): ``enable_plugin`` must overwrite a pre-existing
+        ``config.yaml`` rather than hit ``FileExistsError [WinError 183]``.
+
+        On Windows, ``Path.rename(src, dst)`` over an *existing* target raises
+        ``FileExistsError [WinError 183]``; ``os.replace`` overwrites it instead.
+        The plugin-enablement path (``enable_plugin``) *always* renames into an
+        already-existing file — the config file is a precondition (``enable_plugin``
+        returns early if it is absent) — so every successful call walks this line.
+        On POSIX the old code masked the bug (``rename`` over existing works
+        silently); on Windows it ``SystemExit(1)``.
+
+        To make this a *real* regression test on the Linux CI box (where a bare
+        rename-over-existing would also succeed), we reproduce the WinError 183
+        behaviour directly by patching ``pathlib.Path.rename`` to raise
+        ``FileExistsError`` when the destination already exists — which is exactly
+        what Windows does. The fix uses ``os.replace`` (the C-level API, NOT the
+        ``Path.rename`` wrapper), which the patch does not affect, so the old
+        code fails this test and the new code passes on every platform.
+        """
+        import memchorus.auto_init as ai  # noqa: F811
+
+        existing = ("agents:\n"
+                    "  max_context: 8\n"
+                    "plugins:\n"
+                    "  enabled: [existing_a, existing_b]\n")
+        fake_cfg = self._write_fake_cfg(existing, tmp_path)
+
+        # Reproduce WinError 183: Path.rename over an existing target raises.
+        def win_error_rename(self, target):
+            if Path(target).exists():
+                raise FileExistsError(
+                    183,
+                    "The process cannot access the file because it is being "
+                    "used by another process.",
+                )
+            return orig_rename(self, target)
+
+        orig_rename = Path.rename
+        monkeypatch.setattr(Path, "rename", win_error_rename)
+
+        orig_res = ai._resolve_hermes_config
+        ai._resolve_hermes_config = lambda _p: fake_cfg  # type: ignore
+
+        try:
+            # Old (Path.rename) would raise SystemExit here under the simulated
+            # WinError 183; the portable os.replace path must succeed.
+            result = ai.enable_plugin(profile="default")
+            assert result is True, "enable_plugin must overwrite, not raise"
+            updated = fake_cfg.read_text()
+            # Overwrite in place: memchorus added AND prior entries preserved.
+            assert "memchorus" in updated
+            assert "existing_a" in updated
+            assert "existing_b" in updated
+        finally:
+            ai._resolve_hermes_config = orig_res  # restore
+
     def test_noop_when_already_enabled(self, tmp_path, capsys):
         import memchorus.auto_init as ai  # noqa: F811
         fake_cfg = self._write_fake_cfg("plugins:\n  enabled: [memchorus]\n", tmp_path)
