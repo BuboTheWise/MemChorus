@@ -42,6 +42,33 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > open an empty shell and the corpus is invisible — status/search/KG all read 0).
 > MemChorus normalizes a too-shallow `--palace` to the leaf at transport
 > resolution, but the config should point at the leaf directly.
+>
+> ### Migrating an existing installation
+> If a profile was initialized back when the writer and reader disagreed about
+> the leaf, the corpus is already on disk — it just lives where the *writer*
+> put it. Do **not** delete or re-mine from scratch; point the reader at the
+> existing leaf:
+> 1. **Find the corpus:** the populated `chroma.sqlite3` holds the real
+>    embeddings. Search the profile dir:
+>    `find ~/.hermes/profiles/<name> -name chroma.sqlite3 -size +0c` —
+>    the leaf that actually contains rows is the canonical one (typically
+>    `.../.mempalace/palace/chroma.sqlite3`). A 0-byte parent copy is the empty
+>    shell; ignore it.
+> 2. **Re-point the reader** to that leaf in `config.yaml` — both the
+>    `mempalace` MCP entry's `--palace` value *and* any `MEMPALACE_PALACE_PATH`
+>    must be the directory that *directly holds* `chroma.sqlite3` (i.e. the
+>    leaf), not its parent.
+> 3. **Back the config up first:**
+>    `cp config.yaml config.yaml.bak.$(date +%Y%m%d-%H%M%S)`.
+> 4. **Verify, do not assume:** run
+>    `MEMPALACE_PALACE_PATH=<leaf> mempalace status` — it must report the full
+>    corpus (N drawers), not "no chroma.sqlite3 yet". Only then is the profile
+>    healed.
+>
+> On a **fresh** profile (no data anywhere yet) the reader's auto-normalization
+> is a no-op and either shape resolves to the same leaf once MemPalace first
+> mines — so nothing to migrate. Migration only matters where a populated
+> corpus already exists at one level deeper than the reader expects.
 
 ## Philosophy
 
@@ -579,7 +606,7 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ### v2.0.27 (current — 2026-08-31)
 
-- **Reader/writer layout alignment (closes #156, #158, #159; upstream [MemPalace#2404](https://github.com/MemPalace/mempalace/issues/2404)):** `mempalace_memory_source.detect()` previously passed the configured `--palace` verbatim to the MCP reader. When the profile's config pointed one level shallower than the leaf the writer actually uses, the reader opened a `<parent>/chroma.sqlite3` with no embeddings while the corpus sat in `<parent>/palace/chroma.sqlite3` — a silent empty vault with no error, log, or warning. The reader side now resolves the configured path into the correct leaf directory that holds `chroma.sqlite3`: `_normalize_palace_args()` is invoked on every detected config, and when the parent it received is itself empty (0 bytes, or no rows via a direct sqlite3 row-count probe) while an adjacent leaf is populated, the reader is re-pointed at the leaf. The normalisation is a no-op for the canonical case (reader is already on the leaf) and for fresh installs (no data anywhere) — both locked by new unit tests. `test_palace_path_alignment.py` (7 tests) covers: canonical-leaf no-op, parent→leaf rewrite, fresh-install no-op, the 0-byte empty parent, the row-count empty parent, and one-path-one-file identity between the normalised reader path and the writer target plus all-writer-rows visible through the reader (contract points 2 and 6). README and `docs/ONBOARDING.md` both reconciled to the canonical per-profile leaf with a "known layout" note so future installs don't guess. Full suite: 1695 passed, 0 new failures (2 `bootstrap_alias_routing` + 1 `profile_isolation` predate the branch). Bumps `__version__` 2.0.26 → 2.0.27.
+- **Reader/writer layout alignment (closes #158; addresses #159; upstream [MemPalace#2404](https://github.com/MemPalace/mempalace/issues/2404)):** `mempalace_memory_source.detect()` previously passed the configured `--palace` verbatim to the MCP reader. When the profile's config pointed one level shallower than the leaf the writer actually uses, the reader opened a `<parent>/chroma.sqlite3` with no embeddings while the corpus sat in `<parent>/palace/chroma.sqlite3` — a silent empty vault with no error, log, or warning. The reader side now resolves the configured path into the correct leaf directory that holds `chroma.sqlite3`: `_normalize_palace_args()` is invoked on every detected config, and when the parent it received is itself empty (0 bytes, or no rows via a direct sqlite3 row-count probe) while an adjacent leaf is populated, the reader is re-pointed at the leaf. The normalisation is a no-op for the canonical case (reader is already on the leaf) and for fresh installs (no data anywhere) — both locked by new unit tests. `test_palace_path_alignment.py` (7 tests) covers: canonical-leaf no-op, parent→leaf rewrite, fresh-install no-op, the 0-byte empty parent, the row-count empty parent, and one-path-one-file identity between the normalised reader path and the writer target plus all-writer-rows visible through the reader (contract points 2 and 6). README and `docs/ONBOARDING.md` both reconciled to the canonical per-profile leaf with a "known layout" note so future installs don't guess. Full suite: 1695 passed, 0 new failures (2 `bootstrap_alias_routing` + 1 `profile_isolation` predate the branch). Bumps `__version__` 2.0.26 → 2.0.27.
 
 ### v2.0.26 (2026-08-31)
 
