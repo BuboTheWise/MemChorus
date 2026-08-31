@@ -23,6 +23,8 @@ from typing import List, Optional
 
 import yaml
 
+from memchorus.hermes_home import hermes_home
+
 
 # ---------------------------------------------------------------------------
 # Status constants
@@ -172,7 +174,7 @@ def check_plugin_hooks() -> CheckResult:
 def check_config_validation() -> CheckResult:
     """A valid config.yaml can be loaded without errors."""
     candidates = [
-        Path.home() / ".hermes" / "config.yaml",
+        hermes_home() / "config.yaml",
         Path(".hermes/config.yaml").resolve(),
     ]
 

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 
+from memchorus.hermes_home import hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -239,8 +241,8 @@ class ProhibitionsManager:
             self._file_path = self._data_dir / "prohibitions.jsonl"
         else:
             # Default next to the package data directory if available, else use ~/.memchorus-data/
-            hermes_home = Path.home() / ".hermes"
-            candidate = hermes_home / "workspace" / "Code" / "MemChorus" / "data" / "prohibitions.jsonl"
+            base = hermes_home()
+            candidate = base / "workspace" / "Code" / "MemChorus" / "data" / "prohibitions.jsonl"
             if not candidate.exists():
                 fallback_dir = Path.home() / ".memchorus-data"
                 fallback_dir.mkdir(exist_ok=True, parents=True)

@@ -127,7 +127,7 @@ class TestCheckConfigValidation:
 
         empty = tmp_path / "empty"
         empty.mkdir(exist_ok=True)
-        monkeypatch.setattr(Path, "home", lambda: empty)
+        monkeypatch.setenv("HERMES_HOME", str(empty))
 
         r = check_config_validation()
         assert r.status == WARN

@@ -23,6 +23,8 @@ import textwrap
 from pathlib import Path
 from typing import Optional
 
+from memchorus.hermes_home import hermes_home
+
 # ---------------------------------------------------------------------------
 # PyYAML guard — it is in core install_requires so this should never fire,
 # but keep the message in case someone does a bare ``pip install memchorus``.
@@ -123,8 +125,8 @@ def generate_config(profile: Optional[str] = None,
 def _resolve_config_path(profile: str) -> Path:
     """Return the target config path for *profile*."""
     if profile == "default":
-        return Path.home() / ".hermes" / "memchorus.yaml"
-    dst = Path.home() / ".hermes" / "profiles" / profile / "memchorus.yaml"
+        return hermes_home() / "memchorus.yaml"
+    dst = hermes_home() / "profiles" / profile / "memchorus.yaml"
     return dst
 
 
@@ -169,8 +171,8 @@ def write_config(profile: Optional[str] = None,
 
 def _resolve_hermes_config(profile: str) -> Path:
     if profile == "default":
-        return Path.home() / ".hermes" / "config.yaml"
-    return Path.home() / ".hermes" / "profiles" / profile / "config.yaml"
+        return hermes_home() / "config.yaml"
+    return hermes_home() / "profiles" / profile / "config.yaml"
 
 
 def enable_plugin(profile: Optional[str] = None) -> bool:
