@@ -58,10 +58,16 @@ mcp_servers:
     command: /path/to/python
     args: ["-m", "mempalace.mcp_server"]
     env:
-      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/.mempalace/palace
 ```
 
 **Per-profile data isolation:** Each agent profile MUST use its own `MEMPALACE_PALACE_PATH` value. Sharing a `.db` file between profiles is the primary cause of memory cross-contamination. At minimum, set separate paths for `default` and any named profiles.
+
+> **Known layout:** `MEMPALACE_PALACE_PATH` is the **leaf directory that directly holds**
+> `chroma.sqlite3` (and `knowledge_graph.sqlite3`). MemPalace's reader joins it verbatim
+> — it never descends into a sub-directory, so a path one level too shallow (a parent
+> `.../.mempalace` dir that only contains an empty `chroma.sqlite3` shell) makes all
+> data invisible even if the real corpus sits in `<leaf>/palace/`. Point at the leaf.
 
 ### 2b. Bootstrap (recommended shortcut)
 
@@ -135,10 +141,12 @@ mcp_servers:
     command: /path/to/python
     args: ["-m", "mempalace.mcp_server"]
     env:
-      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/my_profile/workspace/mempalace/palace
+      MEMPALACE_PALACE_PATH: ~/.hermes/profiles/my_profile/.mempalace/palace
 ```
 
 MemPalace stores all vectors, drawers, and knowledge graph data under that resolved path so data cannot leak between agents sharing the same host. The bootstrap command (`memchorus-init --profile <PROFILE>`) handles this correctly automatically.
+
+> **Known layout (reader ↔ writer):** the value above is the **leaf directory that directly holds** `chroma.sqlite3` and `knowledge_graph.sqlite3`. MemPalace's reader (`mempalace/mcp_server`) opens `os.path.join(<path>, "chroma.sqlite3")` verbatim and never descends into a sub-directory. If you point at a parent dir whose `chroma.sqlite3` is an empty shell (while the real corpus is one level deeper in `palace/`), the reader sees 0 drawers while the writer's data is stranded. Always point at the leaf.
 
 ## Dependencies And Version Constraints
 
