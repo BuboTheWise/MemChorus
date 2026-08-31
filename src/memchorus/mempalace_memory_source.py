@@ -87,6 +87,109 @@ def _run_async(coro):
         raise  # re-raise unexpected RuntimeErrors (e.g. "no running event loop")
 
 
+def _chroma_is_empty(path: Path) -> bool:
+    """Return True if the given chroma.sqlite3 has no useful data.
+
+    "No useful data" means:
+    - file does not exist, or
+    - file is 0 bytes (never-opened shell), or
+    - file is a valid sqlite whose ``embeddings`` table has 0 rows (the
+      "empty shell" state from the Aug 20 bug), or
+    - file exists but is not a readable sqlite (treat as empty to avoid
+      surprising rewrites on corrupt/incomplete files).
+
+    A valid sqlite with ≥1 embedding row is considered "has data."
+    """
+    if not path.exists():
+        return True
+    try:
+        if path.stat().st_size == 0:
+            return True
+    except OSError:
+        return True
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(path))
+        try:
+            try:
+                n = con.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+                return n == 0
+            except sqlite3.Error:
+                # No ``embeddings`` table (or not a valid sqlite header) —
+                # treat as an empty shell for this purpose.
+                return True
+        finally:
+            con.close()
+    except Exception:
+        # Could not open / connect — conservative "empty" so we don't
+        # rewrite based on an unreadable file.
+        return True
+    return False
+
+
+def _normalize_palace_args(args: list[str]) -> list[str]:
+    """Re-point ``--palace <path>`` at a ``palace/`` leaf dir that holds
+    the real data when the configured path is one level too shallow.
+
+    MemPalace's reader opens ``os.path.join(palace_path, "chroma.sqlite3")``
+    verbatim (``mempalace/mcp_server.py``) — it never descends into a
+    sub-directory.  When a profile's ``--palace`` accidentally points at
+    the *parent* dir (``.mempalace``) while the real data is in
+    ``.mempalace/palace/chroma.sqlite3``, the reader opens an empty shell
+    at the parent level and the corpus is invisible (status/search/KG all
+    report 0).
+
+    This guard detects that split and re-points the path at the leaf.
+
+    Rules (idempotent, single-level descent, no path invention):
+
+    - No ``--palace`` flag → return args unchanged.
+    - ``--palace <P>`` and ``<P>/palace/chroma.sqlite3`` holds data while
+      ``<P>/chroma.sqlite3`` is empty/absent → rewrite to ``<P>/palace``.
+    - ``<P>/chroma.sqlite3`` already holds data → no-op (correct leaf,
+      e.g. mempalace's default ``~/.mempalace/palace`` convention).
+    - Neither the parent nor the leaf holds a chroma file (fresh install)
+      → no-op (do not invent a path the reader doesn't yet have).
+    - Also handles ``--palace=<P>`` (equals form).
+
+    Returns a new list; the input list is not mutated.
+    """
+    result = list(args)  # copy, never mutate caller's list
+
+    def _rewrite(idx: int, value: str) -> None:
+        """Rewrite position ``idx`` in result to ``value`` (with log)."""
+        old = result[idx]
+        result[idx] = value
+        logger.info(
+            "_normalize_palace_args: re-pointed --palace %r -> %r", old, value
+        )
+
+    for i, tok in enumerate(result):
+        # Space form:  --palace <PATH>
+        if tok == "--palace" and i + 1 < len(result):
+            parent = Path(result[i + 1])
+            leaf = parent / "palace"
+            leaf_chroma = leaf / "chroma.sqlite3"
+            parent_chroma = parent / "chroma.sqlite3"
+            # Rewrite only when the leaf holds a real chroma but the
+            # parent is an empty shell (or has none at all).
+            if leaf_chroma.exists() and _chroma_is_empty(parent_chroma):
+                _rewrite(i + 1, str(leaf))
+            break
+
+        # Equals form: --palace=<PATH>
+        if tok.startswith("--palace="):
+            parent = Path(tok[len("--palace="):])
+            leaf = parent / "palace"
+            leaf_chroma = leaf / "chroma.sqlite3"
+            parent_chroma = parent / "chroma.sqlite3"
+            if leaf_chroma.exists() and _chroma_is_empty(parent_chroma):
+                _rewrite(i, f"--palace={leaf}")
+            break
+
+    return result
+
+
 class _McpTransportDetector:
     """Detect MCP transport configuration from Hermes config.yaml.
 
@@ -327,6 +430,13 @@ class _McpTransportDetector:
                     parts[0],
                 )
                 goto_fallback = True
+
+        # If we found a valid override, normalize the --palace path so the
+        # reader sees the same layout the writer writes.  See
+        # _normalize_palace_args for the rules (single-level descent to a
+        # leaf dir that actually holds chroma.sqlite3; no path invention).
+        if not goto_fallback and len(parts) > 1:
+            parts[1:] = _normalize_palace_args(parts[1:])
 
         # If we found a valid override, return immediately.
         if not goto_fallback:

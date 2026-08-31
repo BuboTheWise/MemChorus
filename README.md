@@ -27,8 +27,21 @@ registered source.
 separate MemPalace database per profile to prevent memory cross-contamination.
 Add a profile-specific `mempalace` MCP server entry in each profile's
 `config.yaml` pointing to independent paths, for example:
-`~/.hermes/profiles/<name>/workspace/mempalace/palace/data.db`. Profiles should
+`~/.hermes/profiles/<name>/.mempalace/palace`. Profiles should
 communicate via Kanban tasks rather than sharing memory graphs directly.
+
+> ### Known on-disk layout (reader ↔ writer)
+> MemPalace's reader (`mempalace/mcp_server`) opens
+> `os.path.join(<--palace>, "chroma.sqlite3")` **verbatim** — it never descends
+> into a sub-directory (MemPalace's own default leaf is `~/.mempalace/palace`).
+> So `--palace` / `MEMPALACE_PALACE_PATH` must point at the **leaf directory
+> that directly holds** `chroma.sqlite3` and `knowledge_graph.sqlite3`.
+> The real per-profile leaf is `~/.hermes/profiles/<name>/.mempalace/palace`,
+> *not* `.../workspace/mempalace/palace` (that path does not exist on disk) and
+> *not* the parent `.../.mempalace` (pointing at the parent makes the reader
+> open an empty shell and the corpus is invisible — status/search/KG all read 0).
+> MemChorus normalizes a too-shallow `--palace` to the leaf at transport
+> resolution, but the config should point at the leaf directly.
 
 ## Philosophy
 
@@ -259,7 +272,7 @@ Steps:
 1. /home/user/.hermes/hermes-agent/venv/bin/pip install mempalace>=3.7.0
 2. For each profile (at minimum "default" and any named profiles):
 
-     mkdir -p ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+     mkdir -p ~/.hermes/profiles/<PROFILE>/.mempalace/palace
 
 3. In each profile's config.yaml, add a mempalace MCP server entry pointing to
    its own database:
@@ -269,10 +282,10 @@ Steps:
          command: /home/user/.hermes/hermes-agent/venv/bin/python3
          args: ["-m", "mempalace.mcp_server"]
          env:
-           MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/workspace/mempalace/palace
+           MEMPALACE_PALACE_PATH: ~/.hermes/profiles/<PROFILE>/.mempalace/palace
 
    Example for the default profile:
-     MEMPALACE_PALACE_PATH: ~/.hermes/default/workspace/mempalace/palace/data.db
+     MEMPALACE_PALACE_PATH: ~/.hermes/default/.mempalace/palace
 
 4. Verify isolation by checking that each profile can write and read drawers
    independently without cross-contamination.
