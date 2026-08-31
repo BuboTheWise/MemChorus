@@ -2,6 +2,16 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.26] - 2026-08-31
+
+### Added
+- **Test-isolation guard (locks the v2.0.25 rule):** `tests/test_global_platform_guard.py` — a static AST scan that runs in the normal `pytest tests/` invocation and fails the suite if any test writes the global `os.name` / `sys.platform` (direct assignment, `setattr(os, "name")`, `monkeypatch.setattr(os, "name")`, `patch.object(os, "name")`, `patch("os.name")`, or the `sys.platform` analogues). Platform emulation must use a module-scoped fixture that hands the module under test its own `os` view — the exact pattern in `test_hermes_home.py`. Six self-tests prove the detector catches every bad form and leaves the sanctioned pattern / reads / `os.environ` mutations alone, so the guard cannot pass vacuously.
+
+## [2.0.25] - 2026-08-30
+
+### Fixed
+- **Windows CI test-isolation (closes #147):** `test_hermes_home.py` posix-tier tests no longer patch the global `os.name` (which flipped `pathlib.Path` dispatch to `PosixPath` on Windows hosts and killed both `test-windows` jobs with a pytest `INTERNALERROR`). posix cases now route through a module-scoped `posix` fixture — the mirror of the existing `windows` fixture. 23/23 green.
+
 ## [2.0.15] - 2026-08-28
 
 ### Fixed
