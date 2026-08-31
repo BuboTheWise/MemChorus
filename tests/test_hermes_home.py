@@ -35,6 +35,13 @@ def _clean_hermes_env(monkeypatch):
     yield
 
 
+def _platform_os_view(name: str):
+    """Build a minimal ``os`` module view with ``name=<name>`` and the real
+    environment, for handing to the module under test (see fixtures)."""
+    import types
+    return types.SimpleNamespace(name=name, environ=os.environ)
+
+
 @pytest.fixture
 def windows(monkeypatch):
     """Emulate a Windows host for ``memchorus.hermes_home``.
@@ -47,9 +54,23 @@ def windows(monkeypatch):
     its ``environ`` is the real environment. The global ``os`` stays posix, so
     ``Path`` remains ``PosixPath`` everywhere.
     """
-    import types
-    fake_os = types.SimpleNamespace(name="nt", environ=os.environ)
-    monkeypatch.setattr(_hh_mod, "os", fake_os)
+    monkeypatch.setattr(_hh_mod, "os", _platform_os_view("nt"))
+    yield
+
+
+@pytest.fixture
+def posix(monkeypatch):
+    """Emulate a POSIX host for ``memchorus.hermes_home``.
+
+    Mirror image of :func:`windows` — required because setting the *global*
+    ``os.name`` to ``"posix"`` on a Windows runner flips ``pathlib.Path``
+    dispatch to ``PosixPath``, which ``pathlib.Path.__new__`` refuses to
+    instantiate on Windows (``NotImplementedError``), breaking both the test
+    body and pytest's failure-report machinery (``nodes.py`` calls
+    ``Path(os.getcwd())``). Patching only the module under test keeps the
+    global platform dispatch untouched on every host.
+    """
+    monkeypatch.setattr(_hh_mod, "os", _platform_os_view("posix"))
     yield
 
 
@@ -62,23 +83,20 @@ def test_returns_path_type(tmp_path):
     assert isinstance(result, Path)
 
 
-def test_posix_fallback(monkeypatch, tmp_path):
+def test_posix_fallback(posix, tmp_path):
     """No env, POSIX host → Path.home()/.hermes."""
-    monkeypatch.setattr(os, "name", "posix")
     expected = Path.home() / ".hermes"
     assert hermes_home() == expected
 
 
-def test_hermes_home_env_honoured_when_dir_exists(monkeypatch, tmp_path):
+def test_hermes_home_env_honoured_when_dir_exists(posix, monkeypatch, tmp_path):
     """Tier 1: $HERMES_HOME pointing at an existing dir wins."""
-    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert hermes_home() == tmp_path
 
 
-def test_hermes_home_env_ignored_when_dir_missing(monkeypatch, tmp_path):
+def test_hermes_home_env_ignored_when_dir_missing(posix, monkeypatch, tmp_path):
     """A stale/empty $HERMES_HOME (nonexistent path) must fall through to tier 3."""
-    monkeypatch.setattr(os, "name", "posix")
     missing = tmp_path / "does-not-exist"
     monkeypatch.setenv("HERMES_HOME", str(missing))
     assert hermes_home() == Path.home() / ".hermes"
@@ -121,15 +139,13 @@ def test_hermes_home_beats_localappdata(windows, tmp_path):
 # hermes_home_str()
 # ---------------------------------------------------------------------------
 
-def test_str_helper_posix(monkeypatch, tmp_path):
-    monkeypatch.setattr(os, "name", "posix")
+def test_str_helper_posix(posix, tmp_path):
     s = hermes_home_str()
     assert isinstance(s, str)
     assert Path(s) == Path.home() / ".hermes"
 
 
-def test_str_helper_env_override(monkeypatch, tmp_path):
-    monkeypatch.setattr(os, "name", "posix")
+def test_str_helper_env_override(posix, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert hermes_home_str() == str(tmp_path)
 
@@ -172,26 +188,22 @@ def test_bare_relative_word_not_path():
 # _resolve_hermes_memory_dir() — per-profile isolation
 # ---------------------------------------------------------------------------
 
-def test_default_profile_memory_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(os, "name", "posix")
+def test_default_profile_memory_dir(posix, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    os_environ_profile_default = "default"
-    monkeypatch.setenv("HERMES_PROFILE", os_environ_profile_default)
+    monkeypatch.setenv("HERMES_PROFILE", "default")
     result = _resolve_hermes_memory_dir()
     assert Path(result) == tmp_path / "memories"
 
 
-def test_named_profile_memory_dir(monkeypatch, tmp_path):
-    monkeypatch.setattr(os, "name", "posix")
+def test_named_profile_memory_dir(posix, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "cthugha")
     result = _resolve_hermes_memory_dir()
     assert Path(result) == tmp_path / "profiles" / "cthugha" / "memories"
 
 
-def test_profile_sanitized_on_resolution(monkeypatch, tmp_path):
+def test_profile_sanitized_on_resolution(posix, monkeypatch, tmp_path):
     """A corrupt profile (e.g. with slashes) collapses to 'default'."""
-    monkeypatch.setattr(os, "name", "posix")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_PROFILE", "a/b/c")  # fails [A-Za-z0-9_-]
     result = _resolve_hermes_memory_dir()
