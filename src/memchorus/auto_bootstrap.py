@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from memchorus.hermes_home import hermes_home
+
 logger = logging.getLogger(__name__)
 
 # --- third-party (optional) ------------------------------------------------
@@ -86,7 +88,7 @@ def _load_yaml_config() -> Dict[str, Any]:
         return {}
 
     for candidate in (
-        os.path.expanduser("~/.hermes/memchorus.yaml"),
+        str(hermes_home() / "memchorus.yaml"),
         os.path.expanduser("~/.memchorus.yaml"),
     ):
         if os.path.isfile(candidate):
@@ -115,7 +117,7 @@ def _load_profile_yaml_config(profile: str) -> Dict[str, Any]:
     if not _HAS_YAML:
         return {}
 
-    candidate = os.path.expanduser(f"~/.hermes/profiles/{profile}/memchorus.yaml")
+    candidate = str(hermes_home() / "profiles" / profile / "memchorus.yaml")
     if not os.path.isfile(candidate):
         logger.debug("No profile-specific config at %s — skipping.", candidate)
         return {}

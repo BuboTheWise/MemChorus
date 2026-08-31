@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from memchorus.hermes_home import hermes_home
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -124,11 +126,11 @@ class HitRateTracker:
                         try:
                             raw_profile = os.environ.get("HERMES_PROFILE", "default")
                             if raw_profile != "default":
-                                md = f"~/.hermes/profiles/{raw_profile}/memories"
+                                md = str(hermes_home() / "profiles" / raw_profile / "memories")
                             else:
-                                md = "~/.hermes/memories"
+                                md = str(hermes_home() / "memories")
                         except Exception:
-                            md = "~/.hermes/memories"
+                            md = str(hermes_home() / "memories")
                     cls._instance = cls(md)
         return cls._instance
 

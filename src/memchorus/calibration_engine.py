@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
+from memchorus.hermes_home import hermes_home
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_TUNING_DIR = Path.home() / ".hermes" / "data" / "memchorus" / "_tuning"
+DEFAULT_TUNING_DIR = hermes_home() / "data" / "memchorus" / "_tuning"
 
 # v1.7.0 defaults for comparison
 _DEFAULT_PARAMS: Dict[str, float] = {

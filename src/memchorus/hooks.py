@@ -32,6 +32,8 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
+from memchorus.hermes_home import hermes_home
+
 logger = logging.getLogger(__name__)
 
 
@@ -932,7 +934,7 @@ def _resolve_char_limit() -> int:
     # Layer 2: per-profile config.yaml
     try:
         profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
-        cfg_path = str(_Path.home() / ".hermes" / "profiles" / profile / "config.yaml")
+        cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
         p = _Path(cfg_path)
         if p.exists():
             data = _yml.safe_load(p.read_text()) or {}
@@ -1052,9 +1054,9 @@ def _resolve_suppression_settings() -> "tuple[int, float]":
     window_size, ttl = _DEFAULT_SUPPRESSION_WINDOW, _DEFAULT_SUPPRESSION_TTL_S
     profile = _resolve_profile_name()
     try:
-        cfg_path = _Path.home() / ".hermes" / "profiles" / profile / "config.yaml"
+        cfg_path = hermes_home() / "profiles" / profile / "config.yaml"
         if not cfg_path.exists():
-            cfg_path = _Path.home() / ".hermes" / "config.yaml"
+            cfg_path = hermes_home() / "config.yaml"
         if cfg_path.exists():
             data = _yml.safe_load(cfg_path.read_text()) or {}
             memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
@@ -1269,7 +1271,7 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
 import yaml as _yml  # Optional: skip if PyYAML not installed
 from pathlib import Path as _Path
 
-__PLUGIN_YAML_PATH = str(_Path.home() / ".hermes" / "plugins" / "hermes-memchorus" / "plugin.yaml")
+__PLUGIN_YAML_PATH = str(hermes_home() / "plugins" / "hermes-memchorus" / "plugin.yaml")
 
 
 def _load_plugin_config() -> dict:
