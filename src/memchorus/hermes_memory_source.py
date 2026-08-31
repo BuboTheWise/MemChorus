@@ -14,25 +14,52 @@ from typing import List, Dict, Any, Optional
 from memchorus.memory_source import MemorySource
 
 
+def _looks_like_data_dir(name: str) -> bool:
+    """Return True when *name* looks like a filesystem path (data-dir override).
+
+    The legacy heuristic was ``'/' in name or name.startswith('./')`` — it
+    recognised POSIX separators only and missed Windows paths such as
+    ``C:\\tmp\\memdir`` (issue #147, Windows Desktop). This version treats a
+    string as path-like on *every* platform when any of the following holds:
+
+    * it contains a ``/`` or ``\\`` separator, or
+    * it starts with ``./`` / ``.\\`` (relative path marker), or
+    * ``PurePath(name).is_absolute()``.
+
+    Plain source identifiers (``hermes_default``, ``my_source``) still
+    return ``False`` so positional-name construction is unaffected.
+    """
+    if not name:
+        return False
+    if "/" in name or "\\" in name:
+        return True
+    if name.startswith(("./", ".\\")):
+        return True
+    from pathlib import PurePath
+    return PurePath(name).is_absolute()
+
+
 def _resolve_hermes_memory_dir(default: str = "~/.hermes/memories") -> str:
     """Resolve the memory directory with per-profile isolation.
 
-    If HERMES_PROFILE is set (e.g. by the Kanban dispatcher), returns
-    ~/.hermes/profiles/<profile>/memories/ so each agent's auto-captured
-    memories live in its own space. Falls back to *default* when no profile
-    env var is present.
+    The base directory comes from :func:`~memchorus.hermes_home.hermes_home`
+    so Windows Desktop (``%LOCALAPPDATA%\\hermes``) and ``$HERMES_HOME`` are
+    honoured. If ``HERMES_PROFILE`` is set (e.g. by the Kanban dispatcher),
+    returns ``<home>/profiles/<profile>/memories`` so each agent's
+    auto-captured memories live in its own space. Falls back to
+    ``<home>/memories`` when the profile is ``default`` or unset.
 
-    The caller can always override via config['data_dir'] — this function
+    The caller can always override via ``config['data_dir']`` — this function
     only supplies the default path.
     """
     from memchorus import _sanitize_profile
+    from memchorus.hermes_home import hermes_home
+    base = str(hermes_home())
     raw = os.environ.get("HERMES_PROFILE")
-    if not raw:
-        return os.path.expanduser(default)
-    profile = _sanitize_profile(raw)
+    profile = _sanitize_profile(raw or "default")
     if profile != "default":
-        return os.path.expanduser(f"~/.hermes/profiles/{profile}/memories")
-    return os.path.expanduser(default)
+        return os.path.join(base, "profiles", profile, "memories")
+    return os.path.join(base, "memories")
 
 
 class HermesDefaultMemorySource(MemorySource):
@@ -63,15 +90,16 @@ class HermesDefaultMemorySource(MemorySource):
             config (Dict[str, Any], optional): Configuration parameters for this source.
 
         Notes:
-            When ``name`` looks like a filesystem path (contains '/' or starts with
-            './'), it is treated as ``data_dir`` and the name defaults to
-            ``"hermes_default"``. This preserves backward compatibility with test
-            fixtures that pass a temp directory positionally.
+            When ``name`` looks like a filesystem path (contains ``/`` or
+            ``\\`` or starts with ``./`` / ``.\\``), it is treated as
+            ``data_dir`` and the name defaults to ``"hermes_default"``. This
+            preserves backward compatibility with test fixtures that pass a
+            temp directory positionally — including Windows paths.
         """
         # Detect positional tmp_dir usage: if 'name' looks like a filesystem path,
         # treat it as data_dir instead of the source identifier.
         # See GAP046 — HermesDefaultMemorySource(tmpdir) is the fixture pattern.
-        if name != "hermes_default" and ('/' in str(name) or name.startswith('./')):
+        if name != "hermes_default" and _looks_like_data_dir(str(name)):
             data_dir = name
             name = "hermes_default"
 

@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from memchorus.hermes_home import hermes_home
+
 if TYPE_CHECKING:
     from memchorus.orchestrator import MemoryOrchestrator
 
@@ -93,7 +95,7 @@ def _resolve_lifecycle_config(
 
     # Audit logging (§6.4)
     audit_raw: Dict[str, Any] = raw.get("audit", {})
-    default_log_path = os.path.expanduser("~/.hermes/memchorus_audit.jsonl")
+    default_log_path = str(hermes_home() / "memchorus_audit.jsonl")
     config["audit"] = {
         "enabled": bool(audit_raw.get("enabled", True)),
         "log_path": str(audit_raw.get("log_path", default_log_path)),
@@ -162,7 +164,7 @@ class AuditLogger:
 
     def __init__(
         self,
-        log_path: str = os.path.expanduser("~/.hermes/memchorus_audit.jsonl"),
+        log_path: str = str(hermes_home() / "memchorus_audit.jsonl"),
         max_entries: int = 10_000,
         enabled: bool = True,
     ) -> None:
@@ -241,7 +243,7 @@ class LifecycleManager:
         self.config = config
         self._orchestrator = orchestrator
         self._audit = AuditLogger(
-            log_path=config.get("audit", {}).get("log_path", os.path.expanduser("~/.hermes/memchorus_audit.jsonl")),
+            log_path=config.get("audit", {}).get("log_path", str(hermes_home() / "memchorus_audit.jsonl")),
             max_entries=config.get("audit", {}).get("max_entries", 10_000),
             enabled=config.get("audit", {}).get("enabled", True),
         )

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from memchorus.memory_source import MemorySource
+from memchorus.hermes_home import hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -123,13 +124,13 @@ class _McpTransportDetector:
     @staticmethod
     def _find_config() -> Optional[Path]:
         """Locate the Hermes config.yaml file."""
-        hermes_home = os.environ.get("HERMES_HOME", None)
+        env_home = os.environ.get("HERMES_HOME", None)
         candidates: List[Path] = []
 
-        if hermes_home and hermes_home != "~/.hermes":
-            candidates.append(Path(hermes_home) / "config.yaml")
+        if env_home and env_home != "~/.hermes":
+            candidates.append(Path(env_home) / "config.yaml")
 
-        home_config = Path.home() / ".hermes" / "config.yaml"
+        home_config = hermes_home() / "config.yaml"
         if home_config not in candidates:
             candidates.append(home_config)
 
@@ -1008,7 +1009,7 @@ class MemPalaceMemorySource(MemorySource):
 
         # Fallback local cache.
         self._cache_dir = Path(
-            self.config.get("cache_dir", os.path.expanduser("~/.hermes/mempalace_cache"))
+            self.config.get("cache_dir", str(hermes_home() / "mempalace_cache"))
         )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 

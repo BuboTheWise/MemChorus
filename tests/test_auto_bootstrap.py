@@ -136,7 +136,7 @@ class TestLoadYamlConfig(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
     def test_temp_yaml_file_with_valid_dict(self):
-        """Write a valid YAML dict to ~/.hermes/memchorus.yaml and verify load."""
+        """Write a valid YAML dict at the resolved Hermes home and verify load."""
         if not _HAS_YAML:
             self.skipTest("YAML not installed")
         import yaml as _yaml
@@ -144,33 +144,20 @@ class TestLoadYamlConfig(unittest.TestCase):
         cfg_file = os.path.join(tmpdir, "memchorus.yaml")
         test_cfg = {"default_source": "hermes_default", "half_life_days": 10.0}
 
-        # Temporarily override expanduser path resolution — unfortunately the
-        # function hardcodes ~/.hermes and ~/. so we write actual files.
-        hermes_dir = os.path.expanduser("~/.hermes")
-        orig_file = os.path.join(hermes_dir, "memchorus.yaml")
-        backed_up = None
-
+        saved = os.environ.get("HERMES_HOME")
         try:
-            # Create directory if needed
-            os.makedirs(hermes_dir, exist_ok=True)
-            # Backup existing file
-            if os.path.exists(orig_file):
-                with open(orig_file, "r") as f:
-                    backed_up = f.read()
-            # Write test config
-            with open(orig_file, "w") as f:
+            os.environ["HERMES_HOME"] = tmpdir
+            with open(cfg_file, "w") as f:
                 _yaml.dump(test_cfg, f)
 
             result = _load_yaml_config()
             self.assertIn("default_source", result)
             self.assertEqual(result["default_source"], "hermes_default")
         finally:
-            # Restore original state
-            if backed_up is not None:
-                with open(orig_file, "w") as f:
-                    f.write(backed_up)
-            elif os.path.exists(orig_file):
-                os.remove(orig_file)
+            if saved is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = saved
 
 
 class TestLoadYamlNonDict(unittest.TestCase):
@@ -180,26 +167,22 @@ class TestLoadYamlNonDict(unittest.TestCase):
         if not _HAS_YAML:
             self.skipTest("YAML not installed")
         import yaml as _yaml
-        hermes_dir = os.path.expanduser("~/.hermes")
-        orig_file = os.path.join(hermes_dir, "memchorus.yaml")
-        backed_up = None
+        tmpdir = tempfile.mkdtemp(prefix="memchorus_yaml_")
+        cfg_file = os.path.join(tmpdir, "memchorus.yaml")
+        saved = os.environ.get("HERMES_HOME")
         try:
-            os.makedirs(hermes_dir, exist_ok=True)
-            if os.path.exists(orig_file):
-                with open(orig_file, "r") as f:
-                    backed_up = f.read()
-            with open(orig_file, "w") as f:
+            os.environ["HERMES_HOME"] = tmpdir
+            with open(cfg_file, "w") as f:
                 _yaml.dump(["not", "a", "dict"], f)
 
             result = _load_yaml_config()
             # Should return {} when content is not a mapping
             self.assertEqual(result, {})
         finally:
-            if backed_up is not None:
-                with open(orig_file, "w") as f:
-                    f.write(backed_up)
-            elif os.path.exists(orig_file):
-                os.remove(orig_file)
+            if saved is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = saved
 
 
 # --------------------------------------------------------------------------- #

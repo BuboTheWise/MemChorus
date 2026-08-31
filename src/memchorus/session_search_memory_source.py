@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 
 from memchorus.memory_source import MemorySource
+from memchorus.hermes_home import hermes_home
 
 
 def _resolve_session_db_path() -> Optional[str]:
@@ -28,14 +29,14 @@ def _resolve_session_db_path() -> Optional[str]:
     Looks for the SQLite session DB at the standard Hermes location.
     Returns None if not found.
     """
-    home = os.path.expanduser("~")
+    base = str(hermes_home())
     candidates = [
         # Default profile — primary live session DB
-        os.path.join(home, ".hermes", "state.db"),
+        os.path.join(base, "state.db"),
         # Legacy / alternate layouts
-        os.path.join(home, ".hermes", "sessions", "session_history.db"),
-        os.path.join(home, ".hermes", "hermes-agent", "sessions", "session_history.db"),
-        os.path.join(home, ".hermes", "hermes-agent", "sessions", "agent_sessions.db"),
+        os.path.join(base, "sessions", "session_history.db"),
+        os.path.join(base, "hermes-agent", "sessions", "session_history.db"),
+        os.path.join(base, "hermes-agent", "sessions", "agent_sessions.db"),
     ]
 
     for path in candidates:
@@ -186,7 +187,7 @@ class SessionSearchMemorySource(MemorySource):
         without re-querying the session DB every recall cycle.
         """
         try:
-            cache_dir = self.config.get("cache_dir", os.path.expanduser("~/.hermes/memories/session_cache"))
+            cache_dir = self.config.get("cache_dir", str(hermes_home() / "memories" / "session_cache"))
             os.makedirs(cache_dir, exist_ok=True)
 
             if not isinstance(value, (str, int, float, bool, dict, list)):
@@ -202,7 +203,7 @@ class SessionSearchMemorySource(MemorySource):
     def retrieve(self, key: str) -> Optional[Any]:
         """Retrieve a cached session-derived memory by key."""
         try:
-            cache_dir = self.config.get("cache_dir", os.path.expanduser("~/.hermes/memories/session_cache"))
+            cache_dir = self.config.get("cache_dir", str(hermes_home() / "memories" / "session_cache"))
             file_path = os.path.join(cache_dir, f"{self._safe_key(key)}.json")
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
@@ -351,7 +352,7 @@ class SessionSearchMemorySource(MemorySource):
     def delete(self, key: str) -> bool:
         """Remove a cached session-derived memory."""
         try:
-            cache_dir = self.config.get("cache_dir", os.path.expanduser("~/.hermes/memories/session_cache"))
+            cache_dir = self.config.get("cache_dir", str(hermes_home() / "memories" / "session_cache"))
             safe_path = os.path.join(cache_dir, f"{self._safe_key(key)}.json")
             raw_path = os.path.join(cache_dir, f"{key}.json")
 
@@ -371,7 +372,7 @@ class SessionSearchMemorySource(MemorySource):
         """Enumerate cached session-derived memory keys."""
         keys: List[str] = []
         try:
-            cache_dir = self.config.get("cache_dir", os.path.expanduser("~/.hermes/memories/session_cache"))
+            cache_dir = self.config.get("cache_dir", str(hermes_home() / "memories" / "session_cache"))
             if os.path.exists(cache_dir):
                 for filename in os.listdir(cache_dir):
                     if filename.endswith('.json'):
