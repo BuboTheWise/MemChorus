@@ -564,7 +564,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.23 (current — 2026-08-30)
+### v2.0.24 (current — 2026-08-30)
+
+- **HERMES_HOME centralization (closes #147):** Hermes home resolution is now computed in exactly one place — `src/memchorus/hermes_home.py` exposes `hermes_home()` / `hermes_home_str()` — so every consumer reads the same tree the running agent uses. Resolution order is (1) `HERMES_HOME` if set, (2) the Desktop installer location (`%LOCALAPPDATA%\hermes` on Windows) when it exists, (3) `~/.hermes` as the last fallback. The helper is `is_dir`-gated and never raises — a missing/invalid value degrades silently to the next tier, so a misconfigured environment can never propagate an exception into a recall or save path. All 11 previously hardcoded consumers (`hermes_memory_source`, `mempalace_memory_source`, `session_search_memory_source`, `hit_rate_tracker`, `hooks`, `install_doctor`, `lifecycle_manager`, `prohibitions`, and the remaining `~/.hermes`/`Path.home()`/"hermes" sites) now route through the helper, eliminating the class of bug where the orchestrator read/wrote a different tree than the live Hermes Desktop session. A Windows-pure (no `os.environ` global mutation) path heuristic distinguishes a real Desktop data dir from a home-relative one, and the new `tests/test_hermes_home.py` (23 tests) locks all three tiers, env-missing fallthrough, `LOCALAPPDATA` hit/miss, tier-1-over-tier-2 precedence, and the memory-dir sanitization for named profiles. Full suite: 1690 passed, 12 skipped (independent run on a clean venv). Bumps `__version__` 2.0.23 → 2.0.24.
+
+### v2.0.23 (2026-08-30)
 
 - **Test isolation hardening:** `test_no_tracker_returns_zeros` in `tests/test_calibration_engine.py` now simulates the `ImportError` path (`patch.dict(sys.modules, {"memchorus.hit_rate_tracker": None})`) instead of relying on the shared on-disk sidecar being empty. The old test depended on `~/.hermes/memories/_hit_rate_index.json` being `{}` — any prior runtime-verify or live agent run that wrote real entries into the index (the card's own DONE gate) would make this test fail with `assert saves == 0` seeing the actual count. The fix is intent-faithful to the test name ("when HitRateTracker is **unavailable**") and makes the test hermetic regardless of local machine state. No source changes; no API changes. Full suite: all previously passing tests still pass; the one pre-existing multi-word adapter failure (tracked separately) is unchanged. Bumps `__version__` 2.0.22 → 2.0.23.
 
