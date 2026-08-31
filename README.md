@@ -564,7 +564,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.25 (current — 2026-08-30)
+### v2.0.26 (current — 2026-08-31)
+
+- **Test-isolation guard: no test may write the global `os.name` / `sys.platform` (closes #147 regression class):** a static AST guard (`tests/test_global_platform_guard.py`) now runs inside the standard `pytest tests/` invocation and fails the suite if any test writes to the *global* `os.name` or `sys.platform` — via direct assignment, `setattr(os, "name", …)`, `monkeypatch.setattr(os, "name", …)`, `patch.object(os, "name", …)`, or `patch("os.name")`. This locks in the v2.0.25 isolation rule: platform emulation must route through a module-scoped fixture that hands the *module under test* its own `os` view (e.g. `monkeypatch.setattr(hermes_home_mod, "os", …)`), never the platform dispatch constant. The guard ships with five self-tests proving the detector catches every bad form plus a sixth proving the sanctioned module-scoped pattern, reads/comparisons, and `os.environ` mutations are left alone — so the guard cannot pass vacuously. Full suite: 1693 passed, 16 skipped. No source (non-test) code changed; no new dependencies. Bumps `__version__` 2.0.25 → 2.0.26.
+
+### v2.0.25 (2026-08-30)
 
 - **Windows CI test-isolation fix (closes #147):** the `tests/test_hermes_home.py` posix-tier cases were patching the **global** `os.name` to `"posix"`. On a Windows CI host that flips `pathlib.Path` dispatch to `PosixPath`, which `pathlib.Path.__new__` refuses to instantiate (`NotImplementedError: cannot instantiate 'PosixPath' on your system`) — and the exception escaped into pytest's own failure-report machinery (`_pytest/nodes.py` calls `Path(os.getcwd())`), taking down the whole `test-windows` job with a pytest `INTERNALERROR` rather than a clean test failure. Both `test-windows (3.11)` and `test-windows (3.12)` failed this way in the v2.0.24 release run, leaving CI red. The fix routes every posix-tier test through a dedicated `posix` fixture that hands the module under test a minimal `os` view (`name="posix"`, real `environ`) via `monkeypatch.setattr(_hh_mod, "os", …)`, so the global platform dispatch is never touched — exactly the isolation the existing `windows` fixture already applies for the `"nt"` tier. No source-code or API changes; the `hermes_home()` logic is unchanged. `test_hermes_home.py`: 23 passed.
 
