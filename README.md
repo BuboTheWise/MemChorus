@@ -41,7 +41,10 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > *not* the parent `.../.mempalace` (pointing at the parent makes the reader
 > open an empty shell and the corpus is invisible — status/search/KG all read 0).
 > MemChorus normalizes a too-shallow `--palace` to the leaf at transport
-> resolution, but the config should point at the leaf directly.
+> resolution, but the config should point at the leaf directly. If the
+> parent dir only contains a `palace/` sub-dir with the db, either point
+> at the sub-dir, or rely on the reader's automatic rewrite (logged as a
+> warning: "Rewrote --palace ...").
 >
 > ### Migrating an existing installation
 > If a profile was initialized back when the writer and reader disagreed about
