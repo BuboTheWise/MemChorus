@@ -157,11 +157,15 @@ def _normalize_palace_args(args: list[str]) -> list[str]:
     result = list(args)  # copy, never mutate caller's list
 
     def _rewrite(idx: int, value: str) -> None:
-        """Rewrite position ``idx`` in result to ``value`` (with log)."""
+        """Rewrite position ``idx`` in result to ``value`` (with loud log)."""
         old = result[idx]
         result[idx] = value
-        logger.info(
-            "_normalize_palace_args: re-pointed --palace %r -> %r", old, value
+        logger.warning(
+            "Rewrote --palace %s -> %s; parent dir was an empty shell. "
+            "If this repeats on your side, point at the leaf palace/ dir "
+            "directly or ask the MemPalace maintainers to fix the "
+            "default-path mismatch.",
+            old, value,
         )
 
     for i, tok in enumerate(result):
