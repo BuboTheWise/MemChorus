@@ -1344,6 +1344,16 @@ class MemoryOrchestrator:
                     if "RESULT" == upper_tag:
                         return True
 
+                # PATH 4 (GH-160): scratch/fixture-class payloads (one-off test
+                # probes, synthetic fixtures) echo query text and outrank real
+                # standing docs. Demote them like auto-stored artifacts.
+                _SCRATCH_CATEGORIES = {"SCRATCH", "FIXTURE", "TEST", "EXAMPLE", "DEMO"}
+                for tag in cat:
+                    if str(tag).strip().upper() in _SCRATCH_CATEGORIES:
+                        return True
+                if str(content.get("provenance", "")).strip().upper() in _SCRATCH_CATEGORIES:
+                    return True
+
             # PATH 2: key-name pattern match (catches ALL auto-tool- and result- artifacts)
             key = getattr(rr_obj, "key", "")
             for prefix in _AUTO_KEY_PREFIXES:
