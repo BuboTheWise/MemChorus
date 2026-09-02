@@ -2,6 +2,37 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.29] - 2026-09-02
+
+### Added
+- **Public documentation set (promoted from the internal design docs):** the core engineering documents — `docs/REQUIREMENTS.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/lifecycle-analysis.md`, and `docs/hook-registration-audit.md` — are now published in the repo, with a new `## Documentation` index section in the README pointing readers to them. These were previously internal-only; this release makes the forward-looking requirements, spec, and architecture readable by contributors and third-party integrators (a prerequisite for active upstream support of the MemPalace project they build on).
+- **OPSEC scrub:** every promoted document was reviewed for and stripped of identifying details before publication — hostnames, local usernames, profile/agent names, and internal task IDs were replaced with neutral placeholders (`<user>`, `<profile-a/b/c>`, `maintainer`). Public second-check: issue #165.
+
+### Verified
+- Re-scanned all five promoted documents after scrubbing: zero residual username / hostname / profile-name / internal-task-ID tokens (only the public `BuboTheWise` GitHub org appears, in install URLs and bylines, as intended).
+
+## [2.0.28] - 2026-09-01
+
+### Fixed
+- **Recall-quality fixes for scratch/fixture noise and the quiet palace re-point (closes #160, #161, #162):** three coupled recall-behaviour fixes, locked by nine new tests across three files.
+  - **#160 — scratch/fixture demotion:** `orchestrator.search()`'s `_is_auto_metadata()` now carries a fourth detection path (PATH 4) so dict payloads that signal *scratch/fixture/example/test/demo* provenance — whether via a case-insensitive `categories` list or a `provenance` field — are demoted at the existing 0.3× auto-artifact weight, the same treatment already applied to auto-tool output (the `hermes_default` category/key-prefix paths and the `PENALTY_FACTOR` are unchanged). This stops a query-echoing scratch fixture from crowding a real standing-fact document out of the top-3 of the same search. Locked by `tests/test_scratch_fixture_demotion.py` (4 tests).
+  - **#161 — standing-facts regression lock:** `tests/test_standing_facts_recorder.py` (2 tests) asserts a standing-facts document reaches the top-3 for its canonical query *and* outranks a query-echoing scratch fixture — the promotion-side complement to #160 (no non-test source changed for #161).
+  - **#162 — loud palace-path rewrite:** `mempalace_memory_source._normalize_palace_args()` now emits a `WARNING` rather than a quiet INFO line when it re-points the reader at the populated leaf directory that actually holds `chroma.sqlite3` — a silent empty vault is now visible as a warning; the external contract (return shape) is unchanged. Locked by `tests/test_palace_loud_signal.py` (3 tests).
+- Full suite: **1713 passed, 12 skipped, 0 failures.** Bumps `__version__` 2.0.27 → 2.0.28.
+
+## [2.0.27] - 2026-09-01
+
+### Fixed
+- **Reader/writer DB-location alignment** (closes MemChorus #158; upstream MemPalace #2404, P1 open): `mempalace_memory_source.py` adds `_normalize_palace_args` + `_chroma_is_empty` — if a profile's `config.yaml` passes `--palace` pointing at the *parent* `.mempalace/` dir while the real data sits in `.mempalace/palace/`, the transport re-points at the leaf dir *only* when the leaf holds a non-empty `chroma.sqlite3` and the parent is empty/absent. All other cases (no flag, already-correct leaf, fresh install) are pinned no-op by the E2E test suite (`test_palace_path_alignment.py`), so the guard stays correct after upstream MemPalace ships their own fix for #2404.
+- **README (closes MemChorus #159):** "Migrating an existing installation" subsection documents the per-profile `profiles/<name>/.mempalace/palace/` layout, the `--palace` contract, and the one-time migration steps for pre-split installs.
+- **Docs (v2.0.27 contract note):** `mempalace_memory_source.py` known-layout note + per-profile path example corrected.
+
+### Verified
+- Reinstalled from GitHub (`pip install 'memchorus[mcp] @ git+https://github.com/BuboTheWise/MemChorus.git#master'` → v2.0.27); `__version__ = "2.0.27"`; fix functions present in site-packages.
+- Per-profile `mempalace status`: expected drawer counts present (seed corpus shared across profiles, per-profile accumulation on new writes).
+- Live MCP recall: 100% self-hit on own recent topics.
+- `mempalace status` on a fresh/default profile: "No palace found" (vacuous, correct).
+
 ## [2.0.26] - 2026-08-31
 
 ### Added
