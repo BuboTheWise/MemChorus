@@ -241,6 +241,25 @@ Key guarantees from this pipeline:
 | `context_sensitive_pref` | Hermes Default | MemPalace | Contextual prefs belong in local config layer |
 | `auto` (inferred) | MemPalace → Hermes Default | Either | Content analysis decides; tries semantic first |
 
+## Documentation
+
+MemChorus's engineering documents live in [`docs/`](docs/). The forward-looking set below is the canonical reference for what the project does and how it's built; the others are supporting material.
+
+| Document | Purpose |
+|---|---|
+| [North Star](docs/north-star.md) | Design philosophy and the principles every change must respect |
+| [Requirements](docs/REQUIREMENTS.md) | Forward-looking functional & non-functional requirements |
+| [Specification](docs/SPEC.md) | Behavioral spec: contracts, data flow, lifecycle semantics |
+| [Architecture](docs/ARCHITECTURE.md) | System architecture, deployment map, process topology, fault modes |
+| [Memory Lifecycle](docs/memory-lifecycle-design.md) | How memory is written, recalled, deduplicated, and decayed |
+| [Integration Contract](docs/integration-contract-spec.md) | The hook/transport contract with the host agent runtime |
+| [Lifecycle Analysis (GAP-017)](docs/lifecycle-analysis.md) | Analysis of the lifecycle gap and its resolution |
+| [Hook Registration Audit](docs/hook-registration-audit.md) | How hooks are registered and verified at bootstrap |
+| [Testing](docs/TESTING.md) · [Benchmarks](docs/BENCHMARKS.md) · [Auto-tuning](docs/AUTOTUNING.md) | Test strategy, benchmark harness, calibration pipeline |
+| [Onboarding](docs/ONBOARDING.md) | Contributor setup and the development cycle |
+
+> Internal working notes (per-iteration task state, phase reports, and point-in-time assessments) are kept in the private project vault and are **not** part of this public tree.
+
 ## Lifecycle Management
 
 The lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. It provides per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps. Lifecycle is opt-in — disabled by default (`enabled: false`), so existing write-only behaviour is fully preserved when you do not activate it.
@@ -607,9 +626,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.28 (current — 2026-09-01)
+### v2.0.28 (2026-09-01)
 
 - **Recall-quality fixes for scratch/fixture noise and the quiet palace re-point (closes #160, #161, #162):** three coupled recall-behaviour fixes, locked by nine new tests across three files. **#160 — scratch/fixture demotion:** `orchestrator.search()`'s `_is_auto_metadata()` now carries a fourth detection path (PATH 4) so dict payloads that signal *scratch/fixture/example/test/demo* provenance — whether via a case-insensitive `categories` list or a `provenance` field — are demoted at the existing 0.3× auto-artifact weight, the same treatment already applied to auto-tool output (the `hermes_default` category/key-prefix paths and the `PENALTY_FACTOR` are unchanged). This stops a query-echoing scratch fixture from crowding a real standing-fact document out of the top-3 of the same search. Locked by `tests/test_scratch_fixture_demotion.py` (4 tests: category-signal demotion, provenance-field demotion, a no-false-demotion sanity guard, and top-3 suppression). **#161 — standing-facts regression lock:** `tests/test_standing_facts_recorder.py` (2 tests) asserts a standing-facts document reaches the top-3 for its canonical query *and* outranks a query-echoing scratch fixture — the promotion-side complement to #160 and a genuine regression lock, since its outranks test **fails on v2.0.27 master and passes only once #160's demotion is in place** (the two share the same top-3-recall root cause and ship together). No non-test source changed for #161. **#162 — loud palace-path rewrite:** `mempalace_memory_source._normalize_palace_args()` now emits a `WARNING` ("Rewrote `--palace` `<old>` → `<new>`; parent dir was an empty shell…") rather than a quiet INFO line when it re-points the reader at the populated leaf directory that actually holds `chroma.sqlite3` — the external contract (return shape) is byte-identical to v2.0.27, only the log level changed, so a silent empty vault is now visible as a warning. The README "known layout" note is updated to tell users to point at the leaf directly or rely on the now-logged auto-rewrite. Locked by `tests/test_palace_loud_signal.py` (3 tests: the space-flag form with operator guidance, the equals-flag form, and a no-warn-on-noop guard). Full suite: **1713 passed, 12 skipped, 0 failures**. Bumps `__version__` 2.0.27 → 2.0.28.
+### v2.0.29 (current — 2026-09-02)
+
+- **Public documentation set promoted from the internal design docs:** `docs/REQUIREMENTS.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/lifecycle-analysis.md`, and `docs/hook-registration-audit.md` are now published in the repo, with a new `## Documentation` index section in this README. This makes the forward-looking requirements, spec, and architecture readable by contributors and third-party integrators — a prerequisite for active upstream support of the MemPalace project these integrate with. Every promoted document was reviewed for and stripped of identifying details (hostnames, local usernames, profile/agent names, internal task IDs) before publication; only the public `BuboTheWise` GitHub org remains, in install URLs and bylines. No source-code behavior changed.
 
 ### v2.0.27 (2026-08-31)
 
