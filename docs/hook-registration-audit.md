@@ -107,7 +107,7 @@ def register(ctx: Any) -> None:
 - ✅ `register()` is the correct signature expected by `_load_plugin` (line 1778–1790 of plugins.py).
 - ✅ All four lifecycle hooks are registered with `ctx.register_hook()`.
 - ✅ Instance kept alive via `_instance_holder[0]` — prevents garbage collection.
-- ✅ Orchestrator bootstrap triggered via `_trigger_lazy_bootstrap()` before hooks register (fixes bug t_a0d7e8c8).
+- ✅ Orchestrator bootstrap triggered via `_trigger_lazy_bootstrap()` before hooks register (fixes the bootstrap-trigger regression).
 
 ### Hook methods implementation
 

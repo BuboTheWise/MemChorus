@@ -515,7 +515,7 @@ sequenceDiagram
 > **Reconciled 2026-09-02.** The Python feedback-loop subsystem described in v1.5.09 (`feedback_loop/` package: `detector.py`, `engine.py`, `escalation.py`, `loader.py`, `schema_v1.py`) **no longer exists in the codebase** — it was accidentally committed to public history and fully purged during the v1.9.0 OpSec readiness cycle. See `MemChorus-v1.9-Spec-Addendum.md` for the spec-level closure.
 
 **What survives in code (v2.0.27):**
-- `feedback_loop.py` (single module) — `FeedbackCorrection`, `FeedbackPersistenceStore`, `FeedbackLoopManager`: live recall-feedback bookkeeping (useful/stale recording wired to `on_session_end`, closes MemPlains #138 lineage), *not* the pattern-detection subsystem.
+- `feedback_loop.py` (single module) — `FeedbackCorrection`, `FeedbackPersistenceStore`, `FeedbackLoopManager`: live recall-feedback bookkeeping (useful/stale recording wired to `on_session_end`, closes MemChorus #138 lineage), *not* the pattern-detection subsystem.
 - `mistake_detector.py` — `MistakeDetector`: correction-type detection.
 - `prohibition_distiller.py` + `prohibitions.py` — distills detected mistakes into standing prohibitions/guards (`ProhibitionsManager`, `GuardVerdict`): the enforcement-side successor to the old loop concept.
 - `workflow_compliance.py` — `ComplianceReport`/`Violation`: format-compliance monitoring.
@@ -597,9 +597,9 @@ Three-phase deletion: soft mark → archive grace period → hard remove at expi
 
 ---
 
-## Local Deployment Map (<user> / T2 — reconciled to v2.0.27, 2026-09-02)
+## Local Deployment Map (<user> — reconciled to v2.0.27, 2026-09-02)
 
-This section shows exactly where MemChorus lives in the running environment — real paths, actual process topology, memory locations. Verified against the live tree on 2026-09-02 (user `<user>`, home `~`, host T2 Arch Linux, `~/.hermes`).
+This section shows exactly where MemChorus lives in the running environment — real paths, actual process topology, memory locations. Verified against the live tree on 2026-09-02 (user `<user>`, home `~`, `~/.hermes`).
 
 ### Directory Layout (v2.0.27, commit 604a656)
 
@@ -609,7 +609,7 @@ This section shows exactly where MemChorus lives in the running environment — 
 │   └── MemChorus/                                ← git dev repo (master, v2.0.27 @ 604a656)
 │       └── src/memchorus/                        (READ-ONLY at runtime — install is from GitHub)
 │
-├── Documents/Obsidian/Bubo_Wisdom/
+├── Documents/Obsidian/<vault>/
 │   └── Projects/MemChorus/                       ← Vault: point-of-truth docs (this folder)
 │       ├── MemChorus-Architecture.md             (this document)
 │       ├── MemChorus-Spec.md
@@ -652,7 +652,7 @@ This section shows exactly where MemChorus lives in the running environment — 
     └── config.yaml
 ```
 
-> **Path note (corrected 2026-09-02):** the previous draft of this map showed `~/.hermes/memory/`, `~/workspace/Code/MemChorus`, `~/workspace/Bubo_Wisdom`, and a live `custom_loops/` loader. The live tree is `~/.hermes/memories/`, `~/Projects/MemChorus`, `~/Documents/Obsidian/Bubo_Wisdom`, and **no `custom_loops/` dir** — the declarative YAML loader was purged in the v1.9.0 OpSec cycle and has not been re-implemented (`grep custom_loops src/` returns nothing). `feedback_loop/` is now a **single module** (`feedback_loop.py`), not the `detector/engine/escalation/loader/schema_v1` package.
+> **Path note (corrected 2026-09-02):** the previous draft of this map showed `~/.hermes/memory/`, `~/workspace/Code/MemChorus`, `~/workspace/<vault>/`, and a live `custom_loops/` loader. The live tree is `~/.hermes/memories/`, `~/Projects/MemChorus`, `~/Documents/Obsidian/<vault>/`, and **no `custom_loops/` dir** — the declarative YAML loader was purged in the v1.9.0 OpSec cycle and has not been re-implemented (`grep custom_loops src/` returns nothing). `feedback_loop/` is now a **single module** (`feedback_loop.py`), not the `detector/engine/escalation/loader/schema_v1` package.
 
 ### Local Process Topology (v2.0.27)
 
@@ -827,7 +827,7 @@ The subsystem determines *which project* to query for using a three-level priori
 
 | Priority | Source | Example | Fallback |
 |---|---|---|---|
-| 1 | `HERMES_KANBAN_TASK` env var | `t_be1e596c` | skip to next |
+| 1 | `HERMES_KANBAN_TASK` env var | `<task-id>` | skip to next |
 | 2 | `HERMES_WORKSPACE` env var (basename) | `/tmp/workspace/dir` → `dir` | skip to next |
 | 3 | Current working directory (basename) | `MemChorus/` → `MemChorus` | silent empty return |
 
