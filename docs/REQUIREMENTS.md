@@ -145,7 +145,7 @@ All components should include:
 4. Default                    → ~/.mempalace/palace
 ```
 
-The **palace directory** is the directory *containing* `chroma.sqlite3`. If `--palace /home/x/.hermes/profiles/executor agent/.mempalace`, the reader opens `/home/x/.hermes/profiles/executor agent/.mempalace/chroma.sqlite3`.
+The **palace directory** is the directory *containing* `chroma.sqlite3`. If `--palace /home/x/.hermes/profiles/<profile-a>/.mempalace`, the reader opens `/home/x/.hermes/profiles/<profile-a>/.mempalace/chroma.sqlite3`.
 
 **Known discrepancy (RESOLVED 2026-09-02 in v2.0.27 — the table below is historical, kept as the bug anatomy):**
 
@@ -168,8 +168,8 @@ The **palace directory** is the directory *containing* `chroma.sqlite3`. If `--p
 **Evidence (2026-08-31, all three active profiles):**
 
 ```
-profiles/executor agent/.mempalace/chroma.sqlite3  → 0 embeddings  (empty shell, reader target)
-profiles/executor agent/.mempalace/palace/chroma.sqlite3 → 158 embeddings  (real data, writer target)
+profiles/<profile-a>/.mempalace/chroma.sqlite3  → 0 embeddings  (empty shell, reader target)
+profiles/<profile-a>/.mempalace/palace/chroma.sqlite3 → 158 embeddings  (real data, writer target)
 profiles/<profile-b>/.mempalace/chroma.sqlite3     → 0 embeddings
 profiles/<profile-b>/.mempalace/palace/chroma.sqlite3 → 158 embeddings
 profiles/<profile-c>/.mempalace/chroma.sqlite3     → 0 embeddings

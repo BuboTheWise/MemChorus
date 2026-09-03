@@ -223,7 +223,7 @@ The relevance scoring engine had a bug where dict/list content lost semantic que
 ### 3-Voice Architecture (implemented)
 - **SessionSearchMemorySource** added as a first-class voice over session history (per-profile, FTS-backed). The chorus is now: hermes_default (resilient core) + mempalace (persistent primary) + session_search (episodic).
 
-### Path Alignment Contract (v2.0.27, Closes MemPlains #158; upstream MemPalace #2404)
+### Path Alignment Contract (v2.0.27, Closes MemChorus #158; upstream MemPalace #2404)
 - **`_normalize_palace_args` + `_chroma_is_empty`** guard in `mempalace_memory_source.py`: at MCP transport start, if the configured `--palace` points one level too shallow (parent `.mempalace/` where data sits in `.mempalace/palace/`), it re-points at the leaf **only** when the leaf holds a real `chroma.sqlite3` with rows and the parent is empty/absent. All other cases: no-op. See `MemChorus-Requirements.md` "MemPalace DB Location Contract" for the full contract.
 - **No-op guarantee is tested**: `tests/` E2E suite pins "already-correct leaf → no rewrite" and "fresh install → no rewrite", so the guard remains correct *after* upstream MemPalace ships their own #2404 fix (subsumption, not override).
 - **Upstream status**: MemPalace issue #2404 at P1, project healthy (58.8K stars, v3.9.0 Aug 31). **Do not fork** unless #2404 remains unmerged past 2 release cycles. After their merge: downgrade the guard from "fix" to "legacy-layout compat" via the normal vault→code cycle (doc comment + CHANGELOG only — no behavior change).
