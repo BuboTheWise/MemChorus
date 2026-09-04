@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memchorus"
+
+# Single source of truth for the version: derived from
+# src/memchorus/__init__.py::__version__ at build time. There is no separate
+# packaging-side version string to drift from the runtime one — a stale
+# hard-coded version (the class of bug tracked in #118/#148) is no longer
+# possible here.
+dynamic = ["version"]
+
+description = "Memory orchestration system for Hermes agents"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "MemChorus Project", email = "memchorus@nous.systems" }]
+urls = { repository = "https://github.com/BuboTheWise/MemChorus" }
+
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+dependencies = [
+    # schema_v1 validation (pinned <3.0 to avoid breaking changes)
+    "pydantic>=2.0,<3.0",
+    # YAML loop definition loader
+    "pyyaml>=5.4",
+]
+
+[project.optional-dependencies]
+mcp = [
+    # stdio transport for the MemPalace MCP client. MemChorus only imports
+    # StdioServerParameters, stdio_client and ClientSession (all lazy,
+    # inside functions) — every one of these symbols is present in both
+    # mcp 1.29.x and mcp 2.0.x, so the transport works across both major
+    # lines. Hermes base environments ship mcp 2.0.0; an upper pin of
+    # <2.0 forced pip to downgrade the shared venv on every
+    # `memchorus[mcp]` install and silently moved mcp out from under the
+    # rest of the agent runtime. Allow 2.x so both pin coherently.
+    "mcp>=1.29,<3.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-xdist>=3.0",    # parallel test execution for CI speed
+    "pytest-timeout>=2.0",   # per-test timeout to prevent hangs
+]
+
+[project.scripts]
+memchorus-init = "memchorus.auto_init:cli_main"
+memchorus-doctor = "memchorus.install_doctor:main"
+memchorus-recalibrate = "memchorus.calibration_engine:main"
+
+[project.entry-points."hermes_agent.plugins"]
+memchorus = "memchorus.hooks"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["memchorus*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "memchorus.__version__" }
