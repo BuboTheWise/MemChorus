@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.29] - 2026-09-04
+
+### Fixed
+- **Per-profile HitRateTracker (closes #171):** `HitRateTracker` is now a registry keyed by normalized memory directory instead of a single process-global singleton, so multi-profile in-process use no longer cross-pollinates hit-rate state or pins the first-resolved profile's tracker forever. `get_instance()` re-resolves the directory from the current `HERMES_PROFILE` on every call; `reset()` gained per-directory granularity. Full suite: 1716 passed, 12 skipped, 0 failures. Bumps `__version__` 2.0.28 → 2.0.29.
+
 ## [2.0.26] - 2026-08-31
 
 ### Added
