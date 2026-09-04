@@ -2,14 +2,19 @@
 
 All notable changes to MemChorus will be documented in this file.
 
-## [2.0.29] - 2026-09-02
+## [2.0.30] - 2026-09-04
 
 ### Added
 - **Public documentation set (promoted from the internal design docs):** the core engineering documents — `docs/REQUIREMENTS.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/lifecycle-analysis.md`, and `docs/hook-registration-audit.md` — are now published in the repo, with a new `## Documentation` index section in the README pointing readers to them. These were previously internal-only; this release makes the forward-looking requirements, spec, and architecture readable by contributors and third-party integrators (a prerequisite for active upstream support of the MemPalace project they build on).
 - **OPSEC scrub:** every promoted document was reviewed for and stripped of identifying details before publication — hostnames, local usernames, profile/agent names, and internal task IDs were replaced with neutral placeholders (`<user>`, `<profile-a/b/c>`, `maintainer`). Public second-check: issue #165.
 
 ### Verified
-- Re-scanned all five promoted documents after scrubbing: zero residual username / hostname / profile-name / internal-task-ID tokens (only the public `BuboTheWise` GitHub org appears, in install URLs and bylines, as intended).
+- Re-scanned all five promoted documents after scrubbing: zero residual username / hostname / profile-name / internal-task-ID tokens (only the public `BuboTheWise` GitHub org appears, in install URLs and bylines, as intended). Bumps `__version__` 2.0.29 → 2.0.30 (one patch above the v2.0.29 HitRateTracker release that shipped to master in the meanwhile).
+
+## [2.0.29] - 2026-09-04
+
+### Fixed
+- **Per-profile HitRateTracker (closes #171):** `HitRateTracker` is now a registry keyed by normalized memory directory instead of a single process-global singleton, so multi-profile in-process use no longer cross-pollinates hit-rate state or pins the first-resolved profile's tracker forever. `get_instance()` re-resolves the directory from the current `HERMES_PROFILE` on every call; `reset()` gained per-directory granularity. Full suite: 1716 passed, 12 skipped, 0 failures. Bumps `__version__` 2.0.28 → 2.0.29.
 
 ## [2.0.28] - 2026-09-01
 
@@ -32,6 +37,7 @@ All notable changes to MemChorus will be documented in this file.
 - Per-profile `mempalace status`: expected drawer counts present (seed corpus shared across profiles, per-profile accumulation on new writes).
 - Live MCP recall: 100% self-hit on own recent topics.
 - `mempalace status` on a fresh/default profile: "No palace found" (vacuous, correct).
+
 
 ## [2.0.26] - 2026-08-31
 

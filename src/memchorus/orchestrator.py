@@ -16,15 +16,12 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
-import threading
-import hashlib
 import json
 import logging
-import dataclasses
 from collections import OrderedDict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, Set, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memchorus.lifecycle_manager import LifecycleManager
@@ -36,20 +33,23 @@ from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWei
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
-from memchorus.auto_storage_engine import ALL_CATEGORIES, SignificanceCategory
+from memchorus.auto_storage_engine import ALL_CATEGORIES
 
 # Auto-tuning: lazy imports to avoid hard dependency when modules are unavailable
-_HITRATE_TRACKER = None
 _MISTAKE_DETECTOR = None
 
-def _ensure_hit_rate_tracker():
-    global _HITRATE_TRACKER
-    if _HITRATE_TRACKER is None:
-        try:
-            from memchorus.hit_rate_tracker import HitRateTracker
-            _HITRATE_TRACKER = HitRateTracker.get_instance()
-        except (ImportError, ModuleNotFoundError):
-            pass  # graceful degradation - no hit rate tracking
+def _get_hit_rate_tracker():
+    """Return the current-profile HitRateTracker, or None if unavailable.
+
+    Resolves fresh on every call so a process that switches profiles in-process
+    gets the tracker for the *current* profile (MemChorus #171), rather than a
+    first-call-pinned module global that leaks profile-A state into profile-B.
+    """
+    try:
+        from memchorus.hit_rate_tracker import HitRateTracker
+        return HitRateTracker.get_instance()
+    except (ImportError, ModuleNotFoundError):
+        return None  # graceful degradation - no hit rate tracking
 
 def _ensure_mistake_detector():
     global _MISTAKE_DETECTOR
@@ -951,10 +951,10 @@ class MemoryOrchestrator:
         
         # Auto-tuning: record successful save for hit-rate tracking (§10.2)
         if saved:
-            _ensure_hit_rate_tracker()
-            if _HITRATE_TRACKER is not None:
+            tracker = _get_hit_rate_tracker()
+            if tracker is not None:
                 try:
-                    _HITRATE_TRACKER.register_save(key)
+                    tracker.register_save(key)
                 except Exception:
                     pass  # never fail a save due to tracking
 
@@ -978,13 +978,13 @@ class MemoryOrchestrator:
         keys = list(self._recent_recall_keys)
         if not keys:
             return 0
-        _ensure_hit_rate_tracker()
-        if _HITRATE_TRACKER is None:
+        tracker = _get_hit_rate_tracker()
+        if tracker is None:
             return 0
         recorded = 0
         for k in keys:
             try:
-                _HITRATE_TRACKER.record_useful(k)
+                tracker.record_useful(k)
                 recorded += 1
             except Exception:  # noqa: BLE001
                 pass  # tracking failure must never surface to the caller
@@ -1000,13 +1000,13 @@ class MemoryOrchestrator:
         keys = list(self._recent_recall_keys)
         if not keys:
             return 0
-        _ensure_hit_rate_tracker()
-        if _HITRATE_TRACKER is None:
+        tracker = _get_hit_rate_tracker()
+        if tracker is None:
             return 0
         recorded = 0
         for k in keys:
             try:
-                _HITRATE_TRACKER.record_stale(k)
+                tracker.record_stale(k)
                 recorded += 1
             except Exception:  # noqa: BLE001
                 pass
@@ -1046,8 +1046,7 @@ class MemoryOrchestrator:
             summary["profile"] = profile
 
             tracker = None
-            _ensure_hit_rate_tracker()
-            tracker = _HITRATE_TRACKER
+            tracker = _get_hit_rate_tracker()
 
             # Low-frequency gate: read persisted calibration timestamp.
             if not force:
@@ -1092,10 +1091,10 @@ class MemoryOrchestrator:
         """Return current hit-rate statistics for the orchestrator instance.
 
         Returns None if hit-rate tracking is unavailable."""
-        _ensure_hit_rate_tracker()
-        if _HITRATE_TRACKER is not None:
+        tracker = _get_hit_rate_tracker()
+        if tracker is not None:
             try:
-                return _HITRATE_TRACKER.get_all_stats()
+                return tracker.get_all_stats()
             except Exception:
                 pass
         return None
@@ -1453,12 +1452,14 @@ class MemoryOrchestrator:
         ranked = pruned_ranked
 
         # Auto-tuning: track recall hits for returned entries (§10.2)
-        if ranked and _HITRATE_TRACKER is not None:
-            try:
-                for r in ranked[:effective_limit]:
-                    _HITRATE_TRACKER.record_recallhit(r.key)
-            except Exception:
-                pass  # never fail a search due to tracking
+        if ranked:
+            tracker = _get_hit_rate_tracker()
+            if tracker is not None:
+                try:
+                    for r in ranked[:effective_limit]:
+                        tracker.record_recallhit(r.key)
+                except Exception:
+                    pass  # never fail a search due to tracking
 
         # Convert RankedResult -> plain dict with score field
         results = [

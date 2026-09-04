@@ -14,8 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from memchorus.calibration_engine import CalibrationEngine
 from memchorus.hit_rate_tracker import HitRateTracker
@@ -91,10 +93,12 @@ class TestBoostIntegration(unittest.TestCase):
             HitRateTracker.reset()
             tracker = HitRateTracker(td)
             tracker._index = idx
-            HitRateTracker._instance = tracker
+            HitRateTracker._instances[os.path.realpath(td)] = tracker
 
-            s = RelevanceScorer()
-            s1, s2 = s.score(r1, q), s.score(r2, q)
+            # Route the no-arg get_instance() (used by calibration/scorer) to td
+            with patch.object(HitRateTracker, "_default_memory_dir", return_value=td):
+                s = RelevanceScorer()
+                s1, s2 = s.score(r1, q), s.score(r2, q)
             self.assertGreater(s1, s2, f"boosted {s1:.4f} > unproven {s2:.4f}")
 
     def test_low_utility_downranked(self):
@@ -110,10 +114,12 @@ class TestBoostIntegration(unittest.TestCase):
             HitRateTracker.reset()
             tracker = HitRateTracker(td)
             tracker._index = idx
-            HitRateTracker._instance = tracker
+            HitRateTracker._instances[os.path.realpath(td)] = tracker
 
-            s = RelevanceScorer()
-            s1, s2 = s.score(r1, q), s.score(r2, q)
+            # Route the no-arg get_instance() (used by calibration/scorer) to td
+            with patch.object(HitRateTracker, "_default_memory_dir", return_value=td):
+                s = RelevanceScorer()
+                s1, s2 = s.score(r1, q), s.score(r2, q)
             self.assertLess(s1, s2, f"low-utility {s1:.4f} < fresh {s2:.4f}")
 
     def test_scores_remain_bounded(self):

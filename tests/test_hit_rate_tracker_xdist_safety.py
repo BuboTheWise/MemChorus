@@ -15,7 +15,6 @@ import json
 import os
 import threading
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -52,10 +51,18 @@ class TestSingletonIdentity:
         assert tracker_a._index is tracker_b._index
 
     def test_memory_dir_sticks_after_first_call(self, isolated_dir: Path):
+        """Per-key isolation (#171): a different memory_dir yields a distinct tracker,
+        while the original keeps its own memory_dir unchanged."""
         first = HitRateTracker.get_instance(memory_dir=str(isolated_dir))
-        second = HitRateTracker.get_instance(memory_dir="/some/other/dir")
-        assert first is second
-        assert first.memory_dir == os.path.expanduser(str(isolated_dir))
+        other = HitRateTracker.get_instance(memory_dir="/some/other/dir")
+        assert first is not other
+        # Compare canonical forms: get_instance() keys by realpath() (so a
+        # non-existent path is rebased onto the active drive + native
+        # separators on Windows), and realpath() is idempotent, so this
+        # comparison holds on every platform while preserving the intent —
+        # each dir points at the right physical location (distinct per profile).
+        assert os.path.realpath(first.memory_dir) == os.path.realpath(str(isolated_dir))
+        assert os.path.realpath(other.memory_dir) == os.path.realpath("/some/other/dir")
 
 
 class TestResetCleanup:
@@ -63,8 +70,10 @@ class TestResetCleanup:
 
     def test_reset_clears_instance(self, isolated_dir: Path):
         HitRateTracker.get_instance(memory_dir=str(isolated_dir))
+        key = os.path.realpath(str(isolated_dir))
+        assert key in HitRateTracker._instances
         HitRateTracker.reset(memory_dir=str(isolated_dir))
-        assert HitRateTracker._instance is None
+        assert key not in HitRateTracker._instances
 
     def test_reset_wipes_in_memory_index(self, isolated_dir: Path):
         tracker = HitRateTracker.get_instance(memory_dir=str(isolated_dir))
@@ -228,9 +237,10 @@ class TestMemoryDirOverride:
         assert t1 is t2
 
     def test_memory_dir_not_changed_by_later_override(self, isolated_dir: Path):
-        """Once an instance exists, calling get_instance with a different memory_dir does not change it."""
+        """Under per-key isolation (#171) a different memory_dir resolves to a distinct
+        tracker; the original tracker's memory_dir is left unchanged."""
         HitRateTracker.reset(memory_dir=str(isolated_dir))
         first = HitRateTracker.get_instance(memory_dir=str(isolated_dir))
-        second = HitRateTracker.get_instance(memory_dir="/completely/different")
-        assert first is second
+        other = HitRateTracker.get_instance(memory_dir="/completely/different")
+        assert first is not other
         assert first.memory_dir == os.path.expanduser(str(isolated_dir))
