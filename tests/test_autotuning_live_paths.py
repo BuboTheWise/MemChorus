@@ -200,19 +200,14 @@ class TestSessionEndCalibration:
         assert "calibrated" in result
 
     def test_never_raises_on_missing_tracker(self, orchestrate):
-        # Force _HITRATE_TRACKER to None to simulate import failure path
+        # Simulate the tracker being unavailable (import-failure path)
         import memchorus.orchestrator as o_mod
-        saved = o_mod._HITRATE_TRACKER
-        o_mod._HITRATE_TRACKER = None
-        try:
-            with patch.object(
-                o_mod, "_ensure_hit_rate_tracker", side_effect=RuntimeError("no tracker")
-            ):
-                result = orchestrate.run_calibration_cycle(force=True)
-            assert isinstance(result, dict)
-            assert "calibrated" in result
-        finally:
-            o_mod._HITRATE_TRACKER = saved
+        with patch.object(
+            o_mod, "_get_hit_rate_tracker", return_value=None
+        ):
+            result = orchestrate.run_calibration_cycle(force=True)
+        assert isinstance(result, dict)
+        assert "calibrated" in result
 
 
 # ---------------------------------------------------------------------------
@@ -390,12 +385,8 @@ class TestSaveFailureSemantics:
         orchestrate._source_enabled["stub"] = True
 
         import memchorus.orchestrator as o_mod
-        saved_tracker = o_mod._HITRATE_TRACKER
-        o_mod._HITRATE_TRACKER = None
-        try:
+        with patch.object(o_mod, "_get_hit_rate_tracker", return_value=None):
             ok = orchestrate.save("ac3-key-2", "value2")
-        finally:
-            o_mod._HITRATE_TRACKER = saved_tracker
         assert ok is True
 
 
