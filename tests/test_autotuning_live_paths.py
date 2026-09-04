@@ -187,8 +187,6 @@ class TestSessionEndCalibration:
         assert r2.get("reason") == "min_interval_not_reached"
 
     def test_never_raises_on_tracker_failure(self, orchestrate, _isolated_tracker):
-        original_flush = _isolated_tracker.flush
-
         def _boom_flush():
             raise RuntimeError("flush failure must be swallowed")
 
@@ -200,19 +198,14 @@ class TestSessionEndCalibration:
         assert "calibrated" in result
 
     def test_never_raises_on_missing_tracker(self, orchestrate):
-        # Force _HITRATE_TRACKER to None to simulate import failure path
+        # Simulate the tracker being unavailable (import-failure path)
         import memchorus.orchestrator as o_mod
-        saved = o_mod._HITRATE_TRACKER
-        o_mod._HITRATE_TRACKER = None
-        try:
-            with patch.object(
-                o_mod, "_ensure_hit_rate_tracker", side_effect=RuntimeError("no tracker")
-            ):
-                result = orchestrate.run_calibration_cycle(force=True)
-            assert isinstance(result, dict)
-            assert "calibrated" in result
-        finally:
-            o_mod._HITRATE_TRACKER = saved
+        with patch.object(
+            o_mod, "_get_hit_rate_tracker", return_value=None
+        ):
+            result = orchestrate.run_calibration_cycle(force=True)
+        assert isinstance(result, dict)
+        assert "calibrated" in result
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +298,7 @@ class TestLiveFeedbackWiring:
         with patch.object(orchestrate, "mark_relevant_injected_as_useful",
                           return_value=0) as mu, \
              patch.object(orchestrate, "mark_relevant_injected_as_stale",
-                          return_value=0) as ms:
+                          return_value=0):
             result, cyc = self._run_session_end(
                 "memchorus.hooks",
                 [{"role": "user", "content": "please summarize"}],
@@ -390,12 +383,8 @@ class TestSaveFailureSemantics:
         orchestrate._source_enabled["stub"] = True
 
         import memchorus.orchestrator as o_mod
-        saved_tracker = o_mod._HITRATE_TRACKER
-        o_mod._HITRATE_TRACKER = None
-        try:
+        with patch.object(o_mod, "_get_hit_rate_tracker", return_value=None):
             ok = orchestrate.save("ac3-key-2", "value2")
-        finally:
-            o_mod._HITRATE_TRACKER = saved_tracker
         assert ok is True
 
 
