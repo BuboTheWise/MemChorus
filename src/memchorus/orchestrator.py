@@ -16,15 +16,12 @@ SweepScheduler, AuditLogger — all opt-in, disabled by default for backward com
 """
 
 import time
-import threading
-import hashlib
 import json
 import logging
-import dataclasses
 from collections import OrderedDict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Dict, Any, Optional, Tuple, Set, TYPE_CHECKING
+from typing import List, Dict, Any, Optional, Set, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from memchorus.lifecycle_manager import LifecycleManager
@@ -36,7 +33,7 @@ from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWei
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
-from memchorus.auto_storage_engine import ALL_CATEGORIES, SignificanceCategory
+from memchorus.auto_storage_engine import ALL_CATEGORIES
 
 # Auto-tuning: lazy imports to avoid hard dependency when modules are unavailable
 _MISTAKE_DETECTOR = None

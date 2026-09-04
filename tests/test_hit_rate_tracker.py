@@ -1,8 +1,5 @@
 """HitRateTracker — verify counters increment on recall, persist across runs, handle missing _hit_rate key."""
 
-import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest

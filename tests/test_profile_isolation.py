@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """test_profile_isolation.py - Cross-profile isolation for MemoryOrchestrator."""
 
-import os, sys
+import os
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest
@@ -86,8 +87,8 @@ class TestProfileDirectoryIsolation:
     def test_separate_memory_dirs(self, temp_base):
         pa = ProfileBackedOrchestrator("px", temp_base)
         pb = ProfileBackedOrchestrator("py", temp_base)
-        orch_a = pa.create_orchestrator()
-        orch_b = pb.create_orchestrator()
+        pa.create_orchestrator()
+        pb.create_orchestrator()
         assert pa.memory_dir != pb.memory_dir
         assert os.path.exists(pa.memory_dir)
         assert os.path.exists(pb.memory_dir)

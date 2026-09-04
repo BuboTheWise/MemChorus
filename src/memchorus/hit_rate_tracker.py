@@ -18,7 +18,7 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from memchorus.hermes_home import hermes_home
 
@@ -168,13 +168,12 @@ class HitRateTracker:
         with cls._lock_cls:
             if memory_dir is not None:
                 key = os.path.realpath(memory_dir)
-                inst = cls._instances.pop(key, None)
+                cls._instances.pop(key, None)
             else:
                 insts = list(cls._instances.values())
                 cls._instances.clear()
                 for old in insts:
                     old._index.clear()
-                inst = None
             # Delete persisted sidecar when a directory is supplied
             if memory_dir is not None:
                 sidecar = _resolve_hit_rate_file(memory_dir)
