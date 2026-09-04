@@ -241,6 +241,25 @@ Key guarantees from this pipeline:
 | `context_sensitive_pref` | Hermes Default | MemPalace | Contextual prefs belong in local config layer |
 | `auto` (inferred) | MemPalace → Hermes Default | Either | Content analysis decides; tries semantic first |
 
+## Documentation
+
+MemChorus's engineering documents live in [`docs/`](docs/). The forward-looking set below is the canonical reference for what the project does and how it's built; the others are supporting material.
+
+| Document | Purpose |
+|---|---|
+| [North Star](docs/north-star.md) | Design philosophy and the principles every change must respect |
+| [Requirements](docs/REQUIREMENTS.md) | Forward-looking functional & non-functional requirements |
+| [Specification](docs/SPEC.md) | Behavioral spec: contracts, data flow, lifecycle semantics |
+| [Architecture](docs/ARCHITECTURE.md) | System architecture, deployment map, process topology, fault modes |
+| [Memory Lifecycle](docs/memory-lifecycle-design.md) | How memory is written, recalled, deduplicated, and decayed |
+| [Integration Contract](docs/integration-contract-spec.md) | The hook/transport contract with the host agent runtime |
+| [Lifecycle Analysis (GAP-017)](docs/lifecycle-analysis.md) | Analysis of the lifecycle gap and its resolution |
+| [Hook Registration Audit](docs/hook-registration-audit.md) | How hooks are registered and verified at bootstrap |
+| [Testing](docs/TESTING.md) · [Benchmarks](docs/BENCHMARKS.md) · [Auto-tuning](docs/AUTOTUNING.md) | Test strategy, benchmark harness, calibration pipeline |
+| [Onboarding](docs/ONBOARDING.md) | Contributor setup and the development cycle |
+
+> Internal working notes (per-iteration task state, phase reports, and point-in-time assessments) are kept in the private project vault and are **not** part of this public tree.
+
 ## Lifecycle Management
 
 The lifecycle management layer (`LifecycleManager`, `SweepScheduler`, `AuditLogger`) addresses unbounded growth in write-only memory systems. It provides per-profile retention periods, content-assessment-driven eviction with a two-phase soft-delete/archive before hard-deletion, merge-at-write deduplication hooks, and periodic automated sweeps. Lifecycle is opt-in — disabled by default (`enabled: false`), so existing write-only behaviour is fully preserved when you do not activate it.
@@ -607,7 +626,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.29 (current — 2026-09-04)
+### v2.0.30 (current — 2026-09-04)
+
+- **Public documentation set promoted from the internal design docs:** `docs/REQUIREMENTS.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`, `docs/lifecycle-analysis.md`, and `docs/hook-registration-audit.md` are now published in the repo, with a new `## Documentation` index section in this README. This makes the forward-looking requirements, spec, and architecture readable by contributors and third-party integrators — a prerequisite for active upstream support of the MemPalace project these integrate with. Every promoted document was reviewed for and stripped of identifying details (hostnames, local usernames, profile/agent names, internal task IDs) before publication; only the public `BuboTheWise` GitHub org remains, in install URLs and bylines. No source-code behavior changed. Bumps `__version__` 2.0.29 → 2.0.30 (one patch above the v2.0.29 per-profile HitRateTracker release that shipped to master in the meanwhile).
+
+### v2.0.29 (2026-09-04)
 
 - **Per-profile hit-rate tracking (closes #171):** `HitRateTracker` previously held a single process-global singleton keyed to whichever profile was first resolved, so multi-profile in-process use (e.g. the nightly analyzer switching `HERMES_PROFILE`) silently cross-pollinated hit-rate state — one profile's tracker was pinned forever and every profile wrote and read the same `_hit_rate_index.json`. It is now a registry keyed by the normalized (`os.path.realpath`) memory directory: `get_instance()` resolves the directory from the *current* `HERMES_PROFILE` on every call (default profile → `~/.hermes/memories`, any other → `~/.hermes/profiles/<name>/memories`), so switching profiles in-process re-resolves into a distinct tracker with its own index and sidecar file. `reset()` gained per-directory granularity — supplying a directory clears and unregisters only that tracker (deleting its sidecar), while `reset()` with no argument clears the whole registry. `orchestrator.py` call sites migrated to the new API, and the xdist-safety and profile-isolation suites were re-locked to the per-key model (identity tests now assert realpath-canonical forms so they hold across Windows/POSIX and across alias/symlink paths). Full suite: **1716 passed, 12 skipped, 0 failures**. Bumps `__version__` 2.0.28 → 2.0.29.
 
