@@ -88,7 +88,7 @@ class HitRateTracker:
     inherited locks from the parent process may be held by now-dead threads.
     """
 
-    _instance: Optional["HitRateTracker"] = None
+    _instances: Dict[str, "HitRateTracker"] = {}
     _lock_cls: threading.Lock = threading.Lock()
 
     def __init__(self, memory_dir: str):
@@ -109,48 +109,72 @@ class HitRateTracker:
             cls._lock_cls = threading.Lock()
 
     @classmethod
+    def _default_memory_dir(cls) -> str:
+        """Resolve the hit-rate index directory for the *current* profile.
+
+        Re-reads ``HERMES_PROFILE`` on every call so that a process that
+        switches profiles in-process (multi-profile nightly analyzer) gets a
+        distinct tracker per profile instead of the first profile's tracker
+        being pinned forever. See MemChorus #171 (cross-profile state bleed).
+        """
+        try:
+            raw_profile = os.environ.get("HERMES_PROFILE", "default")
+            if raw_profile != "default":
+                return str(hermes_home() / "profiles" / raw_profile / "memories")
+            return str(hermes_home() / "memories")
+        except Exception:
+            return str(hermes_home() / "memories")
+
+    @classmethod
     def get_instance(cls, memory_dir: str | None = None) -> "HitRateTracker":
-        """Return (creating if necessary) the global HitRateTracker.
+        """Return (creating if necessary) the HitRateTracker for a directory.
+
+        Instances are keyed by their normalized memory directory, so two
+        distinct profiles — even within one process — get two distinct
+        trackers that write to distinct ``_hit_rate_index.json`` sidecars.
 
         Args:
-            memory_dir: When provided and no instance exists yet, initialise
-                the singleton with this directory instead of the default
-                profile path.  Useful for per-worker isolation under xdist.
+            memory_dir: When provided, the tracker for that specific directory
+                is returned (creating it on first use).  When ``None``, the
+                directory is resolved from the *current* ``HERMES_PROFILE``
+                each time, so switching profiles re-resolves automatically.
         """
         cls._ensure_lock()
-        if cls._instance is None:
+        key = os.path.realpath(memory_dir or cls._default_memory_dir())
+        inst = cls._instances.get(key)
+        if inst is None:
             with cls._lock_cls:
-                if cls._instance is None:
-                    md = memory_dir
-                    if md is None:
-                        try:
-                            raw_profile = os.environ.get("HERMES_PROFILE", "default")
-                            if raw_profile != "default":
-                                md = str(hermes_home() / "profiles" / raw_profile / "memories")
-                            else:
-                                md = str(hermes_home() / "memories")
-                        except Exception:
-                            md = str(hermes_home() / "memories")
-                    cls._instance = cls(md)
-        return cls._instance
+                inst = cls._instances.get(key)
+                if inst is None:
+                    inst = cls(key)
+                    cls._instances[key] = inst
+        return inst
 
     @classmethod
     def reset(cls, memory_dir: str | None = None) -> None:
-        """Clear the singleton (test convenience).
+        """Clear the tracker registry (test convenience).
 
-        Wipes the in-memory index so stale data cannot leak into the next
-        test run.  When *memory_dir* is supplied, also deletes the persisted
-        sidecar JSON to prevent on-disk pollution between runs.
+        Wipes in-memory indices so stale data cannot leak into the next test
+        run.  When *memory_dir* is supplied, only that directory's tracker is
+        reset and its persisted sidecar JSON deleted (per-profile isolation
+        between runs); when ``None``, the entire registry is cleared and no
+        sidecars are deleted.
 
         Args:
-            memory_dir: Directory containing a sidecar file to delete.
+            memory_dir: Directory to reset (and delete its sidecar), or ``None``
+                to reset every registered tracker.
         """
         cls._ensure_lock()
         with cls._lock_cls:
-            if cls._instance is not None:
-                cls._instance._index.clear()
-            old_instance = cls._instance
-            cls._instance = None
+            if memory_dir is not None:
+                key = os.path.realpath(memory_dir)
+                inst = cls._instances.pop(key, None)
+            else:
+                insts = list(cls._instances.values())
+                cls._instances.clear()
+                for old in insts:
+                    old._index.clear()
+                inst = None
             # Delete persisted sidecar when a directory is supplied
             if memory_dir is not None:
                 sidecar = _resolve_hit_rate_file(memory_dir)

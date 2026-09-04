@@ -194,8 +194,9 @@ class TestReset:
     def test_reset_clears_singleton(self, memory_dir):
         tracker = HitRateTracker.get_instance(memory_dir)
         tracker.register_save("will_be_gone")
+        assert tracker in list(HitRateTracker._instances.values())
         HitRateTracker.reset()
-        assert HitRateTracker._instance is None
+        assert list(HitRateTracker._instances.values()) == []
 
     def test_reset_with_memory_dir_deletes_sidecar(self, memory_dir):
         tracker = HitRateTracker.get_instance(memory_dir)
