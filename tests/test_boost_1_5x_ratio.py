@@ -3,6 +3,7 @@
 The broader test suite lives in tests/test_memory_scorer_boost.py;
 this file focuses solely on the 1.5x ratio threshold."""
 
+import os
 import sys
 import tempfile
 import unittest
