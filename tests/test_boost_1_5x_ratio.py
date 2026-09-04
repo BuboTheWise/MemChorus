@@ -3,10 +3,12 @@
 The broader test suite lives in tests/test_memory_scorer_boost.py;
 this file focuses solely on the 1.5x ratio threshold."""
 
+import os
 import sys
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -39,11 +41,13 @@ class TestBoostRatio(unittest.TestCase):
                 "ingress_setup": {"useful_flags": 10, "noise_flags": 1},
                 # neutral key has no history -> boost defaults to 1.0
             }
-            HitRateTracker._instance = tracker
+            HitRateTracker._instances[os.path.realpath(td)] = tracker
 
-            scorer = RelevanceScorer()
-            s_boosted = scorer.score(r_boosted, query)
-            s_neutral = scorer.score(r_neutral, query)
+            # Route the no-arg get_instance() (used by calibration/scorer) to td
+            with patch.object(HitRateTracker, "_default_memory_dir", return_value=td):
+                scorer = RelevanceScorer()
+                s_boosted = scorer.score(r_boosted, query)
+                s_neutral = scorer.score(r_neutral, query)
 
             ratio = s_boosted / max(s_neutral, 1e-9)
             self.assertGreaterEqual(
