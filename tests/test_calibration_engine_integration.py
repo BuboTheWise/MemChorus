@@ -3,6 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -207,22 +208,23 @@ class TestIntegrationPipeline:
 
         tracker.flush()
 
-        # Now run calibration
-        engine = CalibrationEngine(profile_name="integration_test")
-        engine.tuning_path = tmp_path / "integration.yaml"
+        # Now run calibration — route the engine's no-arg get_instance() to mem_dir
+        with patch.object(HitRateTracker, "_default_memory_dir", return_value=str(mem_dir)):
+            engine = CalibrationEngine(profile_name="integration_test")
+            engine.tuning_path = tmp_path / "integration.yaml"
 
-        saves, recalls = engine.aggregate_hit_rate_stats()
-        assert saves == 20
-        assert recalls == 10
+            saves, recalls = engine.aggregate_hit_rate_stats()
+            assert saves == 20
+            assert recalls == 10
 
-        adjusted = engine.compute_adjustments()
+            adjusted = engine.compute_adjustments()
 
-        # Verify all three parameters present and within bounds
-        from memchorus.adaptive_threshold import PARAM_BOUNDS
-        for param_name in ["min_relevance_score", "dedup_similarity_threshold", "retention_scan_interval_days"]:
-            assert param_name in adjusted
-            bounds = PARAM_BOUNDS[param_name]
-            assert bounds.minimum <= adjusted[param_name] <= bounds.maximum
+            # Verify all three parameters present and within bounds
+            from memchorus.adaptive_threshold import PARAM_BOUNDS
+            for param_name in ["min_relevance_score", "dedup_similarity_threshold", "retention_scan_interval_days"]:
+                assert param_name in adjusted
+                bounds = PARAM_BOUNDS[param_name]
+                assert bounds.minimum <= adjusted[param_name] <= bounds.maximum
 
     def test_apply_and_persist_writes_file(self, tmp_path):
         """Verify that apply_and_persist actually writes the tuning YAML."""
@@ -253,7 +255,8 @@ class TestIntegrationPipeline:
                 HitRateTracker.get_instance(tmp_dir).record_recallhit("ag_test")
 
             engine = CalibrationEngine(profile_name="agg_test")
-            saves, recalls = engine.aggregate_hit_rate_stats()
+            with patch.object(HitRateTracker, "_default_memory_dir", return_value=tmp_dir):
+                saves, recalls = engine.aggregate_hit_rate_stats()
             assert saves == 1
             assert recalls == 3
 
@@ -317,7 +320,8 @@ class TestVolumeEstimation:
 
         engine = CalibrationEngine(profile_name="volume_test")
         engine.tuning_path = tmp_path / "volume.yaml"
-        engine.apply_and_persist()
+        with patch.object(HitRateTracker, "_default_memory_dir", return_value=str(mem_dir)):
+            engine.apply_and_persist()
 
         assert engine.state.profile_volume_writes_per_day == pytest.approx(42.0)
 

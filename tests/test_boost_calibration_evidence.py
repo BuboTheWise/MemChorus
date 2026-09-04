@@ -12,10 +12,12 @@ returned zero hits before the recall fix.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 import tempfile
 import time
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -43,11 +45,14 @@ def isolated_tracker():
     with tempfile.TemporaryDirectory() as td:
         HitRateTracker.reset()
         tracker = HitRateTracker(td)
-        HitRateTracker._instance = tracker
+        tracker.memory_dir = td
+        HitRateTracker._instances[os.path.realpath(td)] = tracker
 
         # Start with empty index — test will seed specific entries.
         tracker._index.clear()
-        yield tracker
+        # Route the no-arg get_instance() (used by calibration/scorer) to td.
+        with patch.object(HitRateTracker, "_default_memory_dir", return_value=td):
+            yield tracker
 
 
 # ---------------------------------------------------------------------------
