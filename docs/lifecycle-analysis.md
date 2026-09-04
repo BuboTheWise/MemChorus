@@ -1,7 +1,7 @@
 LIFECYCLE ANALYSIS FINDINGS — 2026-07-24
 ======================================================================
 Author: executor agent (executor) | Task: internal analysis task
-Source: ~/.hermes/workspace/Code/MemChorus@879a93e
+Source: ~/.hermes/workspace/Code/MemChorus (analysis snapshot)
 
 GAP017.5 — LifecycleConfigResolver._resolve_lifecycle_config()
 ----------------------------------------------------------------------

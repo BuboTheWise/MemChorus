@@ -1,4 +1,4 @@
-# MemChorus Architecture Documentation (Internal — Unredacted)
+# MemChorus Architecture Documentation
 
 **Version:** v2.0.27 (reconciled 2026-09-02, was v1.5.09) | **Date:** 2026-07-23, updated 2026-09-02 | **Author:** BuboTheWise
 **Classification:** Internal — private paths included for technical accuracy
@@ -643,9 +643,9 @@ This section shows exactly where MemChorus lives in the running environment — 
     │   └── hermes-memchorus/plugin.yaml          (save_triggers; written by hooks.py at bootstrap)
     │
     ├── profiles/
-    │   ├── <profile-b>/      .mempalace/palace/         ← 157 drawers (seed shared)
-    │   ├── <profile-a>/  .mempalace/palace/         ← 157 drawers (seed shared)
-    │   ├── <profile-c>/      .mempalace/palace/         ← 157 drawers (seed shared)
+    │   ├── <profile-b>/      .mempalace/palace/
+    │   ├── <profile-a>/  .mempalace/palace/
+    │   ├── <profile-c>/      .mempalace/palace/
     │   └── default/   (no palace — vacuous, correct)
     │
     ├── kanban.db  kanban/  projects.db  state.db ← shared board / project state
@@ -658,7 +658,7 @@ This section shows exactly where MemChorus lives in the running environment — 
 
 ```mermaid
 flowchart TD
-    subgraph Host["T2 (<user>@, Arch Linux)"]
+    subgraph Host["Dev host (Linux)"]
         subgraph Hermes["Hermes Agent Runtime (~/.hermes/)"]
             GW["Gateway Server\n(custom provider; per-profile models)"]
             CLI["CLI / agent sessions\n(default profile + <profile-b>/<profile-a>/<profile-c>)"]
@@ -694,7 +694,7 @@ flowchart TD
             subgraph External["External Services"]
                 MCPSRV["MemPalace MCP Server (stdio pipe; shared venv OTel 1.44.0 — interim re-pin)"]
                 KANBANDB["~/.hermes/kanban.db (SQLite shared board)"]
-                PALACE["per-profile palaces\n~/.hermes/profiles/{<profile-a>,<profile-b>,<profile-c>}/.mempalace/palace/\n157 drawers each (seed corpus shared)"]
+                PALACE["per-profile palaces\n~/.hermes/profiles/{<profile-a>,<profile-b>,<profile-c>}/.mempalace/palace/\n(seed corpus shared across profiles)"]
             end
         end
     end
