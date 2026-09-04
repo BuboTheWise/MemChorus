@@ -1,8 +1,6 @@
 """CalibrationEngine integration tests — full pipeline from hit recording through adjustment computation to config write-back."""
 
-import os
 import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

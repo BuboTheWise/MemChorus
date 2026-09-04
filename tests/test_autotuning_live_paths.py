@@ -187,8 +187,6 @@ class TestSessionEndCalibration:
         assert r2.get("reason") == "min_interval_not_reached"
 
     def test_never_raises_on_tracker_failure(self, orchestrate, _isolated_tracker):
-        original_flush = _isolated_tracker.flush
-
         def _boom_flush():
             raise RuntimeError("flush failure must be swallowed")
 
@@ -300,7 +298,7 @@ class TestLiveFeedbackWiring:
         with patch.object(orchestrate, "mark_relevant_injected_as_useful",
                           return_value=0) as mu, \
              patch.object(orchestrate, "mark_relevant_injected_as_stale",
-                          return_value=0) as ms:
+                          return_value=0):
             result, cyc = self._run_session_end(
                 "memchorus.hooks",
                 [{"role": "user", "content": "please summarize"}],
