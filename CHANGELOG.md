@@ -2,6 +2,14 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.31] - 2026-09-04
+
+### Fixed
+- **Single canonical build definition (closes #170):** MemChorus previously carried TWO divergent build definitions for the same package — the full packaging metadata in `setup.py` and a redundant `src/pyproject.toml` (no deps, no scripts, hard-coded version) that shadowed it. It now has exactly ONE: a root `pyproject.toml` (PEP 621 `[project]` table, PEP 517 setuptools backend) is the sole source of packaging truth. It carries name, description, readme, Python constraint, runtime deps (`pydantic`, `pyyaml`), the `mcp`/`dev` extras, the three console scripts (`memchorus-init`, `memchorus-doctor`, `memchorus-recalibrate`), and the `hermes_agent.plugins` entry point (`memchorus = memchorus.hooks`). The version is `dynamic`, derived from `src/memchorus/__init__.py::__version__` at build time, eliminating the second, separately-maintained packaging version string that could drift from the runtime one (the class of bug tracked in #118/#148). `setup.py` is reduced to a bare `setup()` shim (kept only for legacy `python setup.py` tooling; no packaging fields) and the shadowing `src/pyproject.toml` is removed. `scripts/check_version_sync.py` is updated to accept the new dynamic/shim layout while still failing on a stale concrete version in `setup.py`/`pyproject.toml`, a missing version in a real config, or a README/runtime value that disagrees with `__init__.py`. New `tests/test_build_def_convergence.py` (4 tests) locks the anti-drift invariant — one canonical build def, no divergent packaging versions, the gate passing, and the installed package's recorded version equaling both the runtime and source `__version__`. Bumps `__version__` 2.0.30 → 2.0.31 (one patch above the v2.0.30 docs-promotion release, so no two RELEASE cards in this batch collide on a number).
+
+### Verified
+- Independent review (t_2fd7a90e) in fresh venvs, not taken on the implementer's word: `pip install .[mcp]` and `uv pip install .[mcp]` each yield all 3 console scripts, the `hermes_agent.plugins` entry, an identical 5-dep set (pydantic, pyyaml, mcp, + dev), and `memchorus 2.0.30` with `pip check` clean; MemPalace co-install is conflict-free and both packages import in one interpreter. Version-sync gate PASS 4/4 (canonical `__init__` + README concrete-equal, `setup.py` equal-shim, pyproject dynamic), exit 0. Full suite: 1720 passed / 12 skipped (no regression). OPSEC clean — only the `memchorus@nous.systems` project email and the `BuboTheWise` GitHub owner appear in the diff and commit message; no agent names, local usernames, hostnames, or tokens.
+
 ## [2.0.30] - 2026-09-04
 
 ### Added
