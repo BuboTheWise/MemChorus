@@ -56,8 +56,13 @@ class TestSingletonIdentity:
         first = HitRateTracker.get_instance(memory_dir=str(isolated_dir))
         other = HitRateTracker.get_instance(memory_dir="/some/other/dir")
         assert first is not other
-        assert first.memory_dir == os.path.expanduser(str(isolated_dir))
-        assert other.memory_dir == os.path.expanduser("/some/other/dir")
+        # Compare canonical forms: get_instance() keys by realpath() (so a
+        # non-existent path is rebased onto the active drive + native
+        # separators on Windows), and realpath() is idempotent, so this
+        # comparison holds on every platform while preserving the intent —
+        # each dir points at the right physical location (distinct per profile).
+        assert os.path.realpath(first.memory_dir) == os.path.realpath(str(isolated_dir))
+        assert os.path.realpath(other.memory_dir) == os.path.realpath("/some/other/dir")
 
 
 class TestResetCleanup:
