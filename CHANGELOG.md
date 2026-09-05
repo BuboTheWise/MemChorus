@@ -2,6 +2,14 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.34] - 2026-09-05
+
+### Added
+- **Recall explainability for `memchorus-doctor` (closes #173):** `memchorus-doctor --recall "<query>"` runs — read-only — the live recall pipeline and reports, per query, what would actually be injected: the full ranked list with per-component score contribution and rank position, the kept/dropped budget split (how many candidates were cut by the character cap and why), and the cross-turn suppression state (currently suppressed + remaining TTL). New `--limit N` bounds the list; `--json` emits a stable, exact-key-set schema for CI consumers. Injected-block shape is byte-identical when the show-dropped env var is unset (lock-verified). Structured DEBUG log lines (`recall.render`, `recall.dropped_by_budget`, `recall.suppressed`) give operators a trace without changing visible output. Exit codes: 0 (pipeline ran, even empty), 1 (no orchestrator or search error, with diagnostics), 2 (bad arguments). The scoring refactor is arithmetic-equivalent to pre-diff — no policy or threshold change. Independent review PASS; full suite 1745 passed, 13 skipped, no regression.
+
+### Changed
+- Bumps `__version__` 2.0.32 → 2.0.34 (skipping 2.0.33, already reserved by in-flight #172, keeping the release chain collision-free).
+
 ## [2.0.32] - 2026-09-04
 
 ### Added
