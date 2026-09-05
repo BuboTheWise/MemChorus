@@ -474,5 +474,59 @@ class TestDualWrite(unittest.TestCase):
         self.assertEqual(sources, {"mempalace"})
 
 
+# ---------------------------------------------------------------------------
+# IMPL #166: provenance (source_file) propagation through capture_outcome()
+#
+# The payload handed to orchestrator.save() must carry a non-empty
+# ``source_file`` so the MemPalace drawer's provenance metadata survives
+# end-to-end.  This class pins that contract against the saved payload.
+# ---------------------------------------------------------------------------
+
+
+class TestProvenancePropagation(unittest.TestCase):
+    """capture_outcome() must attach a non-empty ``source_file`` to the payload."""
+
+    def test_saved_payload_has_nonempty_source_file(self) -> None:
+        orch = _MockOrchestrator()
+        engine = _make_engine(orch)
+        text = (
+            "I learned that the event-loop race condition was caused by "
+            "unsynchronized state access in the batch flusher."
+        )
+        result = engine.capture_outcome(text, outcome_type="automatic")
+        self.assertTrue(result["saved"])
+
+        # The orchestrator records >=1 save call (LEARNING is dual-written to
+        # mempalace + hermes_default).  Every recorded payload must carry the
+        # provenance key with a non-empty value.
+        assert len(orch.saved_calls) >= 1, "expected at least one orchestrator.save()"
+        for key, payload in orch.saved_calls:
+            self.assertIsInstance(payload, dict)
+            self.assertIn("source_file", payload, "payload missing source_file provenance")
+            sf = payload.get("source_file")
+            self.assertTrue(
+                isinstance(sf, str) and sf.strip(),
+                f"source_file must be non-empty string, got {sf!r}",
+            )
+            # Provenance marker still present (Bug 3 AC4).
+            self.assertEqual(payload.get("provenance"), "auto_stored")
+            self.assertTrue(payload.get("_auto_provenance"))
+            # The locator is the deterministic content-hash key — stable per content.
+            self.assertEqual(payload.get("source_file"), key)
+
+    def test_source_file_matches_saved_key(self) -> None:
+        orch = _MockOrchestrator()
+        engine = _make_engine(orch)
+        engine.capture_outcome(
+            "We decided to deprecate the legacy recall path in v2,"
+        )
+        assert orch.saved_calls, "expected at least one save call"
+        key, payload = orch.saved_calls[0]
+        # The provenance locator we attach is the deterministic content-hash key,
+        # so it is guaranteed non-empty and stable for the same content.
+        self.assertEqual(payload.get("source_file"), key)
+        self.assertTrue(str(payload.get("source_file")).strip())
+
+
 if __name__ == "__main__":
     unittest.main()
