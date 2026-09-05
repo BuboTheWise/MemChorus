@@ -14,6 +14,30 @@ import types as _types
 import pytest
 
 
+# ── IMPL #168: selective recall-battery invocation ─────────────────────
+# The recall-quality battery (tests/test_recall_battery.py) carries the
+# `recall_battery` marker. It is OPT-IN: fast unit runs deselect it by default
+# so the 1249-test matrix stays quick, and the regression gate only runs when
+# you explicitly pass --recall-battery (the CI battery step does).
+def pytest_addoption(parser):
+    parser.addoption(
+        "--recall-battery", action="store_true", default=False,
+        help="Run the IMPL #168 recall quality battery (numeric floors + "
+             "regression gate). Battery tests are deselected unless passed.")
+
+
+def pytest_collection_modifyitems(config, items):
+    if config.getoption("--recall-battery", default=False):
+        return  # battery explicitly requested -> keep everything
+
+    select = []
+    for item in items:
+        if item.get_closest_marker("recall_battery") is not None:
+            continue  # deselected: selective invocation (--recall-battery)
+        select.append(item)
+    items[:] = select
+
+
 # Counter for batched gc - only collect every N tests to reduce overhead
 _gc_counter = [0]
 _GC_BATCH_INTERVAL = 50  # Only do expensive gc.collect every 50 tests
