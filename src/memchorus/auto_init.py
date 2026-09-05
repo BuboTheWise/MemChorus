@@ -23,6 +23,7 @@ import textwrap
 from pathlib import Path
 from typing import Optional
 
+from memchorus import palace_path
 from memchorus.hermes_home import hermes_home
 
 # ---------------------------------------------------------------------------
@@ -84,15 +85,13 @@ def generate_config(profile: Optional[str] = None,
 
     Writer/reader agreement, by construction:
 
-    The ``data_dir`` recorded here is the **root / parent** the reader
-    (MCP ``--palace``) and operator would hold.  The *leaf* that contains
-    ``chroma.sqlite3`` is decided by
-    :func:`memchorus.palace_path.palace_data_dir` (root itself if the data is
-    already at the root, else ``<root>/palace`` for the MemPalace
-    ``DEFAULT_PALACE_PATH`` layout).  ``mempalace_memory_source``, the drawer
-    writer, calls that resolver at transport time, so writer and reader can
-    not structurally disagree: both route through
-    :mod:`memchorus.palace_path`.
+    The ``data_dir`` recorded below is computed by calling the single shared
+    resolver :func:`memchorus.palace_path.palace_data_dir` on the configured
+    root — the exact same function the MCP reader
+    (:func:`mempalace_memory_source._normalize_palace_args`) delegates to when
+    it opens ``chroma.sqlite3``. Both call sites therefore funnel through one
+    code path for the parent-vs-leaf decision, so writer and reader agree
+    structurally rather than by two independent constants coinciding.
 
     Returns
     -------
@@ -105,7 +104,11 @@ def generate_config(profile: Optional[str] = None,
 
     data_dir = (data_dir
                 or os.path.join(DEFAULT_DATA_DIR, profile))
-    resolved_ddir = os.path.expanduser(data_dir) if "~" in str(data_dir) else data_dir
+    data_dir = str(os.path.expanduser(data_dir)) if "~" in str(data_dir) else str(data_dir)
+    # Single decision point: resolve parent-vs-leaf through the shared
+    # resolver so the recorded config and the reader's own resolution can
+    # never disagree (see palace_path.palace_data_dir for the rules).
+    resolved_ddir = str(palace_path.palace_data_dir(data_dir))
 
     mp_cfg: dict[str, object] = {
         "python_bin": "{hermes_venv}/bin/python3",
@@ -269,9 +272,59 @@ def cli_main() -> int:
                         help="Print generated YAML to stdout instead of writing a file")
     parser.add_argument("--disable-plugin", action="store_true", default=False,
                         help="Do NOT add memchorus to plugins.enabled (default: add it)")
+    parser.add_argument("--migrate", metavar="ROOT", default=None,
+                        help="Re-point this profile's reader config: rewrite --palace ROOT → "
+                             "the canonical leaf (pair with -p <profile>; --dry-run to preview)")  # noqa: E501
 
     args = parser.parse_args()
     profile = args.profile or os.environ.get("HERMES_KANBAN_PROFILE") or "default"
+
+    if args.migrate is not None:
+        # --migrate ROOT  →  re-point this profile's reader config at the
+        # canonical leaf.  Delegates to :func:`palace_path.migrate` — the
+        # same module the doctor and reader share — so the "single
+        # canonical answer" guarantee is preserved (see palace_path for
+        # the full contract).
+        #
+        # The ``--palace`` token may live in the profile's ``memchorus.yaml``
+        # (auto_init writer config) OR in the hermes ``config.yaml`` mcp_servers
+        # args (where the reader is actually booted).  Re-point both candidate
+        # files and report whichever matched.
+        root = Path(args.migrate)
+        candidates = [
+            _resolve_config_path(profile),            # profile memchorus.yaml
+            _resolve_hermes_config(profile),          # mcp_servers config.yaml
+        ]
+        rewrote_any = False
+        for path in candidates:
+            if not path.exists():
+                continue
+            result = palace_path.migrate(
+                root,
+                config_path=path,
+                dry_run=args.dry_run,
+            )
+            if not result.needs_repoint:
+                print(f"[skip] {root} is already canonical — nothing to re-point")
+                break
+            if result.repointed_configs:
+                prefix = "[dry-run] would " if args.dry_run else "[ok] "
+                for repointed in result.repointed_configs:
+                    print(f"{prefix}re-pointed {root} → {result.canonical} in {repointed}")
+                rewrote_any = True
+        else:
+            # exhausted the for-loop without a single [skip]
+            if not rewrote_any:
+                canonical = palace_path.palace_data_dir(root)
+                if canonical != root:
+                    print(
+                        f"[info] no '--palace {root}' token in this profile's "
+                        f"config — point at the canonical leaf directly: "
+                        f"--palace {canonical}"
+                    )
+                else:
+                    print(f"[skip] {root} is already canonical — nothing to re-point")
+        return 0
 
     if not args.dry_run:
         write_config(profile=profile, data_dir=args.data_dir)
