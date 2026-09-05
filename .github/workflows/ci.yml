@@ -31,6 +31,20 @@ jobs:
           PYTEST_ADDOPTS: ""
         run: PYTHONPATH=src python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts="
 
+      - name: Recall quality battery + regression gate (IMPL #168)
+        # Numeric recall floors: recall@5, recall@10, MRR, precision@5, plus
+        # dedup / source-scoping / determinism. A drop >5% below the pinned
+        # floors FAILS this step (pytest.fail in test_metric_floors); 0-5%
+        # below a floor raises a visible RecallRegressionWarning.
+        # Runs single-process (no xdist) so the battery report is one clean
+        # stream and the runtime-budget test is not split across workers.
+        env:
+          PYTEST_ADDOPTS: ""
+        run: |
+          PYTHONPATH=src python -m pytest tests/test_recall_battery.py \
+            --recall-battery --tb=short -s -rA \
+            --override-ini="addopts=-p no:profiling --timeout=30"
+
       - name: Verify routing test coverage threshold
         run: |
           echo "=== Routing tests collected ==="
