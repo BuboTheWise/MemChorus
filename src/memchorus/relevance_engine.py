@@ -301,27 +301,42 @@ class RelevanceScorer:
         Returns:
             A float in ``(0, 1]`` representing the strongest applicable penalty factor.
         """
-        if not self._penalty_patterns:
-            return 1.0
+        _matches, factor = self._match_penalty_patterns(content_text)
+        return factor
 
-        matched_factor = 1.0
+    def _match_penalty_patterns(self, content_text: str) -> tuple[list[tuple], float]:
+        """Return ``(matches, effective_factor)`` for *content_text*.
+
+        ``matches`` is a list of ``(label, factor)`` tuples for every penalty
+        pattern that matched, in scan order. ``effective_factor`` is the minimum
+        factor across all matches (the strongest applicable penalty), or ``1.0``
+        when no pattern matches. This is the labelled companion to
+        :meth:`_apply_penalty_patterns`, letting callers explain *which* pattern
+        drove the score reduction (IMPL #173 — recall explainability).
+        """
+        matches: list[tuple] = []
+        if not self._penalty_patterns:
+            return matches, 1.0
+
+        effective_factor = 1.0
         content_text = content_text or ""
         for label, pattern, factor in self._penalty_patterns:
             try:
                 if pattern.search(content_text):
-                    if factor < matched_factor:
-                        matched_factor = factor
+                    matches.append((label, factor))
+                    if factor < effective_factor:
+                        effective_factor = factor
                         logger.debug(
                             "Penalty pattern '%s' matched — current min factor %.2f",
-                            label, matched_factor,
+                            label, effective_factor,
                         )
             except Exception:
                 # Defensive: a bad pattern shouldn't crash scoring
                 logger.debug("Penalty pattern match failed for '%s'", label)
                 continue
 
-        result = round(matched_factor, 4)
-        return result if result > 0 else 1.0
+        result = round(effective_factor, 4)
+        return matches, (result if result > 0 else 1.0)
 
     # ------------------------------------------------------------------
     # Scoring helpers
@@ -496,6 +511,10 @@ class RelevanceScorer:
     ) -> float:
         """Compute a single relevance score in [0, 1] for ``result``.
 
+        Thin delegate over :meth:`score_breakdown` so the returned float and the
+        per-component explanation are produced by one identical computation and
+        can never diverge (IMPL #173 — recall explainability).
+
         Scoring formula
         ~~~~~~~~~~~~~~~
         Each dimension produces a value in [0, 1]:
@@ -534,27 +553,77 @@ class RelevanceScorer:
 
         Returns:
             Float score in ``[0, score_max]``.  Higher is more relevant.
+
+        Raises:
+            ValueError: Raised if the underlying score computation encounters an
+                invalid configuration (see :meth:`score_breakdown`).
+        """
+        return self.score_breakdown(
+            result,
+            query,
+            context=context,
+            score_max=score_max,
+            auto_provenance_penalty=auto_provenance_penalty,
+        )["final"]
+
+    def score_breakdown(
+        self,
+        result: Dict[str, Any],
+        query: str,
+        context: Optional[ContextWeight] = None,
+        score_max: float = 1.0,
+        auto_provenance_penalty: float = 0.3,
+    ) -> Dict[str, Any]:
+        """Return a full per-component explanation for a single relevance score.
+
+        This is the authoritative scoring computation: :meth:`score` delegates here,
+        so the ``final`` value and every named component come from the exact same
+        arithmetic. Call diagnostics (``memchorus-doctor --recall``) and tests read
+        this dict to explain *why* a candidate ranked the way it did, surfacing each
+        dimension's raw value, its L1-normalised weight, the weighted contribution,
+        and each post-weighting multiplicative adjustment (calibration boost,
+        auto-provenance penalty, recall-time penalty pattern hit).
+
+        Args:
+            result / query / context / score_max / auto_provenance_penalty:
+                Identical to :meth:`score`.
+
+        Returns:
+            A dict with these keys:
+
+            - ``quality``: raw text-match value in [0, 1].
+            - ``recency``: raw recency-decay value in [0, 1].
+            - ``source_prior``: raw normalised source prior in [0, 1].
+            - ``weights``: ``{"quality", "recency", "source_type"}`` L1-normalised.
+            - ``contributions``: per-dimension weighted values that sum to ``raw``
+              *before* post-weighting adjustments.
+            - ``calibration_boost``: multiplicative factor from the calibration
+              engine (1.0 when unavailable).
+            - ``auto_provenance_penalty``: applied factor (1.0 when not auto-captured).
+            - ``penalty``: ``{"factor": effective, "matches": [[label, factor], ...]}``.
+            - ``raw``: the pre-penalty score (quality/recency/source weighted sum ×
+              calibration boost × auto-provenance penalty).
+            - ``final``: ``raw`` × penalty factor, clamped to [0, score_max] — the
+              score ``score()`` returns.
         """
         if context is None:
             context = ContextWeight()
 
         content = result.get("content", "")
         source = result.get("source", "unknown")
-        ts = result.get("timestamp")
-        domain = result.get("_domain")
 
+        # -- Raw dimension values ------------------------------------------------------
         quality = self._score_quality(query, content)
-        recency = self._score_recency(ts)
+        recency = self._score_recency(result.get("timestamp"))
 
         # Use domain-aware bias when the caller injected a _domain hint;
-        # if not explicitly set, try to infer it from query terms.
+        # otherwise infer it from query terms.
         domain_raw = result.get("_domain")
         if domain_raw is None:
             domain_raw = self._guess_domain(query, context)
 
-        # -- Source component ------------------------------------------------------------------
-        # The source_type_weight factor must be pulled *into* the L1 normalisation step
-        # below, so we compute the unweighted [0, 1] prior first and apply weights later.
+        # The source_type_weight factor is pulled *into* the L1 normalisation step
+        # below, so compute the unweighted [0, 1] prior first and apply weights later.
         if domain_raw:
             src_prior = (
                 float(
@@ -568,7 +637,7 @@ class RelevanceScorer:
         else:
             src_prior = self._score_source_type(source)
 
-        # -- L1-normalise the three dimension weights ------------------------------------------
+        # -- L1-normalise the three dimension weights ---------------------------------
         qw = context.quality_weight
         rw = context.recency_weight
         sw = context.source_type_weight
@@ -580,14 +649,19 @@ class RelevanceScorer:
             # All weights are zero -- fall back to equal contribution
             qw_n = rw_n = sw_n = 1.0 / 3.0
 
-        raw = qw_n * quality + rw_n * recency + sw_n * src_prior
+        contrib_q = qw_n * quality
+        contrib_r = rw_n * recency
+        contrib_s = sw_n * src_prior
+        raw = contrib_q + contrib_r + contrib_s
 
         # v1.9 recall-time relevance boosting (AC-RTB-1.x): multiply by calibration
         # engine boost factor so high-utility memories outrank unproven ones.
         # Graceful degradation: falls back to 1.0 on any error or missing tracker.
+        boost = 1.0
         try:
             entry_key = result.get("key", "")
             from memchorus.calibration_engine import CalibrationEngine
+
             boost = CalibrationEngine.boost_factor_for_key(CalibrationEngine(), entry_key)
             raw *= boost
         except Exception:
@@ -598,19 +672,43 @@ class RelevanceScorer:
 
         # Bug 3 AC4: provenance penalty -- auto-captured content gets a multiplicative
         # factor (default 0.3) so it ranks below deliberately stored memories.
+        auto_penalty = 1.0
         if result.get("_auto_provenance") is True:
-            raw *= auto_provenance_penalty
+            auto_penalty = float(auto_provenance_penalty)
+            raw *= auto_penalty
 
-        # GH-100: recall-time penalty patterns — apply multiplicative score reduction
-        # for known low-signal content that passed write-time noise filters but still
-        # scores highly due to keyword overlap (changelogs, package lists, empty API
-        # responses, version blocks). Multi-pattern overlap uses minimum factor.
+        # GH-100: recall-time penalty patterns — label the match(es) and apply the
+        # multiplicative score reduction for known low-signal content that passed
+        # write-time noise filters but still scores highly on keyword overlap
+        # (changelogs, package lists, empty API responses, version blocks).
+        # Multi-pattern overlap uses the minimum factor.
         c_text = self._extract_content_text(content)
-        penalty_factor = self._apply_penalty_patterns(c_text)
+        penalty_matches, penalty_factor = self._match_penalty_patterns(c_text)
         raw *= penalty_factor
 
         # Safety clamp (floating-point drift / user error guard)
-        return float(min(max(raw, 0.0), score_max))
+        final = float(min(max(raw, 0.0), score_max))
+
+        return {
+            "quality": quality,
+            "recency": recency,
+            "source_prior": src_prior,
+            "weights": {"quality": qw_n, "recency": rw_n, "source_type": sw_n},
+            "contributions": {
+                "quality": contrib_q,
+                "recency": contrib_r,
+                "source_type": contrib_s,
+                "total": contrib_q + contrib_r + contrib_s,
+            },
+            "calibration_boost": boost,
+            "auto_provenance_penalty": auto_penalty,
+            "penalty": {
+                "factor": penalty_factor,
+                "matches": [[label, factor] for label, factor in penalty_matches],
+            },
+            "raw": raw,
+            "final": final,
+        }
 
     def score_and_rank(
         self,
@@ -628,8 +726,20 @@ class RelevanceScorer:
 
         scored: Dict[str, RankedResult] = {}
         for r in results:
-            s = self.score(r, query, context)
+            # Compute once via the authoritative breakdown so the score and the
+            # per-component explanation stay in lockstep (IMPL #173).
+            breakdown = self.score_breakdown(r, query, context)
+            s = breakdown["final"]
             key = r.get("key", str(r))
+            meta = {
+                k: v
+                for k, v in r.items()
+                if k not in ("key", "content", "source", "score")
+            }
+            # Attach the breakdown so ``memchorus-doctor --recall`` (and any other
+            # caller reading ``RankedResult.meta``) can explain *why* this candidate
+            # ranked where it did, and so the score and explanation can never diverge.
+            meta["score_breakdown"] = breakdown
             if key not in scored or s > scored[key].score:
                 scored[key] = RankedResult(
                     key=key,
@@ -638,7 +748,7 @@ class RelevanceScorer:
                     score=round(s, 4),
                     # Exclude 'score' so the RelevanceScorer's normalized value is not
                     # overwritten by the raw source-level word-count score (G3 fix).
-                    meta={k: v for k, v in r.items() if k not in ("key", "content", "source", "score")},
+                    meta=meta,
                 )
 
         ranked = sorted(scored.values(), key=lambda x: x.score, reverse=True)
