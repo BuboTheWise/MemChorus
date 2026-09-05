@@ -2,6 +2,14 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.32] - 2026-09-04
+
+### Added
+- **OTel runtime declared as a core dependency (closes #169):** the former build definitions declared only `pydantic` + `pyyaml`, yet the MemPalace/MCP path imports the OpenTelemetry runtime at module load. Reinstalling `memchorus[mcp]` from GitHub into a shared venv let `pip` re-resolve the OTel family independently and split it (observed `opentelemetry-api 1.39.1` vs `opentelemetry-sdk 1.44.0`), which bricked `import memchorus` / `import mempalace` and tripped `pip check`. The OTel runtime is now a declared **core** dependency in the single canonical root `pyproject.toml` (post-#170): `opentelemetry-api/-sdk/-exporter-otlp-proto-grpc` pinned `>=1.2.0,<2.0` and `opentelemetry-instrumentation >=0.41b0,<1.0`, plus `packaging>=21.0` declared for the doctor gate. The floors match the installed `mempalace → chromadb 1.5.9` floors exactly, so a co-install resolves to one coherent line and never downgrades a shared venv already carrying OTel 1.44.0.
+
+### Fixed
+- **`memchorus-doctor --deps-check` regression gate (closes #169):** `memchorus-doctor` gains a `--deps-check` command that evaluates the *installed* OTel family against the declared set using `packaging.SpecifierSet`. It exits 1 (with a fix hint) on an `api`/`sdk`/`semantic-conventions` version split, warns when OTel is absent (the core still runs without it), and `--json` emits a CI-consumable `{ok, results}` payload. `docs/ARCHITECTURE.md`, `docs/REQUIREMENTS.md`, and `docs/SPEC.md` flip the former "Known packaging gap (OPEN)" note to "fixed in #169", citing the declared pin and the doctor gate. Regression-locked by `tests/test_install_doctor_deps_check.py` (asserts the coherent PASS path and a forced `api 1.44.0` / `sdk 1.39.1` split FAIL path). Independent review PASS in fresh venvs (t_480e6b1d) — reinstall-from-GitHub left the installed 1.44.0 OTel line unmoved, `pip check` clean post-coinstall, full suite 1732 passed / 12 skipped. Bumps `__version__` 2.0.31 → 2.0.32 (one patch above the v2.0.31 canonical-build release, keeping the release chain collision-free with #170).
+
 ## [2.0.31] - 2026-09-04
 
 ### Fixed
