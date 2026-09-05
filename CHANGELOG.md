@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.38] - 2026-09-05
+
+### Added
+- **source_file provenance through the auto-storage write path + `memchorus-doctor --provenance-report` (closes #166):** the auto-storage write path now records a non-empty `source_file` provenance field end-to-end — `capture_outcome()` sets it on the payload (`auto_storage_engine.py`), `save()` in `mempalace_memory_source.py` extracts it (blank → `None` → deterministic hash-key fallback), and it is forwarded to the `mempalace_add_drawer` MCP call **only when truthy**, so MemPalace's declared/stored/validated `source_file` field receives a real locator for every new record. The mirror cache (`cache_dir/*.json`) carries the field, so it is auditable after the fact. New `memchorus-doctor --provenance-report` (`--json`) reads the local cache and reports total / with-provenance / missing entries with a coverage percentage and a sample of un-provenanced entries; exit codes follow the contract (all provenanced = 0, some missing = 1, no cache dir = 2). When coverage < 100%, the doctor **proposes a one-time backfill policy** for the pre-#166 orphan set — Option A leave `source_file` empty (no recoverable source) vs Option B mark with an `orphan` sentinel — explicitly as a proposal; doctor remains read-only/diagnostic and **does not apply** any backfill, and the set is framed as a one-time migration (once applied, it no longer grows). Regression locks: `tests/test_mempalace_robustness_fixes.py` (end-to-end propagation, fallback-only-when-no-source, human-render policy text present/absent) and `tests/test_auto_storage_engine.py`, incl. a `TestProvenanceHumanRender` suite. Independent review PASS — both prior request-changes gates (backfill-policy text + neutral `/tmp/...` test fixture) resolved; full suite 1793 passed / 12 skipped (1 pre-existing local-env version-skew failure, reproduces on master base, not a regression); CI 5/5 (Linux+Windows 3.11/3.12 + integration). Bumps `__version__` 2.0.37 → 2.0.38 (next free dual-digit patch; no collision with sibling releases, keeping the release chain collision-free).
+
 ## [2.0.37] - 2026-09-05
 
 ### Added
