@@ -954,12 +954,24 @@ class _McpClient:
         text = str(result).lower()
         return not any(word in text for word in self._DRAWER_ERR_WORDS)
 
-    def add_drawer(self, wing: str, room: str, content: str) -> bool:
-        """mempalace_add_drawer -> True only when the server accepted the write."""
-        result = self.call_tool(
-            "mempalace_add_drawer",
-            {"wing": wing, "room": room, "content": content},
-        )
+    def add_drawer(
+        self,
+        wing: str,
+        room: str,
+        content: str,
+        source_file: Optional[str] = None,
+    ) -> bool:
+        """mempalace_add_drawer -> True only when the server accepted the write.
+
+        ``source_file`` (optional, IMPL #166): provenance identifier forwarded
+        to the MemPalace MCP server so the drawer's metadata carries
+        non-empty provenance.  The MCP schema already declares this param;
+        MemChorus simply never passed it before.
+        """
+        args: Dict[str, Any] = {"wing": wing, "room": room, "content": content}
+        if source_file:
+            args["source_file"] = source_file
+        result = self.call_tool("mempalace_add_drawer", args)
         if result is None:
             return False
 
@@ -1231,15 +1243,39 @@ class MemPalaceMemorySource(MemorySource):
     # --- MemorySource abstract methods ------------------------------------------
 
     def save(self, key: str, value: Any) -> bool:
-        """Persist the memory.  Tries MCP first; falls back to local cache."""
+        """Persist the memory.  Tries MCP first; falls back to local cache.
+
+        IMPL #166: extract ``source_file`` from the payload dict (if present)
+        and forward it to the MCP server so the drawer's provenance metadata
+        is non-empty end-to-end.
+        """
         content = self._to_str(value)
 
         # Extract category from payload for wing routing (§1).
         # AutoStorageEngine attaches ``category`` / ``significance`` keys in the
         # value dict (lines 256-260 of auto_storage_engine.py).
         category = None
+        # IMPL #166: provenance — extract source_file if the payload carries one.
+        # The MCP server already accepts and stores this param; previously it was
+        # never populated so drawers always had empty provenance.
+        source_file = None
         if isinstance(value, dict):
             category = value.get("category", None) or value.get("significance", None)
+            source_file = value.get("source_file", None)
+            # Coerce blank strings to None so the fallback engages.
+            if source_file is not None and not str(source_file).strip():
+                source_file = None
+            # Fall back to a key-derived locator if the payload has no explicit
+            # source_file but the key encodes an origin (e.g. a file path or
+            # session ID).  This guarantees non-empty provenance even when the
+            # caller only set a key.
+            if not source_file and key:
+                source_file = str(key)
+        else:
+            # Non-dict value: no payload dict to pull provenance from, so the
+            # key is the non-empty provenance locator.
+            if key:
+                source_file = str(key)
 
         wing = self._resolve_wing(category)
 
@@ -1252,7 +1288,8 @@ class MemPalaceMemorySource(MemorySource):
             else:
                 room = cat_room
             ok = self._client.add_drawer(
-                wing=wing, room=room, content=content
+                wing=wing, room=room, content=content,
+                source_file=source_file,
             )
             if ok:
                 # Mirror locally for resilience.
