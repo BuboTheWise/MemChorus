@@ -23,6 +23,7 @@ import yaml
 
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_home import hermes_home
+from memchorus import palace_path
 
 logger = logging.getLogger(__name__)
 
@@ -90,46 +91,18 @@ def _run_async(coro):
 def _chroma_is_empty(path: Path) -> bool:
     """Return True if the given chroma.sqlite3 has no useful data.
 
-    "No useful data" means:
-    - file does not exist, or
-    - file is 0 bytes (never-opened shell), or
-    - file is a valid sqlite whose ``embeddings`` table has 0 rows (the
-      "empty shell" state from the Aug 20 bug), or
-    - file exists but is not a readable sqlite (treat as empty to avoid
-      surprising rewrites on corrupt/incomplete files).
-
-    A valid sqlite with ≥1 embedding row is considered "has data."
+    Thin delegate to :func:`memchorus.palace_path.is_chroma_empty` — the
+    single source of truth for "is this an empty shell" shared by the
+    writer, reader, and doctor.  Kept as a private alias so existing
+    internal call sites (and the historical name) keep working; semantics
+    are byte-identical to the pre-refactor inlined version.
     """
-    if not path.exists():
-        return True
-    try:
-        if path.stat().st_size == 0:
-            return True
-    except OSError:
-        return True
-    try:
-        import sqlite3
-        con = sqlite3.connect(str(path))
-        try:
-            try:
-                n = con.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
-                return n == 0
-            except sqlite3.Error:
-                # No ``embeddings`` table (or not a valid sqlite header) —
-                # treat as an empty shell for this purpose.
-                return True
-        finally:
-            con.close()
-    except Exception:
-        # Could not open / connect — conservative "empty" so we don't
-        # rewrite based on an unreadable file.
-        return True
-    return False
+    return palace_path.is_chroma_empty(path)
 
 
 def _normalize_palace_args(args: list[str]) -> list[str]:
-    """Re-point ``--palace <path>`` at a ``palace/`` leaf dir that holds
-    the real data when the configured path is one level too shallow.
+    """Re-point ``--palace <path>`` at the canonical leaf that holds the
+    real data when the configured path is one level too shallow.
 
     MemPalace's reader opens ``os.path.join(palace_path, "chroma.sqlite3")``
     verbatim (``mempalace/mcp_server.py``) — it never descends into a
@@ -139,17 +112,23 @@ def _normalize_palace_args(args: list[str]) -> list[str]:
     at the parent level and the corpus is invisible (status/search/KG all
     report 0).
 
-    This guard detects that split and re-points the path at the leaf.
+    **This is now a thin compat shim over :mod:`memchorus.palace_path`.**
+    The parent-vs-leaf decision lives entirely in
+    :func:`memchorus.palace_path.palace_data_dir` so the writer
+    (``auto_init``) and the reader cannot disagree.  The historical
+    return contract and the operator WARNING are preserved exactly —
+    this is locked by :mod:`tests.test_palace_path_alignment` and
+    :mod:`tests.test_palace_loud_signal`, so the message string and the
+    list shape must stay byte-identical.
 
     Rules (idempotent, single-level descent, no path invention):
 
     - No ``--palace`` flag → return args unchanged.
-    - ``--palace <P>`` and ``<P>/palace/chroma.sqlite3`` holds data while
-      ``<P>/chroma.sqlite3`` is empty/absent → rewrite to ``<P>/palace``.
-    - ``<P>/chroma.sqlite3`` already holds data → no-op (correct leaf,
-      e.g. mempalace's default ``~/.mempalace/palace`` convention).
-    - Neither the parent nor the leaf holds a chroma file (fresh install)
-      → no-op (do not invent a path the reader doesn't yet have).
+    - ``--palace <P>`` resolves to a different dir than ``P``
+      (i.e. ``P`` is the empty-shell parent and ``P/palace`` holds the
+      data) → rewrite to that dir.
+    - ``P`` already holds the data (correct leaf), or it is a fresh
+      install with no chroma anywhere → no-op.
     - Also handles ``--palace=<P>`` (equals form).
 
     Returns a new list; the input list is not mutated.
@@ -172,23 +151,17 @@ def _normalize_palace_args(args: list[str]) -> list[str]:
         # Space form:  --palace <PATH>
         if tok == "--palace" and i + 1 < len(result):
             parent = Path(result[i + 1])
-            leaf = parent / "palace"
-            leaf_chroma = leaf / "chroma.sqlite3"
-            parent_chroma = parent / "chroma.sqlite3"
-            # Rewrite only when the leaf holds a real chroma but the
-            # parent is an empty shell (or has none at all).
-            if leaf_chroma.exists() and _chroma_is_empty(parent_chroma):
-                _rewrite(i + 1, str(leaf))
+            resolved = palace_path.palace_data_dir(parent)
+            if resolved != parent:
+                _rewrite(i + 1, str(resolved))
             break
 
         # Equals form: --palace=<PATH>
         if tok.startswith("--palace="):
             parent = Path(tok[len("--palace="):])
-            leaf = parent / "palace"
-            leaf_chroma = leaf / "chroma.sqlite3"
-            parent_chroma = parent / "chroma.sqlite3"
-            if leaf_chroma.exists() and _chroma_is_empty(parent_chroma):
-                _rewrite(i, f"--palace={leaf}")
+            resolved = palace_path.palace_data_dir(parent)
+            if resolved != parent:
+                _rewrite(i, f"--palace={resolved}")
             break
 
     return result

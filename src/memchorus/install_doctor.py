@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from memchorus.hermes_home import hermes_home
+from memchorus import palace_path as palace_path_mod
+from memchorus.palace_path import classify as palace_path_classify
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +771,91 @@ def _recall_exit_code(report: Dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Palace layout diagnostic (--palace-layout)
+# ---------------------------------------------------------------------------
+
+def _palace_layout_root(explicit: Optional[str]) -> Path:
+    """Resolve the root the layout diagnostic should classify.
+
+    Precedence: explicit ``--palace-root`` > ``$PALACE_ROOT`` /
+    ``$MEMPALACE_PALACE_PATH`` env > ``~/.mempalace`` (MemPalace's own
+    ``config_dir`` default).  This is the *root / parent* — the same value
+    the writer is pointed at — and :func:`memchorus.palace_path.palace_data_dir`
+    decides whether its real data is here or one level down under ``palace/``.
+    """
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("PALACE_ROOT") or os.environ.get("MEMPALACE_PALACE_PATH")
+    if env:
+        return Path(env)
+    return Path(os.path.expanduser("~")) / ".mempalace"
+
+
+def palace_layout_report(strict: bool = False,
+                         explicit_root: Optional[str] = None) -> List[CheckResult]:
+    """Focused MemPalace layout diagnostic for ``--palace-layout``.
+
+    Reports, through the **same resolver the reader uses**
+    (:func:`memchorus.palace_path.classify`), whether the configured palace
+    root points at the directory that actually holds ``chroma.sqlite3``:
+
+    - **canonical**   -> PASS.  Root is already the leaf that holds the data.
+    - **legacy-leaf** -> the real data is at ``<root>/palace`` while the
+      reader is pointed at ``<root>`` (the Aug 20 split).  ``--strict``
+      drives this to **FAIL** (so a CI/gate can block on the fallback);
+      otherwise **WARN** with the exact ``--palace`` repoint and
+      ``memchorus-init --migrate`` to apply durably.
+    - **fresh**       -> PASS (first run; nothing yet to split).
+
+    ``--strict`` is what makes ``memchorus-doctor`` fail fast when the reader
+    would silently report 0 rows against an empty shell.
+    """
+    root = _palace_layout_root(explicit_root)
+    layout = palace_path_classify(root)
+
+    if layout.branch == palace_path_mod.BRANCH_LEGACY_LEAF:
+        canonical = layout.resolved_dir
+        status = FAIL if strict else WARN
+        message = (
+            f"palace data is at {layout.configured_dir / 'palace'} but the "
+            f"configured root is {layout.configured_dir} — the reader would "
+            f"open an empty shell and report 0 rows."
+        )
+        hint = (
+            f"Point at the leaf directly (--palace {canonical}) or run "
+            f"memchorus-init --migrate {layout.configured_dir} on the "
+            f"affected profile's config to re-point it durably."
+        )
+    elif layout.branch == palace_path_mod.BRANCH_CANONICAL:
+        rows = layout.row_count
+        row_txt = f"{rows} row(s)" if rows is not None else "data present"
+        return [CheckResult(
+            name="palace_layout",
+            status=PASS,
+            message=(
+                f"{layout.configured_dir} is the canonical leaf; "
+                f"{row_txt} in {layout.resolved_data_file}."
+            ),
+        )]
+    else:  # BRANCH_FRESH
+        return [CheckResult(
+            name="palace_layout",
+            status=PASS,
+            message=(
+                f"{layout.configured_dir} is a fresh palace (no data yet); "
+                f"it will be the canonical leaf on first write."
+            ),
+        )]
+
+    return [CheckResult(
+        name="palace_layout",
+        status=status,
+        message=message,
+        hint=hint,
+    )]
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -873,21 +960,33 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          pipeline for a query and explain each
                                          candidate's score + budget/suppression
         memchorus-doctor --limit N       --recall max-candidates (default 10)
+        memchorus-doctor --palace-layout report whether the configured palace
+                                         root points at the dir that holds
+                                         chroma.sqlite3 (canonical layout)
+        memchorus-doctor --palace-layout --strict
+                                         --strict makes a legacy-leaf split
+                                         FAIL (non-zero exit) so a gate can
+                                         block on it
+        memchorus-doctor --palace-root <root>
+                                         classify this specific root rather
+                                         than ``~/.mempalace``
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
 
     Returns:
-      * default report -> 0 when no FAIL, 1 otherwise (a WARN is not a failure).
-      * ``--deps-check`` -> 0 when the dependency/OTel check passes, 1 on FAIL.
-      * ``--recall <q>`` -> 0 when the pipeline ran (``status`` ``ok``, even if the
-        result set is empty), 1 when the pipeline could not run (no registered
-        orchestrator, or ``search`` raised). A diagnostic is always printed.
+      * full report / ``--palace-layout`` / ``--deps-check`` -> 0 when no FAIL,
+        1 otherwise (a WARN is not a failure; under ``--strict`` a legacy
+        palace layout is promoted to FAIL, see :func:`palace_layout_report`).
+      * ``--recall <q>`` -> 0 when the pipeline ran (``status`` ``ok``, even if
+        the result set is empty), 1 when the pipeline could not run (no
+        registered orchestrator, or ``search`` raised), 2 on bad arguments.
+        A diagnostic is always printed.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
 
     # ------------------------------------------------------------------ #
-    # --recall "<query>" — explain a live recall decision (IMPL #173)      #
+    # --recall "<query>" — explain a live recall decision (IMPL #173)     #
     # ------------------------------------------------------------------ #
     if "--recall" in args:
         try:
@@ -922,10 +1021,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _recall_exit_code(report)
 
     # ------------------------------------------------------------------ #
-    # --deps-check / default install-health report                         #
+    # --palace-layout / --deps-check / full install-health report          #
     # ------------------------------------------------------------------ #
     deps_only = "--deps-check" in args
-    results = deps_check_report() if deps_only else run_checks()
+    palace_layout = "--palace-layout" in args
+    strict = "--strict" in args
+
+    def _value(flag: str) -> Optional[str]:
+        if flag in args:
+            idx = args.index(flag)
+            if idx + 1 < len(args):
+                return args[idx + 1]
+        return None
+
+    explicit_root = _value("--palace-root")
+
+    if palace_layout:
+        results = palace_layout_report(strict=strict, explicit_root=explicit_root)
+    elif deps_only:
+        results = deps_check_report()
+    else:
+        results = run_checks()
     _emit(results, as_json)
     return 1 if any(r.status == FAIL for r in results) else 0
 
