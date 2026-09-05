@@ -630,7 +630,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.37 (current — 2026-09-05)
+### v2.0.38 (current — 2026-09-05)
+
+- **source_file provenance + `--provenance-report` (closes #166):** new auto-stored records now carry a non-empty `source_file` provenance field end-to-end (write path → MCP `add_drawer` → MemPalace storage), with a deterministic hash-key fallback used only when no source exists. New `memchorus-doctor --provenance-report` (`--json`) audits the local cache and reports total / with-provenance / missing entries with a coverage percentage. When coverage is < 100%, the doctor proposes a one-time backfill policy for the pre-#166 orphan set (leave empty vs `orphan` sentinel) — proposal only; the doctor remains read-only and applies no backfill itself. Independent review PASS (both prior request-changes gates resolved); CI 5/5 green.
+
+### v2.0.37 (2026-09-05)
 
 - **Canonical palace-location (closes #172):** the single shared resolver `memchorus/palace_path.py` (`palace_data_dir` / `palace_data_file` / `classify` / `migrate`) is the ONE code path that decides where `chroma.sqlite3` lives. The MCP reader (space + equals forms), the `auto_init` writer (`generate_config` now delegates `data_dir` to `palace_data_dir` — no longer hardcoding `DEFAULT_DATA_DIR/profile`), and `memchorus-doctor --palace-layout` (`--strict`) all route through it, so writer / reader / doctor **structurally agree** on one path. `memchorus-init --migrate <root>` is wired into `auto_init.cli_main` and dispatches to `palace_path.migrate()`, making the doctor's own durable-fix hint a runnable command. `palace_data_dir` returns the caller's value **as-given** (str in → str out; `Path` in → `Path` out) so the writer records the directory verbatim and no normalization can invent a subpath or rewrite separators — the Windows 3.11/3.12 CI regression from `Path()`-normalizing a forward-slash path is fixed. `_normalize_palace_args` is a thin compat shim (one WARNING on legacy-leaf migration). New regression locks: `tests/test_palace_canonical_by_construction.py`, `tests/test_palace_path_alignment.py`, `tests/test_palace_layout_doctor.py`, and `tests/test_docs_phantom_palace_layout.py` (a grep lock that fails if the previously phantom per-profile palace layout reappears in human-facing docs). README + `docs/REQUIREMENTS.md` reference the canonical leaf `profiles/<name>/.mempalace/palace/` and `memchorus-doctor --palace-layout` as the verify command.
 
