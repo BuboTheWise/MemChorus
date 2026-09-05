@@ -37,7 +37,6 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > So `--palace` / `MEMPALACE_PALACE_PATH` must point at the **leaf directory
 > that directly holds** `chroma.sqlite3` and `knowledge_graph.sqlite3`.
 > The real per-profile leaf is `~/.hermes/profiles/<name>/.mempalace/palace`,
-> *not* `.../workspace/mempalace/palace` (that path does not exist on disk) and
 > *not* the parent `.../.mempalace` (pointing at the parent makes the reader
 > open an empty shell and the corpus is invisible — status/search/KG all read 0).
 > MemChorus normalizes a too-shallow `--palace` to the leaf at transport
@@ -64,9 +63,14 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > 3. **Back the config up first:**
 >    `cp config.yaml config.yaml.bak.$(date +%Y%m%d-%H%M%S)`.
 > 4. **Verify, do not assume:** run
->    `MEMPALACE_PALACE_PATH=<leaf> mempalace status` — it must report the full
->    corpus (N drawers), not "no chroma.sqlite3 yet". Only then is the profile
->    healed.
+>    `memchorus-doctor --palace-layout --strict` (or
+>    `MEMPALACE_PALACE_PATH=<leaf> mempalace status`) — the doctor must
+>    report **canonical / PASS** (or `mempalace status` must report the
+>    full corpus, N drawers, not "no chroma.sqlite3 yet"). Only then is the
+>    profile healed. `--palace-layout` is the one command that reports the
+>    configured path, the resolved data file, the branch taken (canonical
+>    vs. legacy-leaf fallback) and the row count, and it hard-fails under
+>    `--strict` when the data is not at the configured path.
 >
 > On a **fresh** profile (no data anywhere yet) the reader's auto-normalization
 > is a no-op and either shape resolves to the same leaf once MemPalace first

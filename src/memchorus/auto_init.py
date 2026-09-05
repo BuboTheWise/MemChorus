@@ -82,6 +82,18 @@ def generate_config(profile: Optional[str] = None,
         Absolute path on disk where MemPalace stores its durable files.
         Defaults to ``~/.mempalace/<profile>``.
 
+    Writer/reader agreement, by construction:
+
+    The ``data_dir`` recorded here is the **root / parent** the reader
+    (MCP ``--palace``) and operator would hold.  The *leaf* that contains
+    ``chroma.sqlite3`` is decided by
+    :func:`memchorus.palace_path.palace_data_dir` (root itself if the data is
+    already at the root, else ``<root>/palace`` for the MemPalace
+    ``DEFAULT_PALACE_PATH`` layout).  ``mempalace_memory_source``, the drawer
+    writer, calls that resolver at transport time, so writer and reader can
+    not structurally disagree: both route through
+    :mod:`memchorus.palace_path`.
+
     Returns
     -------
     str
