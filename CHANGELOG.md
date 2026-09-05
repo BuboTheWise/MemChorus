@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.35] - 2026-09-05
+
+### Added
+- **Recall-quality BATTERY with pinned numeric floors (closes #168):** MemChorus previously had no *deterministic* recall@k / MRR / precision measurement — the existing `tests/test_recall_quality.py` asserted relative ordering (query-echoing scratch fixtures outrank/deprioritize correctly) but never measured *how well* recall actually ranked a committed corpus. This release adds a committed fixture corpus (`tests/data/recall_fixture_corpus.json`) and a battery (`tests/test_recall_battery.py`, 8 tests) that scores it with pure lexical + cosine features (no LLM) and hard-gates four metrics against pinned floors — `recall@5 ≥ 0.80` (measured 0.958), `recall@10 ≥ 0.85` (measured 0.958), `MRR ≥ 0.75` (measured 1.000), `precision@5 ≥ 0.25` (measured 0.383) — plus dedup, non-empty source-file scoping, and a determinism check that consecutive runs are byte-identical. A >5% drop below floor is a hard `pytest.Failed` (not a log); 0–5% is a `RecallRegressionWarning`. The battery is marked `recall_battery` and **opt-in** via `pytest --recall-battery` — the 1743-test fast path deselects it so CI matrix stays quick, and a dedicated CI battery step runs it on Linux 3.11/3.12, Windows 3.11/3.12, and the integration job. Runs in ~1.9 s. Independent review PASS — pre-existing `tests/test_recall_quality.py` (469 lines) untouched; full suite 1743 passed / 15 skipped, no regression. Bumps `__version__` 2.0.34 → 2.0.35 (next free dual-digit patch; 2.0.33 is reserved by in-flight #172, keeping the release chain collision-free).
+
 ## [2.0.34] - 2026-09-05
 
 ### Added
