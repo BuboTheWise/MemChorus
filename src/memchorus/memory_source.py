@@ -156,3 +156,34 @@ class MemorySource(ABC):
             bool: True if deleted, False if not found or error occurred
         """
         pass
+
+    # -- KG (Knowledge Graph) recall ---------------------------------------
+    # The base-class default is a no-op so concrete sources that do not
+    # participate in KG traversal (HermesDefaultMemorySource, etc.) need no
+    # code change; MemPalaceMemorySource overrides with MCP-backed behaviour.
+
+    def recall_kg(
+        self,
+        entity: str,
+        hops: int = 1,
+        limit: int = 10,
+        relations: Optional[List[str]] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """KG-channel recall (IMPL #167).
+
+        Returns ``None`` by default to indicate "this source does not
+        participate in Knowledge-Graph traversal".  Concrete sources that
+        expose a KG (currently only ``MemPalaceMemorySource``) override
+        this to return relation dicts with ``channel="kg"``.
+
+        Args:
+            entity: seed entity name in the KG.
+            hops: 0-2 (capped at 2).
+            limit: max relations to return.
+            relations: optional predicate filter.
+
+        Returns:
+            list of dicts (each carrying ``key``/``content``/``source``/``score``/``channel``),
+            or ``None`` if the source has no KG backing.
+        """
+        return None

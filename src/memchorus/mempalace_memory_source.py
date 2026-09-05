@@ -17,7 +17,7 @@ import time
 import asyncio
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -998,17 +998,132 @@ class _McpClient:
         if result is None:
             return None
 
-        data = result.get("result", result) if isinstance(result, dict) else result
-        if isinstance(data, str):
-            try:
-                parsed = json.loads(data)
-                return parsed if isinstance(parsed, list) else [parsed]
-            except (json.JSONDecodeError, TypeError):
-                return [{"entity": entity, "raw_text": data}]
+        data = self._extract_kg_result(result)
+        if data is None:
+            return []
+        return self._coerce_facts(data, entity)
 
-        return data if isinstance(data, list) else (
-            [data] if isinstance(data, dict) else []
+    def kg_subgraph(
+        self,
+        entity: str,
+        hops: int = 1,
+        limit: int = 10,
+        relations: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Bounded multi-hop KG subgraph (IMPL #167).
+
+        Returns the full subgraph dict produced by
+        :func:`memchorus.knowledge_graph.build_subgraph`, or ``None`` when
+        the MCP server is unreachable (seed-entity query returned ``None``).
+
+        Multi-hop expansion is performed **client-side**.  The MemPalace MCP
+        ``kg_query`` tool accepts only a single-entity name + optional
+        ``direction``/``as_of`` — it has no ``hops`` or ``limit`` parameters.
+        Traversing beyond the seed therefore requires fan-out: this method
+        issues one ``self.kg_query(entity)`` per unique neighbour discovered
+        during expansion.  Results are cached to avoid redundant MCP round-
+        trips.  ``hops`` is clamped to [0, 2]; total relations are capped at
+        ``limit`` (default 10).  When ``relations`` is non-empty, only facts
+        whose ``predicate`` is in that list are kept.
+
+        Distinction from "unreachable":
+          * seed entity returned ``None`` from :meth:`kg_query` → ``None``
+            (MCP down, source unusable)
+          * seed entity returned ``[]`` → empty subgraph (connected, no data)
+        """
+        from .knowledge_graph import build_subgraph
+
+        hops = max(0, min(int(hops), 2))
+        limit = max(1, int(limit))
+
+        # Per-entity cache so build_subgraph's repeated fetch_facts(entity)
+        # calls do not re-issue the MCP request.
+        cache: Dict[str, Optional[List[Dict[str, Any]]]] = {}
+        # Mutable flag so the closure can report seed unreachability back.
+        _seed_unreachable = [False]
+
+        _fetch = self.kg_query  # bound method, stable reference
+
+        def fetch_facts(e: str) -> List[Dict[str, Any]]:
+            if e not in cache:
+                result: Optional[List[Dict[str, Any]]] = _fetch(e)
+                cache[e] = result
+                if result is None and e == entity:
+                    _seed_unreachable[0] = True
+            stored = cache[e]
+            return stored if stored is not None else []
+
+        subgraph: Dict[str, Any] = build_subgraph(
+            entity=entity,
+            fetch_facts=fetch_facts,
+            hops=hops,
+            limit=limit,
+            relations=relations,
         )
+
+        if _seed_unreachable[0]:
+            return None
+
+        subgraph["_all_facts"] = cache.get(entity) or []
+        return subgraph
+
+    # -- KG helpers -----------------------------------------------------
+
+    @staticmethod
+    def _extract_kg_result(raw) -> Optional[Dict[str, Any]]:
+        """Peel the outer ``{"result": ...}`` / JSON-string envelope layers.
+
+        ``mempalace_kg_query`` returns its payload in this shape::
+
+            {"result": {json-string of the real payload}}
+
+        where the real payload looks like::
+
+            {"entity": "...", "active_facts": [...], "facts": [...], "count": N}
+
+        Returns the inner dict or ``None`` when nothing usable was found.
+        """
+        if raw is None:
+            return None
+        # Peel the outer envelope
+        if isinstance(raw, dict) and "result" in raw:
+            raw = raw["result"]
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if isinstance(raw, dict):
+            return raw
+        return None
+
+    @staticmethod
+    def _coerce_facts(
+        inner: Any, entity: str
+    ) -> List[Dict[str, Any]]:
+        """Return a flat fact list from an inner KG payload.
+
+        The KG query response may return facts under any of these keys:
+        ``active_facts``, ``facts``, or the whole payload may itself be
+        a bare fact list.  Returns an empty list when nothing useful is found.
+        """
+        if inner is None:
+            return []
+        # Already a bare list of facts
+        if isinstance(inner, list):
+            return [f for f in inner if isinstance(f, dict)]
+        if isinstance(inner, dict):
+            for key in ("active_facts", "facts"):
+                if isinstance(inner.get(key), list):
+                    return [f for f in inner[key] if isinstance(f, dict)]
+            # Fallback: the dict itself may be a single fact
+            return [{**inner, "subject": entity}]
+        return []
 
     def close(self):
         """Shut down the persistent session if one exists."""
@@ -1268,6 +1383,77 @@ class MemPalaceMemorySource(MemorySource):
             pass
 
         return results[:limit]
+
+    def recall_kg(
+        self,
+        entity: str,
+        hops: int = 1,
+        limit: int = 10,
+        relations: Optional[List[str]] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Knowledge-Graph recall for a named entity (IMPL #167).
+
+        Distinct from ``search``: this is *entity / relationship* recall, not
+        text similarity. It walks the MemPalace Knowledge Graph out from
+        *entity* (bounded to 0–2 hops, at most *limit* relations) and returns
+        the relations as search-shaped dicts so the orchestrator can fold them
+        into a ranked result list.
+
+        Each returned dict carries:
+
+        - ``key``     stable identity — the relation triple
+                      ``"<from> --[<predicate>]--> <to>"``
+        - ``content`` the full relation fact dict (from/to/predicate/
+                      confidence/direction/valid_from/valid_to)
+        - ``source``  this source's name
+        - ``channel`` the literal string ``"kg"`` so consumers can tell KG
+                      relations apart from vector/keyword hits
+        - ``score``   the relation's ``confidence`` when present, else 1.0
+
+        Returns ``None`` when the MemPalace MCP server is unreachable (no seed
+        facts could be fetched) — the orchestrator treats ``None`` as
+        ``no data`` for this channel and simply omits it from the recall set,
+        leaving the vector/keyword channels untouched.
+        """
+        if not (self._ensure_connected() and self._client.is_alive):
+            return None
+
+        subgraph = self._client.kg_subgraph(
+            entity=entity,
+            hops=hops,
+            limit=limit,
+            relations=relations,
+        )
+        if subgraph is None:
+            return None
+
+        relations = subgraph.get("relations") or []
+        out: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for rel in relations:
+            if not isinstance(rel, dict):
+                continue
+            from_e = str(rel.get("from", ""))
+            to_e = str(rel.get("to", ""))
+            pred = str(rel.get("predicate") or "related_to")
+            key = f"{from_e} --[{pred}]--> {to_e}"
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                confidence = float(rel.get("confidence", 1.0))
+            except (TypeError, ValueError):
+                confidence = 1.0
+            out.append(
+                {
+                    "key": key,
+                    "content": dict(rel),
+                    "source": self._name,
+                    "channel": "kg",
+                    "score": confidence,
+                }
+            )
+        return out
 
     @property
     def is_available(self) -> bool:

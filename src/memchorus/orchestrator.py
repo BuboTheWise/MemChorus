@@ -1485,6 +1485,105 @@ class MemoryOrchestrator:
 
         return results
 
+    def recall_kg(
+        self,
+        entity: str,
+        hops: int = 1,
+        limit: int = 10,
+        relations: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Knowledge-Graph recall through every registered source (IMPL #167).
+
+        This is a *distinct channel* from :meth:`search`: it asks each source
+        for relations touching a named entity rather than text-similar memories.
+        Results are returned in a separate KG channel and are **never merged
+        into the vector/keyword ranking path** — each result keeps
+        ``channel="kg"`` and its KG ``confidence`` as ``score``.
+
+        Sources that do not back a KG (see
+        :meth:`MemorySource.recall_kg`) return ``None`` and are silently
+        skipped, so a fully local deployment still gets an empty KG channel
+        without raising.
+
+        Returned relations feed the hit-rate tracker (``record_recallhit``) and
+        register their ``source_memories`` under the same ``_recent_recall_keys``
+        machinery as vector recells, so later ``mark_relevant_*_as_stale`` /
+        ``mark_relevant_*_as_useful`` calls apply to them identically.
+
+        Args:
+            entity: named KG entity to seed from.
+            hops: 0-2 (cap of 2 applied by the client); 0 = seed facts only.
+            limit: max relations to return per source.
+            relations: optional list of predicate strings to filter on.
+
+        Returns:
+            List[Dict[str, Any]]: one dict per relation; each entry has
+            ``key``, ``content``, ``source``, ``channel`` (``"kg"``), and
+            ``score``. Empty list on no data or unreachable KG.
+        """
+        ranked: List[RankedResult] = []
+        for name, source in list(self.memory_sources.items()):
+            if not _check_source_available(source) or not self.is_source_enabled(name):
+                continue
+            recall_kg = getattr(source, "recall_kg", None)
+            if recall_kg is None:
+                continue
+            try:
+                entries = recall_kg(
+                    entity=entity,
+                    hops=hops,
+                    limit=limit,
+                    relations=relations,
+                )
+            except Exception as e:
+                logger.debug("recall_kg: source %r raised: %s", name, e)
+                continue
+            if not entries:
+                continue
+            for d in entries:
+                if not isinstance(d, dict):
+                    continue
+                ranked.append(
+                    RankedResult(
+                        key=str(d.get("key") or "{} (unknown relation)".format(entity)),
+                        content=d.get("content"),
+                        source=str(d.get("source") or name),
+                        score=float(d.get("score") or 1.0),
+                        meta={"channel": d.get("channel", "kg")},
+                    )
+                )
+
+        # Sort by score descending (highest-confidence relations first)
+        ranked.sort(key=lambda r: -r.score)
+
+        if ranked:
+            # Track recallhits for the KG channel, mirroring the vector path's
+            # behaviour at the end of ``search``. Use the tracker's existing
+            # API to avoid touching ``record_recallhit``'s shape.
+            tracker = _get_hit_rate_tracker()
+            if tracker is not None:
+                try:
+                    for r in ranked:
+                        tracker.record_recallhit(r.key)
+                except Exception:
+                    pass
+            # Remember the most recent KG keys so feedback marks (useful/stale)
+            # later apply to exactly what we surfaced. Bounded like ``search``.
+            self._recent_recall_keys = [r.key for r in ranked[:128]]
+
+        # Convert RankedResult -> plain dict (same shape ``search`` returns)
+        return [
+            {
+                "key": r.key,
+                "content": r.content,
+                "source": r.source,
+                "score": r.score,
+                "channel": r.meta.get("channel", "kg"),
+                **{k: v for k, v in r.meta.items() if k != "channel"},
+            }
+            for r in ranked
+        ]
+
     def _sort_and_deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Sort and remove duplicate results from search.
