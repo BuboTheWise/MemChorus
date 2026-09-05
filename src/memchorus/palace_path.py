@@ -156,12 +156,22 @@ def chroma_row_count(path: Path) -> Optional[int]:
 # The single resolver
 # ---------------------------------------------------------------------------
 
-def palace_data_dir(root: Union[str, Path]) -> Path:
+def palace_data_dir(root: Union[str, Path]) -> Union[str, Path]:
     """The ONE code path that says "where is the chroma directory?".
 
     Given a configured root (``--palace`` / mempalace home), return the
     directory the **reader and writer must both use** for
     ``chroma.sqlite3``.
+
+    Returns the caller's value **as-given** on the no-descent branch — a
+    ``str`` stays a ``str`` and a ``Path`` stays a ``Path`` — and a
+    ``Path`` on the canonical-leaf branch.  This is a type-preserving
+    passthrough, never a re-normalised :class:`~pathlib.Path`: on the leaf
+    branch a fresh ``Path(root)`` carries no extra segments (the root holds
+    no data), so ``str(Path("/a/b/c")) == "/a/b/c"`` on the native platform
+    and both a string input and a ``Path`` input land on the identical
+    result.  That identity is what lets the writer record the configured
+    directory *verbatim* instead of ``os.sep``-rewriting it.
 
     Rules (idempotent, single-level, no path invention — identical to the
     pre-refactor ``_normalize_palace_args`` rewrite rule, extracted so it
@@ -176,16 +186,20 @@ def palace_data_dir(root: Union[str, Path]) -> Path:
     A fresh install must be returned unchanged: we do not invent a
     ``/palace`` sub-path the reader doesn't yet have
     (``tests.test_palace_path_alignment::test_normalize_leaves_fresh_install_alone``).
+
+    Cross-platform note: the no-descent branch returns the input as-given
+    and so is never re-split by the platform separator.  A placeholder like
+    ``/opt/mem palace/data`` (a path under ``/opt/`` on a Windows CI box)
+    has no ``/palace`` subdirectory, so we must NOT invent one — the
+    writer has to record the dir it was given, verbatim.
     """
-    root = Path(root)
-    leaf_dir = root / PALACE_SUBDIR
+    probe = Path(root)
+    leaf_dir = probe / PALACE_SUBDIR
     leaf_chroma = leaf_dir / CHROMA_FILE
-    root_chroma = root / CHROMA_FILE
-    # Only descend into the leaf when the leaf dir AND its chroma file
-    # actually exist on disk.  A bare string (e.g. a placeholder embedded
-    # in a generated YAML, a path under ``/opt/`` on a Windows CI box)
-    # has no ``/palace`` subdirectory, so we must NOT invent one — the
-    # writer has to record the dir it was given, verbatim.
+    root_chroma = probe / CHROMA_FILE
+    # Only descend when the leaf dir AND its chroma file exist on disk and
+    # the root chroma is (or isn't) an empty shell per the contract above.
+    # Otherwise fall through and pass the caller's value back as-given.
     if leaf_dir.is_dir() and leaf_chroma.exists() and is_chroma_empty(root_chroma):
         return leaf_dir
     return root
@@ -198,8 +212,12 @@ def palace_data_file(root: Union[str, Path]) -> Path:
     writer (``auto_init`` generated config and the shared MCP transport)
     and the reader (the ``_normalize_palace_args`` shim) use this so they
     cannot disagree about the on-disk location of the data.
+
+    :func:`palace_data_dir` may legitimately return a verbatim ``str``
+    (the no-descent case), so the arithmetic is wrapped in ``Path(...)`` to
+    guarantee a real :class:`~pathlib.Path` result either way.
     """
-    return palace_data_dir(root) / CHROMA_FILE
+    return Path(palace_data_dir(root)) / CHROMA_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +260,10 @@ def classify(root: Union[str, Path]) -> PalaceLayout:
     reflects the corpus the reader will actually open.
     """
     root = Path(root)
-    resolved = palace_data_dir(root)
+    # ``root`` is a concrete :class:`~pathlib.Path` here, so the resolver's
+    # no-descent branch returns it as-given (still a ``Path``); the ``Path``
+    # wrap is a runtime no-op that keeps the static type honest.
+    resolved = Path(palace_data_dir(root))
     resolved_file = resolved / CHROMA_FILE
     root_has_data = (
         (root / CHROMA_FILE).exists() and not is_chroma_empty(root / CHROMA_FILE)
@@ -346,7 +367,10 @@ def migrate(
     the intended change).
     """
     root = Path(root)
-    canonical = palace_data_dir(root)
+    # ``root`` is a concrete :class:`~pathlib.Path`, so the resolver returns
+    # it as-given on the no-descent branch (a ``Path``); the wrap is a
+    # runtime no-op that keeps the ``canonical: Path`` field type honest.
+    canonical = Path(palace_data_dir(root))
 
     if canonical == root:
         return MigrateResult(
