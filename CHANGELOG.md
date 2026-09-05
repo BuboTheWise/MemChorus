@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.36] - 2026-09-05
+
+### Added
+- **Multi-hop KG subgraph recall as a distinct channel (closes #167):** `knowledge_graph.build_subgraph(entity, hops, limit, relations)` walks a bounded 0–2 hop subgraph of the MemPalace knowledge graph (cycle-safe BFS, per-hop and total-limit caps, hops clamped `max(0, min(hops, 2))`). `orchestrator.recall_kg()` is a **separate** recall channel — not folded into the vector rank — with every entry stamped `channel="kg"` and `None` (unreachable) kept distinct from `[]` (empty). The new `memchorus-recall kg <entity> --hops N [--limit N] [--relations ...] [--json]` CLI prints entities, relations, edge weights (confidence), and source memories, or a clean exit-1 diagnostic on the unreachable path. KG recall hits are recorded through the same `HitRateTracker.record_recallhit` API as the vector path, so the auto-tuning loop (mark_relevant_injected_as_useful/_stale) receives KG data. The existing `kg_query(entity)` single-entity interface is **unchanged** (backward-compat locked by 3 dedicated tests). 29 new tests in `tests/test_kg_traversal.py` (backward-compat, subGraph bounds, channel-distinctness, CLI, hit-rate, dedup/cycle-safety, integration). Phase 2 write-side entity-extraction is **out of scope** and tracked as a separate issue (no `auto_save`/`update_drawer`/`on_ingest` in this diff). Independent review PASS — full suite 1775 passed / 12 skipped / 0 failed; KG sub-suite 29 tests in 2.4 s. Bumps `__version__` 2.0.35 → 2.0.36 (next free dual-digit patch; 2.0.33 is reserved by in-flight #172, keeping the release chain collision-free).
+
 ## [2.0.35] - 2026-09-05
 
 ### Added
