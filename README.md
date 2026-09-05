@@ -37,7 +37,6 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > So `--palace` / `MEMPALACE_PALACE_PATH` must point at the **leaf directory
 > that directly holds** `chroma.sqlite3` and `knowledge_graph.sqlite3`.
 > The real per-profile leaf is `~/.hermes/profiles/<name>/.mempalace/palace`,
-> *not* `.../workspace/mempalace/palace` (that path does not exist on disk) and
 > *not* the parent `.../.mempalace` (pointing at the parent makes the reader
 > open an empty shell and the corpus is invisible — status/search/KG all read 0).
 > MemChorus normalizes a too-shallow `--palace` to the leaf at transport
@@ -64,9 +63,14 @@ communicate via Kanban tasks rather than sharing memory graphs directly.
 > 3. **Back the config up first:**
 >    `cp config.yaml config.yaml.bak.$(date +%Y%m%d-%H%M%S)`.
 > 4. **Verify, do not assume:** run
->    `MEMPALACE_PALACE_PATH=<leaf> mempalace status` — it must report the full
->    corpus (N drawers), not "no chroma.sqlite3 yet". Only then is the profile
->    healed.
+>    `memchorus-doctor --palace-layout --strict` (or
+>    `MEMPALACE_PALACE_PATH=<leaf> mempalace status`) — the doctor must
+>    report **canonical / PASS** (or `mempalace status` must report the
+>    full corpus, N drawers, not "no chroma.sqlite3 yet"). Only then is the
+>    profile healed. `--palace-layout` is the one command that reports the
+>    configured path, the resolved data file, the branch taken (canonical
+>    vs. legacy-leaf fallback) and the row count, and it hard-fails under
+>    `--strict` when the data is not at the configured path.
 >
 > On a **fresh** profile (no data anywhere yet) the reader's auto-normalization
 > is a no-op and either shape resolves to the same leaf once MemPalace first
@@ -626,7 +630,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.36 (current — 2026-09-05)
+### v2.0.37 (current — 2026-09-05)
+
+- **Canonical palace-location (closes #172):** the single shared resolver `memchorus/palace_path.py` (`palace_data_dir` / `palace_data_file` / `classify` / `migrate`) is the ONE code path that decides where `chroma.sqlite3` lives. The MCP reader (space + equals forms), the `auto_init` writer (`generate_config` now delegates `data_dir` to `palace_data_dir` — no longer hardcoding `DEFAULT_DATA_DIR/profile`), and `memchorus-doctor --palace-layout` (`--strict`) all route through it, so writer / reader / doctor **structurally agree** on one path. `memchorus-init --migrate <root>` is wired into `auto_init.cli_main` and dispatches to `palace_path.migrate()`, making the doctor's own durable-fix hint a runnable command. `palace_data_dir` returns the caller's value **as-given** (str in → str out; `Path` in → `Path` out) so the writer records the directory verbatim and no normalization can invent a subpath or rewrite separators — the Windows 3.11/3.12 CI regression from `Path()`-normalizing a forward-slash path is fixed. `_normalize_palace_args` is a thin compat shim (one WARNING on legacy-leaf migration). New regression locks: `tests/test_palace_canonical_by_construction.py`, `tests/test_palace_path_alignment.py`, `tests/test_palace_layout_doctor.py`, and `tests/test_docs_phantom_palace_layout.py` (a grep lock that fails if the previously phantom per-profile palace layout reappears in human-facing docs). README + `docs/REQUIREMENTS.md` reference the canonical leaf `profiles/<name>/.mempalace/palace/` and `memchorus-doctor --palace-layout` as the verify command.
+
+### v2.0.36 (2026-09-05)
 
 - **Multi-hop KG subgraph recall as a distinct channel (closes #167):** `memchorus-recall kg <entity> --hops N [--limit N] [--relations ...] [--json]` now walks a bounded 0–2 hop subgraph of the MemPalace knowledge graph (cycle-safe BFS, per-hop + total-limit caps, hops clamped `max(0, min(hops, 2))`). `orchestrator.recall_kg()` is a **separate** recall channel — not folded into the vector rank — with every entry stamped `channel="kg"` and `None` (unreachable) kept distinct from `[]` (empty). The populated path prints entities, relations, edge weights (confidence), and source memories; the unreachable path exits 1 with a clean diagnostic. KG recall hits flow through the same `HitRateTracker.record_recallhit` API as the vector path, so the auto-tuning loop receives KG data. The existing `kg_query(entity)` single-entity interface is **unchanged** (backward-compat locked by 3 dedicated tests). 29 new tests in `tests/test_kg_traversal.py`. Phase 2 write-side entity-extraction is **out of scope** (separate issue; no `auto_save`/`update_drawer`/`on_ingest` in this diff). Independent review PASS — full suite 1775 passed / 12 skipped / 0 failed; KG sub-suite 29 tests in 2.4 s. Bumps `__version__` 2.0.35 → 2.0.36 (next free dual-digit patch; 2.0.33 reserved by in-flight #172, keeping the release chain collision-free).
 

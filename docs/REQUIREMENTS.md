@@ -153,7 +153,7 @@ The **palace directory** is the directory *containing* `chroma.sqlite3`. If `--p
 |---|---|---|
 | **Writer** (memchorus `mempalace_memory_source` files drawers to a `palace/` subdir of the profile home) | `profiles/<name>/.mempalace/palace/` | 158 rows (real data) |
 | **Reader** (mempalace-mcp `--palace` from each profile's config.yaml) | `profiles/<name>/.mempalace/` | 0 rows (empty shell) |
-| **README** (MemChorus repo, v1.9+ section) | `profiles/<name>/workspace/mempalace/palace/` | dir doesn't exist on any profile |
+| **README** (MemChorus repo, v1.9+ section) | a `workspace`-style palace sub-layout (a layout no install ever used; since removed) | dir doesn't exist on any profile |
 | **MemPalace default** (no `--palace`, no env, no config.json) | `~/.mempalace/palace/` | 158 rows (original shared seed) |
 
 **Contract (what must be true after the fix):**
