@@ -1144,28 +1144,43 @@ def _unwrap_content_field(value: Any) -> str:
             return str(value)
     return str(value)
 
-def _format_context_block(items: List[Dict[str, Any]]) -> str:
-    """Turn orchestrator results into a Markdown-ready context block for agent consumption.
+def _build_context_entries(
+    items: List[Dict[str, Any]],
+    max_chars: int,
+    window: _SuppressionWindow,
+) -> Dict[str, Any]:
+    """Shared core of recall rendering — the single source of truth for *what the agent sees*.
 
-    Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
-    GH-96: resolves max_block_chars dynamically via _resolve_char_limit() (env var,
-    per-profile config, or default).  When the budget is exceeded, lowest-scored
-    entries are dropped first to preserve the most relevant memories.
-    Truncation respects line boundaries — partial lines are dropped rather than cut,
-    ensuring markdown formatting stays intact.
+    Both the live production path (:func:`_format_context_block`) and the read-only
+    diagnostic path used by ``memchorus-doctor --recall`` (:func:`simulate_recall_render`)
+    go through here, so the rendered block, the set of keys actually injected, the set
+    of keys dropped by the character budget, and the per-entry suppression state can
+    never diverge between "what was shown" and "what the doctor reports."
+
+    Performs, in order:
+      1. per-key dedup (first occurrence wins, preserving orchestrator rank order)
+      2. structured-content unwrap + locator-first substitution (#140)
+      3. cross-turn suppression collapse (GH-141) — checked against *window*, never marked
+      4. per-entry character budget (line-boundary aware)
+      5. hard total-block ceiling — lowest-scored entries dropped first
+      6. re-sort surviving entries so the highest-ranked appears first
+
+    Does NOT mutate *window* — callers decide whether to ``mark()`` the full-body
+    entries that rendered (production) or leave the state untouched (diagnostics).
+
+    Returns a dict:
+      - ``rendered``: full block text including the ``[MemChorus ...]`` header/footer
+        and the truncation note, exactly as it would be injected.
+      - ``injected``: list of ``{key, score, content, suppressed}`` in final rendered order.
+      - ``dropped``: list of ``{key, score, reason}`` for entries removed by the budget
+        pass (lowest-scored first, i.e. the order they were popped).
+      - ``full_body_mark``: ``[(key, content_hash)]`` for entries that rendered a full
+        body (excludes suppressed markers and budget-dropped entries) — the exact set
+        a production caller should pass to ``window.mark``.
     """
-    if not items:
-        return ""
-
-    max_chars = _resolve_char_limit()
-
-    # Build formatted lines with per-entry budget enforcement + key dedup.
-    # Each entry is (line, score, key_or_None, hash_or_None) — identity is only
-    # present for full-body entries so the post-drop pass can mark precisely
-    # those that actually rendered (markers never re-mark; dropped entries don't).
-    entries: List[Tuple[str, float, Optional[Any], Optional[str]]] = []
+    max_chars = max(200, int(max_chars))
     seen_keys: set = set()
-    window = _get_suppression_window()
+    entries: List[Tuple[str, float, Optional[Any], Optional[str]]] = []
 
     for item in items:
         key = item.get("key") or str(item)
@@ -1204,6 +1219,12 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         # instead of repeating the body in the next turn's block.
         content_hash = _hash_content(raw_content)
         if window.suppressed(key, content_hash):
+            logger.debug(
+                "recall.suppressed: key=%s hash=%s (GH-141 window collapse — "
+                "full body already injected within window)",
+                key,
+                content_hash[:12],
+            )
             entries.append((f"- {key}: {_SUPPRESSION_MARKER}", score, None, None))
             continue
 
@@ -1211,10 +1232,8 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
         if len(raw_content) > _MAX_CONTENT_CHARS:
             content_lines = raw_content.split("\n")
             if len(content_lines) == 1:
-                # Single-line content — safe to cut at any point
                 raw_content = raw_content[:_MAX_CONTENT_CHARS] + "..."
             else:
-                # Multi-line — only keep complete lines up to budget
                 kept: List[str] = []
                 running = 0
                 for line in content_lines:
@@ -1225,7 +1244,6 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
                 if kept:
                     raw_content = "\n".join(kept) + "..."
                 else:
-                    # First line alone exceeds budget — partial cut as fallback
                     raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
 
         line = f"- **{key}** — {raw_content}"
@@ -1234,37 +1252,185 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
     # Sort by score ascending so we can pop lowest-scored first if over budget
     entries.sort(key=lambda e: e[1])
     lines = [e[0] for e in entries]
-
     joined = "\n".join(lines)
-    dropped_count = 0
 
     # --- Hard total block ceiling (drops complete entries, not partial lines)-
-    # Constants that appear in every output regardless of truncation
     _header_len = len("[MemChorus injected context]\n")
     _footer_len = len("\n[/MemChorus injected block]")
 
+    dropped: List[Dict[str, Any]] = []
     while entries and len(joined) + _header_len + _footer_len > max_chars:
-        # Remove the lowest-scored entry (at the front after ascending sort)
-        entries.pop(0)
-        dropped_count += 1
+        _removed_line, _removed_score, _removed_key, _ = entries.pop(0)
+        dropped.append(
+            {
+                "key": _removed_key if _removed_key is not None else "(marker)",
+                "score": _removed_score,
+                "reason": "char_budget_exceeded",
+            }
+        )
         lines = [e[0] for e in entries]
         joined = "\n".join(lines)
 
-    # Re-sort remaining entries descending by score so highest-ranked appears first
-    if dropped_count > 0:
+    if dropped:
+        # Re-sort remaining entries descending so highest-ranked appears first
         entries.sort(key=lambda e: -e[1])
         lines = [e[0] for e in entries]
         joined = "\n".join(lines)
-        joined += f"\n... (truncated, budget exceeded — {dropped_count} entries dropped)"
+        joined += f"\n... (truncated, budget exceeded — {len(dropped)} entries dropped)"
+
+    # Full-body entries that actually rendered (skip suppressed markers) — the
+    # exact set a production caller should pass to window.mark().
+    full_body_mark = [(_key, _hash) for (_line, _score, _key, _hash) in entries if _key is not None and _hash is not None]
+
+    # Final rendered order (descending by score) for the structured report.
+    injected = [
+        {
+            "key": _key if _key is not None else "(suppressed-marker)",
+            "score": _score,
+            "content": _line,
+            "suppressed": _key is None,
+        }
+        for (_line, _score, _key, _hash) in entries
+    ]
+
+    return {
+        "rendered": f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]",
+        "injected": injected,
+        "dropped": dropped,
+        "full_body_mark": full_body_mark,
+    }
+
+
+def _format_context_block(items: List[Dict[str, Any]]) -> str:
+    """Turn orchestrator results into a Markdown-ready context block for agent consumption.
+
+    Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
+    GH-96: resolves max_block_chars dynamically via _resolve_char_limit() (env var,
+    per-profile config, or default).  When the budget is exceeded, lowest-scored
+    entries are dropped first to preserve the most relevant memories.
+    Truncation respects line boundaries — partial lines are dropped rather than cut,
+    ensuring markdown formatting stays intact.
+
+    Thin wrapper over :func:`_build_context_entries` (the shared render core): it runs
+    the budget/suppression decision once, then marks the full-body entries in the
+    cross-turn suppression window, and emits DEBUG explainability lines (IMPL #173)
+    describing the ranked candidates, the budget-drop set, and the effective ceiling.
+    """
+    if not items:
+        return ""
+
+    max_chars = _resolve_char_limit()
+    window = _get_suppression_window()
+    report = _build_context_entries(items, max_chars, window)
 
     # Mark only the full-body entries that actually rendered into this block
     # (skips markers and any that were dropped by the budget pass) so the
     # cross-turn suppression window is render-accurate.
-    for _line, _score, _key, _hash in entries:
-        if _key is not None and _hash is not None:
-            window.mark(_key, _hash)
+    for _key, _hash in report["full_body_mark"]:
+        window.mark(_key, _hash)
 
-    return f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]"
+    # IMPL #173: DEBUG explainability — the exact ranked candidates considered, the
+    # ones dropped by the char budget, and the ceiling applied. No-op unless logging
+    # is at DEBUG; structured enough to grep.
+    if report["injected"]:
+        _considered = [
+            f"{i['key']}={i['score']:.4f}{'(suppressed)' if i['suppressed'] else ''}"
+            for i in report["injected"]
+        ]
+        logger.debug(
+            "recall.render: injected=%d dropped=%d max_chars=%d candidates=[%s]",
+            len(report["injected"]),
+            len(report["dropped"]),
+            max_chars,
+            " | ".join(_considered),
+        )
+    if report["dropped"]:
+        logger.debug(
+            "recall.dropped_by_budget: %s",
+            "; ".join(f"{d['key']}={d['score']:.4f}" for d in report["dropped"]),
+        )
+
+    return report["rendered"]
+
+
+def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Read-only preview of exactly what a recall block would look like *right now*.
+
+    Runs the same :func:`_build_context_entries` core the live path uses — including
+    the cross-turn suppression check against the active window — but does NOT mutate
+    the window, so calling this (e.g. from ``memchorus-doctor --recall``) never
+    collapses a future live render.  Returns the shared report dict: ``rendered``,
+    ``injected`` (in final order, with per-entry ``suppressed``), ``dropped``
+    (budget drops), and ``full_body_mark`` (the render-accurate mark set).
+    """
+    if not items:
+        return {"rendered": "", "injected": [], "dropped": [], "full_body_mark": []}
+    max_chars = _resolve_char_limit()
+    window = _get_suppression_window()
+    return _build_context_entries(items, max_chars, window)
+
+
+def suppression_state() -> Dict[str, Any]:
+    """Snapshot of the active per-profile cross-turn suppression window (GH-141).
+
+    Read-only: returns configuration, entry count, and an in-window / expired split
+    of the recently-rendered (key, hash) pairs, without pruning or mutating the
+    window.  Used by ``memchorus-doctor --recall`` so an operator can see *which*
+    memories are currently collapsing to the "↳ (shown earlier)" marker and with how
+    much TTL left on each.  Never raises — returns a fully-populated dict with empty
+    lists when no window exists yet.
+
+    Returns:
+        Dict with:
+          - ``profile``: resolved profile name the window is scoped to.
+          - ``window_size`` / ``ttl_seconds``: active configuration.
+          - ``configured``: whether the window had ever been materialised.
+          - ``entries_total``: count of all pairs currently held.
+          - ``in_window``: ``{key: {hash, age_seconds, remaining_ttl_seconds}}`` for
+            live entries.
+          - ``expired``: ``{key: {hash, age_seconds}}`` for entries past their TTL
+            (still present in the dict until the next ``mark()``/``suppressed()``
+            prunes them).
+    """
+    profile = _resolve_profile_name()
+    with _suppression_windows_lock:
+        win = _suppression_windows.get(profile)
+    if win is None:
+        ws, ttl = _resolve_suppression_settings()
+        return {
+            "profile": profile,
+            "configured": False,
+            "window_size": ws,
+            "ttl_seconds": ttl,
+            "entries_total": 0,
+            "in_window": {},
+            "expired": {},
+        }
+
+    now = time.time()
+    with win._lock:
+        snapshot = list(win._entries.items())
+    in_window: Dict[str, Dict[str, Any]] = {}
+    expired: Dict[str, Dict[str, Any]] = {}
+    for _key, (_hash, ts) in snapshot:
+        age = now - ts
+        if age > win._ttl_seconds:
+            expired[str(_key)] = {"hash": _hash, "age_seconds": round(age, 3)}
+        else:
+            in_window[str(_key)] = {
+                "hash": _hash,
+                "age_seconds": round(age, 3),
+                "remaining_ttl_seconds": round(max(0.0, win._ttl_seconds - age), 3),
+            }
+    return {
+        "profile": profile,
+        "configured": True,
+        "window_size": win._window_size,
+        "ttl_seconds": win._ttl_seconds,
+        "entries_total": len(snapshot),
+        "in_window": in_window,
+        "expired": expired,
+    }
 
 
 # Plugin configuration loader — reads plugin.yaml save_triggers before bootstrap
