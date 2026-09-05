@@ -30,6 +30,28 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     # YAML loop definition loader
     "pyyaml>=5.4",
+    #
+    # OpenTelemetry runtime (closes #169). The mempalace/mcp integration path
+    # imports the OTel runtime at module load in a shared venv: opentelemetry-api
+    # (trace/context/propagate), opentelemetry-sdk (sdk.resources / sdk.trace /
+    # sdk.trace.export) and opentelemetry-exporter-otlp-proto-grpc
+    # (exporter.otlp.proto.grpc.trace_exporter); the chromadb dependency also
+    # pulls opentelemetry-instrumentation. Declaring them here — with floors set
+    # AT the exact permissive floor the installed mempalace→chromadb stack
+    # already uses (">=1.2.0", verified via `pip show`) — guarantees a single
+    # co-install resolves to ONE coherent OTel line instead of letting a
+    # reinstall-from-GitHub split the stack (e.g. api 1.39.1 vs sdk 1.44.0),
+    # which previously bricked `import memchorus` / `import mempalace`. The
+    # ceiling keeps us on the current 1.x line. `memchorus-doctor --deps-check`
+    # re-verifies coherence at install time.
+    "opentelemetry-api>=1.2.0,<2.0",
+    "opentelemetry-sdk>=1.2.0,<2.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.2.0,<2.0",
+    "opentelemetry-instrumentation>=0.41b0,<1.0",
+    # PEP 440 requirement/specifier parsing used by memchorus-doctor --deps-check
+    # (transitively present already via opentelemetry-instrumentation; declared
+    # explicitly because our own core code imports it).
+    "packaging>=21.0",
 ]
 
 [project.optional-dependencies]
