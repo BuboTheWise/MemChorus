@@ -181,7 +181,12 @@ def palace_data_dir(root: Union[str, Path]) -> Path:
     leaf_dir = root / PALACE_SUBDIR
     leaf_chroma = leaf_dir / CHROMA_FILE
     root_chroma = root / CHROMA_FILE
-    if leaf_chroma.exists() and is_chroma_empty(root_chroma):
+    # Only descend into the leaf when the leaf dir AND its chroma file
+    # actually exist on disk.  A bare string (e.g. a placeholder embedded
+    # in a generated YAML, a path under ``/opt/`` on a Windows CI box)
+    # has no ``/palace`` subdirectory, so we must NOT invent one — the
+    # writer has to record the dir it was given, verbatim.
+    if leaf_dir.is_dir() and leaf_chroma.exists() and is_chroma_empty(root_chroma):
         return leaf_dir
     return root
 
