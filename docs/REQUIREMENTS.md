@@ -189,7 +189,7 @@ Note: <profile-c> has `mempalace` in its `config.yaml` `--palace` args block —
 2. The expected co-located dependency set (chromadb's OTel requirement path, mcp, pydantic, pyyaml) is declared or documented so a fresh reinstall is deterministic.
 3. **Regression gate:** post-install verification includes `pip check` + an import-level smoke test of the `mempalace` CLI, in the same pass as the per-profile 157-drawer verification.
 
-**Owner:** maintainer (code cycle). **Status:** Spec'd 2026-09-02; interim local pin in place; code fix pending.
+**Owner:** maintainer (code cycle). **Status:** Spec'd 2026-09-02; **implemented in #169** — the OTel runtime is a declared core dependency in the canonical root `pyproject.toml`, `memchorus-doctor --deps-check` verifies an installed shared venv for OTel skew (`packaging.SpecifierSet` against the declared set) and `--json` emits a CI-consumable result. Contract items 1–3 are satisfied by the declared pin (item 1–2) plus the doctor gate (item 3), regression-tested in `tests/test_install_doctor_deps_check.py`.
 
 ---
 
@@ -235,6 +235,6 @@ As of 2026-09-02 (commit `604a656`, v2.0.27):
 | Reliability | 2/2 complete | Graceful handling verified empirically; kwarg contract mismatches fixed (PR #27) |
 | Extensibility | 2/5 partial | Clean plugin arch done; version negotiation, feedback loop definitions, loader validation all pending |
 | Quality Assurance | 4/4 complete | ~114 test modules incl. E2E path-alignment + robustness suites |
-| Constraints | 6/6 complete | Install docs now in README "Agent Quick Start" (audit 2026-09-02); **OTel packaging gap OPEN — spec'd in this doc, code fix pending** |
+| Constraints | 6/6 complete | Install docs now in README "Agent Quick Start" (audit 2026-09-02); **OTel packaging gap closed — declared in `pyproject.toml`, doctor `--deps-check` gate, #169** |
 
 **Bottom line:** The core behavioral enforcement loop is functional and the reader/writer path contract (MemPalace #2404 class) is shipped in code (v2.0.27) with regression tests, README alignment, and an upstream P1 issue. Two live code-level items remain open: (1) the **OTel/shared-venv packaging gap** — spec'd locally 2026-09-02, needs the vault→code→reinstall cycle (interim local re-pin currently in place); (2) the **declarative feedback-loop YAML surface** — spec target only, live behavior covered by the correction-queue system. Remaining aspirational gaps are unchanged: performance benchmark suite, memory consolidation/promotion between sources, version negotiation, and the loader validation pipeline.

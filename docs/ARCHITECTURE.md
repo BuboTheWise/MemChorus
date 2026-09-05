@@ -184,7 +184,7 @@ MemoryOrchestrator  MemorySource ABC        path-alignment guard
                                              v2.0.27)
 ```
 
-**Known packaging gap (OPEN, spec'd 2026-09-02):** `setup.py` does not pin `opentelemetry-*`, so a reinstall from GitHub can split OTel versions in the shared venv (observed 1.39.1/1.44.0 mix) and brick the `mempalace` CLI import. Interim re-pin in place; durable fix goes through the vault→code→reinstall cycle. See `MemChorus-Requirements.md` → "Packaging Contract: Shared-Venv Dependency Coherence".
+**OpenTelemetry packaging gap (now closed — fixed in #169):** `setup.py`/the former redundant build definitions did not pin `opentelemetry-*`, so a reinstall from GitHub could split OTel versions in the shared venv (observed 1.39.1/1.44.0 mixes) and brick the `mempalace` CLI import. The durable fix lands in the single canonical root `pyproject.toml` (post-#170): the OTel runtime (api/sdk/instrumentation/OTLP exporters) is now a declared core dependency at one coherent line, the `memchorus-doctor` command gains a `--deps-check` mode that evaluates the installed OTel set with `packaging.SpecifierSet` (catching the api/sdk/semantic-conventions skew), and `--json` exposes the result for CI gating. See `docs/REQUIREMENTS.md` → "Packaging Contract: Shared-Venv Dependency Coherence" and `tests/test_install_doctor_deps_check.py`.
 
 **Rule:** Never use `pip install -e` for deployment. This isolates the runtime from dev-repo changes and ensures third-party parity testing catches packaging misconfiguration.
 
@@ -692,7 +692,7 @@ flowchart TD
             end
 
             subgraph External["External Services"]
-                MCPSRV["MemPalace MCP Server (stdio pipe; shared venv OTel 1.44.0 — interim re-pin)"]
+                MCPSRV["MemPalace MCP Server (stdio pipe; shared venv OTel pin declared + doctor --deps-check gate, #169)"]
                 KANBANDB["~/.hermes/kanban.db (SQLite shared board)"]
                 PALACE["per-profile palaces\n~/.hermes/profiles/{<profile-a>,<profile-b>,<profile-c>}/.mempalace/palace/\n(seed corpus shared across profiles)"]
             end
