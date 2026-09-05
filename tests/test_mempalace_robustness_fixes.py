@@ -243,3 +243,163 @@ class TestFormatContextBlockUnwrap:
 
     def test_empty_items_returns_empty(self):
         assert _format_context_block([]) == ""
+
+
+# =========================================================================== #
+#  SECTION 4 — IMPL #166 source_file provenance forwarding in save()          #
+# =========================================================================== #
+
+
+def _save_client_capture():
+    """Return (source, capture) where ``capture`` records MCP call args."""
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="mcp166_")
+    src = MemPalaceMemorySource(config={"cache_dir": tmp})
+    captured: list = []  # list of (tool_name, args_dict)
+    fake = _McpClient(timeout=1)
+
+    def _stub_call_tool(name, args):
+        captured.append((name, dict(args)))
+        return {"success": True, "drawer_id": "d1"}
+
+    fake.call_tool = _stub_call_tool            # type: ignore[assignment]
+    fake._connected = True                      # type: ignore[assignment]
+    fake._persistent_session = None             # type: ignore[assignment]
+    src._client = fake
+    src._ensure_connected = lambda: True        # type: ignore[assignment]
+    return src, captured
+
+
+class TestSaveForwardsSourceFile:
+    """save() must forward a non-empty source_file to add_drawer (MCP)."""
+
+    def test_payload_source_file_is_forwarded(self, tmp_path):
+        src, captured = _save_client_capture()
+        payload = {
+            "text": "the memory body",
+            "category": "LEARNING",
+            "source_file": "/tmp/memchorus-test/notes/session-042.md",
+        }
+        ok = src.save("key166", payload)
+        # One add_drawer MCP call.
+        add_calls = [a for (n, a) in captured if n == "mempalace_add_drawer"]
+        assert len(add_calls) == 1, "expected exactly one mempalace_add_drawer call"
+        assert add_calls[0].get("source_file") == "/tmp/memchorus-test/notes/session-042.md"
+
+    def test_missing_source_file_falls_back_to_key(self, tmp_path):
+        src, captured = _save_client_capture()
+        # No source_file in payload — provenance must NOT be empty: fall back to key.
+        payload = {"text": "the memory body", "category": "RESULT"}
+        src.save("key166", payload)
+        add_calls = [a for (n, a) in captured if n == "mempalace_add_drawer"]
+        assert len(add_calls) == 1
+        assert add_calls[0].get("source_file") == "key166"
+
+    def test_blank_source_file_falls_back_to_key(self, tmp_path):
+        src, captured = _save_client_capture()
+        payload = {"text": "body", "category": "RESULT", "source_file": "   "}
+        src.save("key166", payload)
+        add_calls = [a for (n, a) in captured if n == "mempalace_add_drawer"]
+        assert add_calls[0].get("source_file") == "key166"
+
+    def test_non_dict_value_uses_key(self, tmp_path):
+        src, captured = _save_client_capture()
+        # A plain string value has no payload dict to pull source_file from,
+        # so the key is the provenance locator.
+        src.save("key166", "just a string memory")
+        add_calls = [a for (n, a) in captured if n == "mempalace_add_drawer"]
+        assert add_calls[0].get("source_file") == "key166"
+
+
+# =========================================================================== #
+#  SECTION 5 — IMPL #166 doctor --provenance-report                           #
+# =========================================================================== #
+
+from memchorus.install_doctor import (
+    _cache_dir_paths,
+    _provenance_report,
+    _provenance_exit_code,
+    _render_provenance_human,
+    _render_provenance_json,
+    _scan_cache_provenance,
+)
+
+
+class TestProvenanceScan:
+    """Cache-scanner behaviour of the provenance report."""
+
+    def test_scan_counts_present_and_missing(self, tmp_path):
+        # One file WITH source_file, two WITHOUT.
+        import json as _json
+        (tmp_path / "a.json").write_text(_json.dumps({"text": "x", "source_file": "a"}))
+        (tmp_path / "b.json").write_text(_json.dumps({"text": "y"}))
+        (tmp_path / "c.json").write_text(_json.dumps({"text": "z", "source_file": ""}))
+        rep = _scan_cache_provenance(tmp_path)
+        assert rep["status"] == "ok"
+        assert rep["total"] == 3
+        assert rep["with_source_file"] == 1
+        assert rep["missing_source_file"] == 2
+        assert rep["coverage_pct"] == round(1 / 3 * 100, 1)
+
+    def test_scan_not_found(self, tmp_path):
+        rep = _scan_cache_provenance(tmp_path / "nope")
+        assert rep["status"] == "not_found"
+        assert rep["total"] == 0
+
+    def test_exit_codes(self, tmp_path):
+        import json as _json
+        (tmp_path / "good.json").write_text(_json.dumps({"source_file": "s"}))
+        assert _provenance_exit_code(_scan_cache_provenance(tmp_path)) == 0
+        (tmp_path / "bad.json").write_text(_json.dumps({"source_file": ""}))
+        assert _provenance_exit_code(_scan_cache_provenance(tmp_path)) == 1
+        assert _provenance_exit_code(_scan_cache_provenance(tmp_path / "none")) == 2
+
+    def test_report_finds_hermes_cache(self, monkeypatch, tmp_path):
+        # Point _cache_dir_paths at a dir that has one good + one bad entry.
+        import json as _json
+        (tmp_path / "g.json").write_text(_json.dumps({"source_file": "ok"}))
+        (tmp_path / "b.json").write_text(_json.dumps({"text": "no sf"}))
+        monkeypatch.setattr(
+            "memchorus.install_doctor._cache_dir_paths", lambda: [tmp_path]
+        )
+        rep = _provenance_report()
+        assert rep["status"] == "ok"
+        assert rep["with_source_file"] == 1
+        assert rep["missing_source_file"] == 1
+
+
+class TestProvenanceHumanRender:
+    """Human --provenance-report output must propose a backfill policy when missing > 0."""
+
+    def test_backfill_policy_proposal_present_when_missing(self, capsys):
+        report = {
+            "cache_dir": "/tmp/memchorus-test/cache",
+            "status": "ok",
+            "total": 10,
+            "with_source_file": 8,
+            "missing_source_file": 2,
+            "coverage_pct": 80.0,
+            "sample_missing": ["old-1", "old-2"],
+        }
+        _render_provenance_human(report)
+        out = capsys.readouterr().out
+        # The backfill policy proposal must offer both options.
+        assert "Proposed backfill policy" in out
+        assert "one-time migration" in out
+        assert "orphan" in out
+        # Explicitly a proposal, never auto-applied (doctor stays diagnostic).
+        assert "does NOT apply any backfill" in out
+
+    def test_no_policy_block_when_fully_covered(self, capsys):
+        report = {
+            "cache_dir": "/tmp/memchorus-test/cache",
+            "status": "ok",
+            "total": 5,
+            "with_source_file": 5,
+            "missing_source_file": 0,
+            "coverage_pct": 100.0,
+            "sample_missing": [],
+        }
+        _render_provenance_human(report)
+        out = capsys.readouterr().out
+        assert "Proposed backfill policy" not in out

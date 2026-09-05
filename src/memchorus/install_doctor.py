@@ -15,6 +15,15 @@ Or via the console script (wired through setup.py entry_points)::
     memchorus-doctor
     memchorus-doctor --deps-check
 
+Provenance audit — scans the MemPalace local cache and reports how many stored
+entries carry a non-empty ``source_file`` provenance field (IMPL #166)::
+
+    memchorus-doctor --provenance-report
+    memchorus-doctor --provenance-report --json
+
+Exit code: 0 = all entries have provenance, 1 = some missing (pre-#166 data),
+2 = no accessible cache / unexpected error.
+
 Exit code 0 if all relevant checks pass, 1 if any check fails.
 """
 
@@ -769,7 +778,6 @@ def _recall_exit_code(report: Dict[str, Any]) -> int:
     """
     return 0 if report.get("status") == "ok" else 1
 
-
 # ---------------------------------------------------------------------------
 # Palace layout diagnostic (--palace-layout)
 # ---------------------------------------------------------------------------
@@ -853,6 +861,161 @@ def palace_layout_report(strict: bool = False,
         message=message,
         hint=hint,
     )]
+# Provenance report  (--provenance-report)
+#
+# Scans the MemPalace local cache (JSON files) and reports how many stored
+# entries carry a non-empty ``source_file`` (provenance) field versus how
+# many are missing it.  This gives an operator a quick health signal on
+# whether IMPL #166's fix is actually landing drawers with provenance.
+#
+# Exit code: 0 when all cached entries have non-empty source_file,
+#           1 when one or more entries are missing it,
+#           2 when the cache directory cannot be found or read.
+# ---------------------------------------------------------------------------
+
+def _cache_dir_paths() -> List[Path]:
+    """Candidate cache directories to scan (most-specific first)."""
+    paths: List[Path] = []
+    try:
+        from memchorus.hermes_home import hermes_home
+        paths.append(hermes_home() / "mempalace_cache")
+    except Exception:
+        pass
+    paths.append(Path.home() / ".hermes" / "mempalace_cache")
+    paths.append(Path.home() / ".mempalace")
+    return paths
+
+
+def _scan_cache_provenance(cache_dir: Path) -> Dict[str, Any]:
+    """Scan a cache directory and return a provenance coverage report."""
+    if not cache_dir.exists() or not cache_dir.is_dir():
+        return {
+            "cache_dir": str(cache_dir),
+            "status": "not_found",
+            "total": 0, "with_source_file": 0, "missing_source_file": 0,
+            "sample_missing": [],
+        }
+
+    files = sorted(cache_dir.glob("*.json"))
+    total = len(files)
+    with_sf = 0
+    missing_sf = 0
+    sample_missing: List[str] = []
+
+    for fp in files:
+        try:
+            with open(fp) as fh:
+                data = json.load(fh)
+            sf = data.get("source_file") if isinstance(data, dict) else None
+            if sf and str(sf).strip():
+                with_sf += 1
+            else:
+                missing_sf += 1
+                if len(sample_missing) < 5:
+                    sample_missing.append(fp.name)
+        except Exception:
+            missing_sf += 1
+            if len(sample_missing) < 5:
+                sample_missing.append(f"{fp.name} (unparseable)")
+
+    pct = (with_sf / total * 100) if total > 0 else 0.0
+    return {
+        "cache_dir": str(cache_dir),
+        "status": "ok",
+        "total": total,
+        "with_source_file": with_sf,
+        "missing_source_file": missing_sf,
+        "coverage_pct": round(pct, 1),
+        "sample_missing": sample_missing,
+    }
+
+
+def _provenance_report() -> Dict[str, Any]:
+    """Find the best cache dir and run a provenance scan on it."""
+    candidates = _cache_dir_paths()
+    for c in candidates:
+        if c.exists() and c.is_dir():
+            return _scan_cache_provenance(c)
+    return {
+        "cache_dir": str(candidates[0]) if candidates else "unknown",
+        "status": "not_found",
+        "total": 0, "with_source_file": 0, "missing_source_file": 0,
+        "sample_missing": [],
+    }
+
+
+def _render_provenance_human(report: Dict[str, Any]) -> None:
+    """Human-readable --provenance-report output."""
+    print()
+    print("MemChorus Provenance Report".center(72, "="))
+    print()
+
+    if report.get("status") == "not_found":
+        print(f"Cache directory not found: {report.get('cache_dir')}")
+        print("No cached MemPalace entries to audit. This is expected if MemChorus")
+        print("has not yet auto-stored any memories, or if the cache directory")
+        print("has been cleared.")
+        print()
+        return
+
+    total = report.get("total", 0)
+    with_sf = report.get("with_source_file", 0)
+    missing = report.get("missing_source_file", 0)
+    pct = report.get("coverage_pct", 0.0)
+
+    print(f"Cache directory : {report.get('cache_dir')}")
+    print(f"Total entries   : {total}")
+    print(f"With provenance : {with_sf}  ({pct}%)")
+    print(f"Missing prov  : {missing}")
+    print()
+
+    if missing > 0:
+        print(f"Sample entries missing source_file (up to 5):")
+        for name in report.get("sample_missing", []):
+            print(f"  - {name}")
+        print()
+        if pct < 100:
+            print(
+                f"  => {missing} of {total} cached entries (i.e. {100 - pct:.1f}%) "
+                "do not carry a source_file provenance field."
+            )
+            print(
+                "     This typically means the entry was stored before the IMPL #166"
+            )
+            print(
+                "     fix was applied (when capture_outcome did not set source_file"
+            )
+            print(
+                "     in the payload).  New auto-stored entries should carry provenance."
+            )
+            print()
+            print("  Proposed backfill policy for these pre-#166 entries (one-time migration):")
+            print("    Option A) Leave source_file empty for this historical set — the original")
+            print("               source cannot be recovered, so no locator is recorded.")
+            print("    Option B) Mark these entries with an 'orphan' sentinel value to indicate")
+            print("               a pre-#166 record with no source recovered.")
+            print("    This is a one-time migration: once applied, the orphan set does not grow,")
+            print("    because new auto-stored entries carry provenance automatically. The doctor")
+            print("    does NOT apply any backfill itself — it remains read-only and diagnostic.")
+        print()
+    else:
+        print("All cached entries carry a non-empty source_file provenance field.")
+        print("IMPL #166 fix is active and provenance is being captured correctly.")
+        print()
+
+
+def _render_provenance_json(report: Dict[str, Any]) -> None:
+    """Machine-readable --provenance-report output."""
+    print(json.dumps(report, indent=2, sort_keys=True, default=str))
+
+
+def _provenance_exit_code(report: Dict[str, Any]) -> int:
+    """Exit code: 2=not found, 0=all have provenance, 1=some missing."""
+    if report.get("status") == "not_found":
+        return 2
+    if report.get("missing_source_file", 0) > 0:
+        return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1185,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # ------------------------------------------------------------------ #
     # --palace-layout / --deps-check / full install-health report          #
+    # --provenance-report — audit source_file coverage in local cache      #
+    # ------------------------------------------------------------------ #
+    if "--provenance-report" in args:
+        report = _provenance_report()
+        if as_json:
+            _render_provenance_json(report)
+        else:
+            _render_provenance_human(report)
+        return _provenance_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --deps-check / default install-health report                         #
     # ------------------------------------------------------------------ #
     deps_only = "--deps-check" in args
     palace_layout = "--palace-layout" in args

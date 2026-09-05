@@ -697,6 +697,12 @@ class AutoStorageEngine:
             # AC4: provenance marker -- RelevanceScorer checks this key to apply P=0.3
             "_auto_provenance": True,
             "provenance": "auto_stored",
+            # IMPL #166: provenance locator.  The orchestrator.save() path will
+            # forward this to MemPalace's add_drawer so the drawer's source_file
+            # metadata is non-empty.  We use the content-hash key as the locator
+            # because capture_outcome has no external file context — the key
+            # uniquely identifies the source content.
+            "source_file": key,
         }
 
         # --- Step 9b: write via batch buffer OR direct save -------------
