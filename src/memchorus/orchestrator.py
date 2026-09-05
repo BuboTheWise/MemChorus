@@ -838,6 +838,23 @@ class MemoryOrchestrator:
         """
         # --- explicit source override takes precedence ------------------
         self._save_call_count += 1
+        # IMPL #163 — normalize ``project:<name>`` record keys to their stable
+        # form so that a store under ``project:MemChorus`` and a retrieve via
+        # ``project:memchorus`` resolve to the same record (spec §3.1).  This
+        # must happen before ANY downstream use: the retrieve cache, the merge
+        # engine pre-save check, and every source write all key off *key*, so a
+        # case-mismatch without it would be a silent lookup miss.  Non-``project:``
+        # keys (and plain-string saves) are untouched — byte-identical to before.
+        try:
+            from memchorus.project_record import (
+                is_project_key,
+                normalize_project_key,
+            )
+
+            if is_project_key(key):
+                key = normalize_project_key(name=None, key=key)
+        except Exception as exc:  # pragma: no cover - never fail a save
+            logger.debug("project key normalization skipped for key=%r: %s", key, exc)
 
         # GH-122: validate and inject explicit category before anything else
         effective_category = None
@@ -855,6 +872,32 @@ class MemoryOrchestrator:
         # — it rides on the payload dict, so whichever backend persists it stores
         # the locator alongside the body.  No-op when nothing extractable.
         stored_value = self._attach_payload_locator(stored_value, key, source_name)
+
+        # IMPL #163 — project record channels.  ``location`` and ``standard`` ride
+        # on the payload at the TOP LEVEL as two independent optional channels and
+        # stay OUT of the free-text/body path (spec §3.2) — exactly as the locator
+        # attaches but as a separate channel, never serialized into the body.
+        #
+        # Two steps, in order:
+        #   1. FAIL-LOUD validation — a malformed structured channel is rejected
+        #      here (``ProjectRecordError``) rather than persisted and later
+        #      masquerading as a canonical root (spec §2.3).  This only fires when
+        #      the payload actually carries a ``location``/``standard`` object, so
+        #      ordinary saves are unaffected.
+        #   2. attach — a no-op pass-through that keeps the channels on the
+        #      top-level dict for the source to persist; it never bloats the body
+        #      and never raises.
+        if isinstance(stored_value, dict) and (
+            "location" in stored_value or "standard" in stored_value
+        ):
+            from memchorus.project_record import (
+                attach_project_channels,
+                validate_project_record,
+            )
+
+            validate_project_record(stored_value)  # may raise ProjectRecordError
+            stored_value = attach_project_channels(stored_value, key)
+
         self._validate_categories_in_value(stored_value)  # reject bad categories early
 
         # Auto-infer profile from the enriched payload (category info helps inference)
@@ -1121,6 +1164,17 @@ class MemoryOrchestrator:
         Returns:
             Any: The memory content if found, None otherwise
         """
+        # IMPL #163 — normalize ``project:<name>`` keys on the retrieve side too.
+        # Without this, a store under ``project:MemChorus`` (normalized to
+        # ``project:memchorus`` in save) would be missed by
+        # ``retrieve("project:MemChorus")`` — a silent lookup miss (spec §3.1).
+        if isinstance(key, str) and key.startswith("project:"):
+            try:
+                from memchorus.project_record import normalize_project_key
+                key = normalize_project_key(name=None, key=key)
+            except Exception:
+                pass  # never fail a retrieve — fall through with the raw key
+
         # --- GAP008: check LRU cache first ---------------------------
         if key in self._retrieve_cache:
             cached_value, cached_ts = self._retrieve_cache[key]
