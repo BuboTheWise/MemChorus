@@ -988,6 +988,15 @@ def _render_provenance_human(report: Dict[str, Any]) -> None:
             print(
                 "     in the payload).  New auto-stored entries should carry provenance."
             )
+            print()
+            print("  Proposed backfill policy for these pre-#166 entries (one-time migration):")
+            print("    Option A) Leave source_file empty for this historical set — the original")
+            print("               source cannot be recovered, so no locator is recorded.")
+            print("    Option B) Mark these entries with an 'orphan' sentinel value to indicate")
+            print("               a pre-#166 record with no source recovered.")
+            print("    This is a one-time migration: once applied, the orphan set does not grow,")
+            print("    because new auto-stored entries carry provenance automatically. The doctor")
+            print("    does NOT apply any backfill itself — it remains read-only and diagnostic.")
         print()
     else:
         print("All cached entries carry a non-empty source_file provenance field.")

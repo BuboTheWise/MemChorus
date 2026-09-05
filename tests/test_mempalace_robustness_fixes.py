@@ -278,13 +278,13 @@ class TestSaveForwardsSourceFile:
         payload = {
             "text": "the memory body",
             "category": "LEARNING",
-            "source_file": "/home/bubo/notes/session-042.md",
+            "source_file": "/tmp/memchorus-test/notes/session-042.md",
         }
         ok = src.save("key166", payload)
         # One add_drawer MCP call.
         add_calls = [a for (n, a) in captured if n == "mempalace_add_drawer"]
         assert len(add_calls) == 1, "expected exactly one mempalace_add_drawer call"
-        assert add_calls[0].get("source_file") == "/home/bubo/notes/session-042.md"
+        assert add_calls[0].get("source_file") == "/tmp/memchorus-test/notes/session-042.md"
 
     def test_missing_source_file_falls_back_to_key(self, tmp_path):
         src, captured = _save_client_capture()
@@ -319,6 +319,7 @@ from memchorus.install_doctor import (
     _cache_dir_paths,
     _provenance_report,
     _provenance_exit_code,
+    _render_provenance_human,
     _render_provenance_json,
     _scan_cache_provenance,
 )
@@ -365,3 +366,40 @@ class TestProvenanceScan:
         assert rep["status"] == "ok"
         assert rep["with_source_file"] == 1
         assert rep["missing_source_file"] == 1
+
+
+class TestProvenanceHumanRender:
+    """Human --provenance-report output must propose a backfill policy when missing > 0."""
+
+    def test_backfill_policy_proposal_present_when_missing(self, capsys):
+        report = {
+            "cache_dir": "/tmp/memchorus-test/cache",
+            "status": "ok",
+            "total": 10,
+            "with_source_file": 8,
+            "missing_source_file": 2,
+            "coverage_pct": 80.0,
+            "sample_missing": ["old-1", "old-2"],
+        }
+        _render_provenance_human(report)
+        out = capsys.readouterr().out
+        # The backfill policy proposal must offer both options.
+        assert "Proposed backfill policy" in out
+        assert "one-time migration" in out
+        assert "orphan" in out
+        # Explicitly a proposal, never auto-applied (doctor stays diagnostic).
+        assert "does NOT apply any backfill" in out
+
+    def test_no_policy_block_when_fully_covered(self, capsys):
+        report = {
+            "cache_dir": "/tmp/memchorus-test/cache",
+            "status": "ok",
+            "total": 5,
+            "with_source_file": 5,
+            "missing_source_file": 0,
+            "coverage_pct": 100.0,
+            "sample_missing": [],
+        }
+        _render_provenance_human(report)
+        out = capsys.readouterr().out
+        assert "Proposed backfill policy" not in out
