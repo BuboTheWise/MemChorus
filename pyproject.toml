@@ -76,6 +76,7 @@ dev = [
 memchorus-init = "memchorus.auto_init:cli_main"
 memchorus-doctor = "memchorus.install_doctor:main"
 memchorus-recalibrate = "memchorus.calibration_engine:main"
+memchorus-recall = "memchorus.recall_cli:main"
 
 [project.entry-points."hermes_agent.plugins"]
 memchorus = "memchorus.hooks"
