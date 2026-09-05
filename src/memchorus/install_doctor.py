@@ -546,6 +546,229 @@ def deps_check_report() -> List[CheckResult]:
 
 
 # ---------------------------------------------------------------------------
+# Recall explainability  (--recall "<query>")
+#
+# Runs the *real* recall pipeline for a query and explains, item by item, exactly
+# why each memory scored what it did and whether it would be injected, suppressed
+# (GH-141 cross-turn window), or dropped by the char budget — so an operator can
+# answer "why did / didn't the agent see X?" without reading a stack trace.
+#
+# Design constraints (from #173):
+#   * It reuses the SAME scorer instance the live agent uses (``orchestrator._scorer``
+#     via ``orchestrator.search``), never a fresh default — so the explanation is
+#     the explanation, not a re-approximation of it.
+#   * Render is read-only: ``hooks.simulate_recall_render`` runs the shared
+#     ``_build_context_entries`` core but does NOT mutate the suppression window,
+#     so running this diagnostic can never collapse a later live render.
+#   * Every number surfaced is a direct output of the production path; the only
+#     transformation the doctor applies is JSON/human formatting.
+# ---------------------------------------------------------------------------
+
+def _recall_query(query: str, limit: int) -> Dict[str, Any]:
+    """Execute the live recall path for *query* and assemble the explanation.
+
+    Returns a fully-populated report dict.  Never raises for the "expected"
+    failure modes (orchestrator not registered, empty result set) — those are
+    reported with ``status`` + ``reason`` so the caller can decide exit code.
+    """
+    # Lazy imports — pulls in the full hook pipeline only when --recall is asked
+    # for, keeping the plain install-doctor path lightweight (mirrors the
+    # existing lazy-import pattern in check_plugin_hooks above).
+    from memchorus import get_orchestrator
+    from memchorus.hooks import simulate_recall_render, suppression_state
+
+    orchestrator = get_orchestrator()  # type: ignore[assignment]
+    if orchestrator is None:
+        return {
+            "query": query,
+            "limit": limit,
+            "status": "no_orchestrator",
+            "reason": (
+                "No MemoryOrchestrator is registered in this process. "
+                "--recall evaluates the *live* auto-bootstrap pipeline, which is "
+                "only present inside a running Hermes agent session; a fresh "
+                "python interpreter has not auto-bootstrapped yet."
+            ),
+            "results": [],
+            "render": None,
+            "suppression": None,
+        }
+
+    # 1) Production search — same scorer, same dedup, same sort as the agent.
+    results: List[Dict[str, Any]]
+    search_error = None
+    try:
+        results = orchestrator.search(query, limit=limit)
+    except Exception as exc:  # noqa: BLE001 — doctor must report, not crash
+        result = {
+            "query": query,
+            "limit": limit,
+            "status": "search_error",
+            "reason": f"orchestrator.search({query!r}) raised {type(exc).__name__}: {exc}",
+            "results": [],
+            "render": None,
+            "suppression": None,
+        }
+        search_error = str(exc)
+        return result
+
+    # 2) Read-only render simulation — what WOULD be injected right now.
+    render_report = simulate_recall_render(list(results))
+
+    # 3) Live suppression-window snapshot.
+    window = suppression_state()
+
+    # 4) Per-result explainability payload.  ``score_breakdown`` is present on
+    #    every result dict because the production path (score_and_rank) attaches
+    #    it to RankedResult.meta and orchestrator.search spreads **r.meta in.
+    explained: List[Dict[str, Any]] = []
+    injected_keys = {i["key"] for i in render_report.get("injected", []) if i.get("key")}
+    dropped_keys = {d["key"] for d in render_report.get("dropped", []) if d.get("key")}
+    for r in results:
+        explained.append({
+            "key": r.get("key"),
+            "source": r.get("source"),
+            "score": r.get("score"),
+            "score_breakdown": r.get("score_breakdown"),
+            "disposition": (
+                "injected" if r.get("key") in injected_keys
+                else "dropped_by_budget" if r.get("key") in dropped_keys
+                else "suppressed_shown_earlier"
+            ),
+            "content_preview": (r.get("content") or "")[:200],
+        })
+
+    return {
+        "query": query,
+        "limit": limit,
+        "status": "ok",
+        "reason": None,
+        "results": explained,
+        "render": render_report,
+        "suppression": window,
+    }
+
+
+def _render_recall_human(report: Dict[str, Any]) -> None:
+    """Human-readable explanation of a --recall report."""
+    q = report["query"]
+    limit = report["limit"]
+    results = report.get("results") or []
+    render = report.get("render")
+    window = report.get("suppression")
+
+    print()
+    print(f"MemChorus Recall Explainability — {q!r} (limit {limit})".center(72, "="))
+    print()
+
+    if report["status"] == "no_orchestrator":
+        print(report["reason"])
+        print()
+        return
+
+    if report["status"] == "search_error":
+        print(f"Search failed: {report['reason']}")
+        print()
+        return
+
+    if not results:
+        print("No results returned by the live recall path for this query.")
+        print("This can mean: source(s) disabled, no stored match, or the query")
+        print("fell below the relevance threshold. See 'score_breakdown' on any")
+        print("returned item to see per-dimension scoring when results DO exist.")
+        print()
+        return
+
+    for r in results:
+        disp = r.get("disposition")
+        score = r.get("score")
+        print(f"  {r.get('key')}  [{r.get('source')}]  score={score}  disposition={disp}")
+        bd = r.get("score_breakdown")
+        if isinstance(bd, dict):
+            # score_breakdown schema — keys defined in RelevanceScorer.score_breakdown:
+            # quality, recency, source_prior, weights{...},
+            # contributions{quality,recency,source_type,total},
+            # calibration_boost, auto_provenance_penalty,
+            # penalty{factor, matches:[[label, factor], ...]}, raw, final.
+            contribs = (bd.get("contributions") or {})
+            parts = [
+                f"{dim}={val:.3f}"
+                for dim, val in contribs.items()
+                if isinstance(val, (int, float))
+            ]
+            if parts:
+                print(f"      contributions: {' '.join(parts)}")
+            boost = bd.get("calibration_boost")
+            auto_pen = bd.get("auto_provenance_penalty")
+            pen = (bd.get("penalty") or {}) if isinstance(bd.get("penalty"), dict) else {}
+            boost_s = f"{boost:.3f}" if isinstance(boost, (int, float)) else "n/a"
+            auto_s = f"{auto_pen:.3f}" if isinstance(auto_pen, (int, float)) else "1.0"
+            pen_s = f"{pen.get('factor'):.3f}" if isinstance(pen.get("factor"), (int, float)) else "1.0"
+            final_v = bd.get("final")
+            final_s = f"{final_v:.4f}" if isinstance(final_v, (int, float)) else "n/a"
+            print(f"      boost={boost_s}  auto_prov_x={auto_s}  penalty_x={pen_s}  -> final={final_s}")
+            pm = pen.get("matches") or []
+            if pm:
+                names = ", ".join(f"{label}[{factor}]" for label, factor in pm)
+                print(f"      penalties matched: {names}")
+        preview = (r.get("content_preview") or "").strip().replace("\n", " ")
+        if preview:
+            print(f"      preview: {preview[:120]}")
+        print()
+
+    if render is not None:
+        inj = render.get("injected") or []
+        dropped = render.get("dropped") or []
+        print(f"Render (read-only simulation): {len(inj)} would be injected, {len(dropped)} dropped by budget.")
+        for i in inj:
+            flag = " (suppressed→marker only)" if i.get("suppressed") else ""
+            print(f"    + {i.get('key')} score={i.get('score')}{flag}")
+        for d in dropped:
+            print(f"    - {d.get('key')} score={d.get('score')} reason={d.get('reason')}")
+    else:
+        print("Render: (not computed — see search_error above)")
+
+    if window is not None:
+        print()
+        print(
+            f"Suppression window: profile={window.get('profile')} "
+            f"window_size={window.get('window_size')} ttl={window.get('ttl_seconds')}s "
+            f"configured={window.get('configured')} entries={window.get('entries_total')}"
+        )
+        iw = window.get("in_window") or {}
+        for k, v in list(iw.items())[:10]:
+            print(f"    in-window: {k} age={v.get('age_seconds')}s ttl_left={v.get('remaining_ttl_seconds')}s")
+    print()
+
+
+def _render_recall_json(report: Dict[str, Any]) -> None:
+    """Machine-readable --recall report."""
+    payload = {
+        "query": report.get("query"),
+        "limit": report.get("limit"),
+        "status": report.get("status"),
+        "reason": report.get("reason"),
+        "results": report.get("results"),
+        "render": report.get("render"),
+        "suppression": report.get("suppression"),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def _recall_exit_code(report: Dict[str, Any]) -> int:
+    """--recall exit code: 0 when the path ran, 1 on pipeline failure.
+
+    Acceptance rule (IMPL #173):
+      * ``status == "ok"``                -> 0 (even if the result set is empty)
+      * ``status == "search_error"``      -> 1 (the live recall path raised)
+      * ``status == "no_orchestrator"``   -> 1 (no live orchestrator is
+                                              registered in this process, so the
+                                              pipeline could not run at all)
+    """
+    return 0 if report.get("status") == "ok" else 1
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -646,20 +869,64 @@ def main(argv: Optional[List[str]] = None) -> int:
         memchorus-doctor                 full install-health report (default)
         memchorus-doctor --deps-check    focused dependency-coherence report
                                          (OTel family / core integrity)
+        memchorus-doctor --recall "Q"    recall explainability: run the live recall
+                                         pipeline for a query and explain each
+                                         candidate's score + budget/suppression
+        memchorus-doctor --limit N       --recall max-candidates (default 10)
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
-        memchorus-doctor --deps-check --json
 
-    Returns exit code 0 when the applicable checks pass, 1 on any failure.
-    A WARN is not a failure — only FAIL drives a non-zero exit.
+    Returns:
+      * default report -> 0 when no FAIL, 1 otherwise (a WARN is not a failure).
+      * ``--deps-check`` -> 0 when the dependency/OTel check passes, 1 on FAIL.
+      * ``--recall <q>`` -> 0 when the pipeline ran (``status`` ``ok``, even if the
+        result set is empty), 1 when the pipeline could not run (no registered
+        orchestrator, or ``search`` raised). A diagnostic is always printed.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
-    deps_only = "--deps-check" in args
 
+    # ------------------------------------------------------------------ #
+    # --recall "<query>" — explain a live recall decision (IMPL #173)      #
+    # ------------------------------------------------------------------ #
+    if "--recall" in args:
+        try:
+            idx = args.index("--recall")
+            if idx + 1 >= len(args):
+                print(
+                    "error: --recall requires a query string, e.g. "
+                    '--recall "deployment note"'
+                )
+                return 2
+            query = args[idx + 1]
+        except ValueError:  # unreachable — `in` already gated this branch
+            return 2
+
+        limit = 10
+        if "--limit" in args:
+            try:
+                lidx = args.index("--limit")
+                if lidx + 1 >= len(args):
+                    print("error: --limit requires an integer value")
+                    return 2
+                limit = max(1, int(args[lidx + 1]))
+            except ValueError as exc:
+                print(f"error: --limit must be an integer (got {exc})")
+                return 2
+
+        report = _recall_query(query, limit)
+        if as_json:
+            _render_recall_json(report)
+        else:
+            _render_recall_human(report)
+        return _recall_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --deps-check / default install-health report                         #
+    # ------------------------------------------------------------------ #
+    deps_only = "--deps-check" in args
     results = deps_check_report() if deps_only else run_checks()
     _emit(results, as_json)
-
     return 1 if any(r.status == FAIL for r in results) else 0
 
 
