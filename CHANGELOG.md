@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.45] - 2026-09-06
+
+### Added
+- **Pre-commit OPSEC sweep gate (t_b5aa0970 / #188):** a two-layer working-tree leak gate that stops operator PII from ever reaching a GitHub PR. **`scripts/opsec_sweep.py`** (stdlib-only, cross-platform, no venv needed) scans tracked and untracked text files in the working tree. Two tiers: *hard* (operator-PII — `/home/<user>/`, `@gmail`, `bubo@`, `@bubo`; non-zero exit on any hit, fails CI) and *warn* (project-convention + fixture tokens like `~/.hermes` and profile-name inputs; reported but not failing). A minimal file+reason allowlist suppresses 5 known-legitimate hits (test fixtures that *prove* OPSEC, doc placeholders, the gate script's own self-referential docstrings). **`.github/workflows/ci.yml`** gains a new `opsec-sweep` job that runs the gate on every PR and push, failing the whole run on any hard leak. Closes the gap this card names: 17× operator-path strings in an untracked/new test file that a tracked-only `git grep` gate would have missed. Bumps `__version__` 2.0.44 → 2.0.45 (next free patch slot; no collision with in-flight siblings).
+
 ## [2.0.41] - 2026-09-06
 
 ### Fixed
