@@ -2,6 +2,16 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.41] - 2026-09-06
+
+### Fixed
+
+- **v1.9.0 release-notes inconsistency (issue #183):** the `### Removed` entry under `## [1.9.0]` was worded as "feedback_loop module removed … fully extracted," which a reader comparing it to the current tree could (reasonably) read as a false claim — because the *separate*, live single-file `src/memchorus/feedback_loop.py` (the GH#101 rebuild that landed in v2.0.20) sits right there today, and is actively imported from `hooks.py`'s `on_pre_llm_call` path (`self._try_feedback_loop(...)`, `FeedbackLoopManager` — 13 passing live tests in `tests/test_feedback_loop.py`). The two are genuinely different code: the v1.9.0 entry referred only to the older 7-file `src/memchorus/feedback_loop/*` *package*, which *is* gone from the tree. The entry now says so explicitly (disambiguated in place, no history rewritten) so the claim is accurate as written.
+- **Stale skip reasons in `tests/test_feedback_correction_injection.py`:** all six tests in that module carried the skip reason "feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger," which contradicted the live tree on both counts — (a) the (re-landed) correction-injection path is not removed, and (b) it was never replaced by `behavioral_trigger`; it landed as `FeedbackLoopManager.process_feedback()` inside the v2.0.20 rebuild. Those tests were written against the old package's `memchorus.feedback_loop.integration.inject_feedback_corrections()` API and were never re-targeted after GH#101; the skip reasons now say exactly that (and point at the current module) instead of naming the wrong replacement.
+- **Dead comment in `src/memchorus/auto_bootstrap.py`:** a leftover `# --- Step 6: removed feedback_loop auto-load (v1.9.0)` sat above the function's `return orchestrator` with no matching step 6 in the function body — a non-functional artifact, and the same class of stale v1.9.0 claim this entry disambiguates elsewhere. Removed.
+
+Bumps `__version__` 2.0.38 → 2.0.41 (skipping 2.0.39/2.0.40, already reserved in-flight on branch `feat/recall-location-standard-channels` for IMPL #163 / #163.2 — keeping the release chain collision-free per the repo's version-reservation convention). Docs-only + one dead-comment removal otherwise — no behavior, API, or packaging surface changed.
+
 ## [2.0.38] - 2026-09-05
 
 ### Added
@@ -195,7 +205,7 @@ All notable changes to MemChorus will be documented in this file.
 - **CI xdist singleton isolation:** Replaced fragile `sys.modules` mocking in `test_full_pipeline_integration` with direct singleton `_index` population wrapped in try/finally — eliminates cross-test pollution under parallel execution, restores all 16 tests green.
 
 ### Removed
-- **feedback_loop module removed:** Legacy feedback loop code deprecated and fully extracted. Workflows simplified while preserving existing functionality through enforcement hooks.
+- **Legacy `feedback_loop` package (the 7-file `src/memchorus/feedback_loop/*` directory) removed:** the v1.8-era package module was deprecated and fully extracted; its behavior is now enforced inline through the enforcement hooks and `behavioral_trigger`. This entry referred to that *package* specifically — it is **not** the same thing as the separate single-file `src/memchorus/feedback_loop.py` rebuild that landed shortly after (GH#101 / PR #112, shipped in v2.0.20), which is still live in the current tree and is a different code path entirely.
 
 ## [1.8.0] - 2026-08-13
 
