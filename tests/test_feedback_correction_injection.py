@@ -44,7 +44,15 @@ class TestFeedbackCorrectionInjection:
             text_span="implement the fix",
         )]
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_try_feedback_loop_called_during_pre_llm_call(
         self, mock_orchestrator, mock_bt_results
     ):
@@ -79,7 +87,15 @@ class TestFeedbackCorrectionInjection:
                 assert isinstance(call_args[0][1], dict), \
                     "Second positional arg should be kwargs dict"
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_correction_text_injected_between_recall_and_tool_output(
         self, mock_orchestrator, mock_bt_results
     ):
@@ -124,7 +140,15 @@ class TestFeedbackCorrectionInjection:
                 assert "FEEDBACK:watchdog" in injected
                 assert "STEERING" in injected
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_try_feedback_loop_returns_empty_list_on_no_match(
         self, mock_orchestrator, mock_bt_results
     ):
@@ -151,7 +175,15 @@ class TestFeedbackCorrectionInjection:
 
                 assert result == [], "Should return empty list when no corrections match"
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_try_feedback_loop_graceful_degradation_on_exception(
         self, mock_orchestrator, mock_bt_results
     ):
@@ -178,7 +210,15 @@ class TestFeedbackCorrectionInjection:
 
                 assert result == [], "Should return [] on exception (graceful degradation)"
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_pre_llm_call_includes_only_recall_when_feedback_returns_none(
         self, mock_orchestrator, mock_bt_results
     ):
@@ -210,7 +250,15 @@ class TestFeedbackCorrectionInjection:
                 # Feedback block NOT present when feedback returns None
                 assert "-- Feedback Loop Corrections --" not in injected
 
-    @pytest.mark.skip(reason="feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger")
+    @pytest.mark.skip(reason=(
+    "Targeted the v1.8-era `memchorus.feedback_loop.integration."
+    "inject_feedback_corrections` API (the 7-file package removed in v1.9.0 — see CHANGELOG [1.9.0] `### Removed`, disambiguated in v2.0.41). Correction injection was *re-landed* as `FeedbackLoopManager.process_feedback()` "
+    "in the separate live `src/memchorus/feedback_loop.py` module (GH#101 / PR #112, v2.0.20); its live coverage "
+    "is `tests/test_feedback_loop.py` (13 passing). These tests were never re-targeted to that new API after the "
+    "re-landing — they still patch the old package's `integration.inject_feedback_corrections`, which no longer "
+    "exists in the tree — so they stay skipped (not removed) as a known-misaligned test pending re-derivation "
+    "against the current `process_feedback()` contract."
+))
     def test_feedback_turn_context_built_from_kwargs(
         self, mock_orchestrator, mock_bt_results
     ):

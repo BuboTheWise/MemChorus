@@ -379,5 +379,4 @@ def _bootstrap() -> Optional[Any]:
         # Orientation not installed yet → harmless
         pass
 
-    # --- Step 6: removed feedback_loop auto-load (v1.9.0) ------------------
     return orchestrator
