@@ -630,7 +630,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.38 (current — 2026-09-05)
+### v2.0.41 (current — 2026-09-06)
+
+- **v1.9.0 release-notes inconsistency fixed (issue #183):** the `## [1.9.0]` `### Removed` entry in `CHANGELOG.md` was worded as "feedback_loop module removed … fully extracted." A reader comparing that against the current tree could reasonably read it as false, because the separate, live single-file `src/memchorus/feedback_loop.py` (the GH#101 / PR #112 rebuild that shipped in v2.0.20) sits right there today and is actively imported from `hooks.py`'s `on_pre_llm_call` path (`self._try_feedback_loop(...)`, `FeedbackLoopManager` — 13 passing live tests in `tests/test_feedback_loop.py`). The two are genuinely different code: the v1.9.0 entry referred only to the older 7-file `src/memchorus/feedback_loop/*` package, which *is* gone from the tree. That entry now says so explicitly (disambiguated in place in `CHANGELOG.md`, no history rewritten) so the claim is accurate as written. Six stale skip reasons in `tests/test_feedback_correction_injection.py` (all previously reading "feedback_loop module removed in v1.9 — correction injection replaced by behavioral_trigger") now name what they actually targeted — the old package's `memchorus.feedback_loop.integration.inject_feedback_corrections()` API — and point at the current `FeedbackLoopManager.process_feedback()` contract, instead of naming a replacement that never happened. One dead, non-functional comment ("Step 6: removed feedback_loop auto-load (v1.9.0)") in `src/memchorus/auto_bootstrap.py` was removed. Docs-only + one comment removal; no behavior, API, or packaging surface changed.
+
+### v2.0.38 (2026-09-05)
 
 - **source_file provenance + `--provenance-report` (closes #166):** new auto-stored records now carry a non-empty `source_file` provenance field end-to-end (write path → MCP `add_drawer` → MemPalace storage), with a deterministic hash-key fallback used only when no source exists. New `memchorus-doctor --provenance-report` (`--json`) audits the local cache and reports total / with-provenance / missing entries with a coverage percentage. When coverage is < 100%, the doctor proposes a one-time backfill policy for the pre-#166 orphan set (leave empty vs `orphan` sentinel) — proposal only; the doctor remains read-only and applies no backfill itself. Independent review PASS (both prior request-changes gates resolved); CI 5/5 green.
 
