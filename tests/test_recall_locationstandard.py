@@ -51,16 +51,16 @@ def test_location_channel_resolves(orch_setup):
     """A record saved with a location channel resolves with that location."""
     orch, _ = orch_setup
     rec = {
-        "_content": "MemChorus: root at /home/bubo/.hermes/workspace/Code/MemChorus/",
+        "_content": "MemChorus: root at /workspace/Code/MemChorus/",
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
     }
     orch.save("project:MemChorus", rec)
     r = orch.resolve_project_record("MemChorus")
-    assert r["location"]["canonical_root"] == "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
     assert r["location"]["source"] == "ssot:ORGANIZATION.md#memchorus"
     assert r["location"]["verified_at"] == "2026-09-05T12:00:00Z"
 
@@ -75,13 +75,13 @@ def test_location_channel_from_ssot(orch_setup, monkeypatch):
     # (exact-key retrieve) misses and falls through to the SSoT path.
     monkeypatch.setattr(mo, "_ssot_read_cached", lambda: [
         {"project": "MemChorus",
-         "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+         "canonical_root": "/workspace/Code/MemChorus/",
          "verified_at": "2026-08-01T09:00:00Z"},
     ])
     from memchorus.orchestrator import clear_project_record_cache
     clear_project_record_cache()
     r = orch.resolve_project_record("MemChorus")
-    assert r["location"]["canonical_root"] == "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
     assert r["location"]["source"].startswith("ssot:")
     assert r["location"]["verified_at"] == "2026-08-01T09:00:00Z"
 
@@ -108,7 +108,7 @@ def test_location_channel_rejects_bad_source_prefix(orch_setup):
     # validate_project_record checks the WRAPPED record shape: {"location": {...}}.
     value = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "memory:note-abc",   # bad prefix
             "verified_at": None,
         },
@@ -165,14 +165,14 @@ def test_location_only_gives_derived_standard(orch_setup):
     orch, _ = orch_setup
     rec = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
     }
     orch.save("project:MemChorus", rec)
     r = orch.resolve_project_record("MemChorus")
-    assert r["location"]["canonical_root"] == "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
     assert r["location"]["source"] == "ssot:ORGANIZATION.md#memchorus"
     # standard must be the derived default (structure-only floor) — not empty, not missing
     assert r["standard"] is not None
@@ -207,7 +207,7 @@ def test_both_channels_independent(orch_setup):
     orch, _ = orch_setup
     rec = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
@@ -220,7 +220,7 @@ def test_both_channels_independent(orch_setup):
     }
     orch.save("project:MemChorus", rec)
     r = orch.resolve_project_record("MemChorus")
-    assert r["location"]["canonical_root"] == "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
     assert r["location"]["source"] == "ssot:ORGANIZATION.md#memchorus"
     assert r["standard"]["skill"] == "development-process"
     assert r["standard"]["doc_path"] == "stable/development-process/SKILL.md"
@@ -233,7 +233,7 @@ def test_location_change_does_not_affect_standard(orch_setup):
     orch, _ = orch_setup
     base = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
@@ -275,12 +275,12 @@ def test_scratch_distractor_not_promoted(orch_setup):
     # A memory note that mentions both the scratch and canonical paths
     orch.save("memchorus-location-note",
               "Working copy reminder: use ~/mempalace for this project, "
-              "not the canonical Code/MemChorus at /home/bubo/.hermes/workspace/Code/MemChorus/")
+              "not the canonical Code/MemChorus at /workspace/Code/MemChorus/")
 
     # Also store the formal record
     rec = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
@@ -297,7 +297,7 @@ def test_scratch_distractor_not_promoted(orch_setup):
     r = orch.resolve_project_record("MemChorus")
 
     # canonical_root is the SSoT root, NOT ~/mempalace/
-    assert r["location"]["canonical_root"] == "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
     assert r["location"]["canonical_root"] != "~/mempalace/"
 
     # ~/mempalace/ appears in reconciled[]
@@ -312,7 +312,7 @@ def test_reconciled_entry_has_scratch_relation(orch_setup):
     orch, _ = orch_setup
     orch.save("project:MemChorus", {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
@@ -352,7 +352,7 @@ def test_render_block_spec_54(orch_setup):
     """
     from memchorus.hooks import _render_project_record_block
 
-    root = "/home/bubo/.hermes/workspace/Code/MemChorus/"
+    root = "/workspace/Code/MemChorus/"
     record = {
         "location": {
             "canonical_root": root,
@@ -399,7 +399,7 @@ def test_render_block_spec_51_scratch(orch_setup):
 
     record = {
         "location": {
-            "canonical_root": "/home/bubo/.hermes/workspace/Code/MemChorus/",
+            "canonical_root": "/workspace/Code/MemChorus/",
             "source": "ssot:ORGANIZATION.md#memchorus",
             "verified_at": "2026-09-05T12:00:00Z",
         },
