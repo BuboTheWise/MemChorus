@@ -38,6 +38,71 @@ def pytest_collection_modifyitems(config, items):
     items[:] = select
 
 
+# ── #183: no all-skipped test module gate ────────────────────────────
+# A module whose whole test set is skipped (or errors at setup) reports "N
+# skipped" green-style in the summary but contributes zero coverage.  That is
+# an unexplained pass — a coverage defect.  The evaluator is in all_skip_gate
+# (pure function, unit-tested by test_all_skipped_module_gate.py).  The hooks
+# below wire it into the live session's report stream.
+#
+# Empirically confirmed (see all_skip_gate.py docstrings + the /tmp/xdist_probe*
+# experiments): pytest_runtest_logreport fires in the main/controller process
+# even under -n N (xdist), so the module-level global below accumulates the full
+# suite's reports and can be read inside pytest_terminal_summary.
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+import all_skip_gate  # noqa: E402  (sibling module in tests/)
+
+# module-nodeid -> list of (when, outcome) reports seen for tests in it
+_all_skip_reports: dict = {}
+
+
+def pytest_runtest_logreport(report):
+    key = report.nodeid.split("::", 1)[0]
+    _all_skip_reports.setdefault(key, []).append((report.when, report.outcome))
+
+
+def _render_gate_message(terminalreporter):
+    _ok, offenders = all_skip_gate.evaluate(_all_skip_reports)
+    if not offenders:
+        return
+    terminalreporter.write("")
+    terminalreporter.write("═" * 64)
+    terminalreporter.write("  All-skipped test module gate  (BuboTheWise/MemChorus#183)")
+    terminalreporter.write("═" * 64)
+    terminalreporter.write("")
+    for module, evidence in offenders:
+        terminalreporter.write(f"  {module}")
+        terminalreporter.write(f"      {evidence}")
+    terminalreporter.write("")
+    terminalreporter.write(
+        "  FAIL: every test in the module(s) above was skipped or errored "
+        "before a body ran."
+    )
+    terminalreporter.write(
+        "  A green module with zero executed tests is an unexplained pass — "
+        "not a pass.  Re-point the tests at the live code path, delete the "
+        "dead module, or keep one genuinely unit-level test running so the "
+        "module is no longer 100% skipped in a bare CI environment."
+    )
+    terminalreporter.write("")
+
+
+def pytest_sessionfinish(session, exitstatus):
+    ok, offenders = all_skip_gate.evaluate(_all_skip_reports)
+    # A green module with zero executed tests is a coverage defect. Escalate
+    # the exit code ONLY when the suite is otherwise clean — a hard test failure
+    # (exit 1) is a stronger signal than a coverage gap (usage error) and should
+    # not be masked by it.
+    if offenders and session.exitstatus == 0:
+        session.exitstatus = pytest.ExitCode.USAGE_ERROR
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus):
+    _render_gate_message(terminalreporter)
+
+
 # Counter for batched gc - only collect every N tests to reduce overhead
 _gc_counter = [0]
 _GC_BATCH_INTERVAL = 50  # Only do expensive gc.collect every 50 tests
