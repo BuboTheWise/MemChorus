@@ -202,10 +202,16 @@ class TestCheckTestSuite:
 # ---------------------------------------------------------------------------
 
 class TestRunChecks:
-    def test_returns_8_results(self):
+    def test_returns_9_results(self):
         from memchorus.install_doctor import run_checks
+        # IMPL #163.4 added the project-record resolution check (9th check).
         results = run_checks()
-        assert len(results) == 8
+        assert len(results) == 9
+
+    def test_project_record_check_present(self):
+        from memchorus.install_doctor import run_checks
+        names = [r.name for r in run_checks()]
+        assert "project_record_resolution" in names
 
     def test_all_have_name_and_status(self):
         from memchorus.install_doctor import run_checks
