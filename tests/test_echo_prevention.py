@@ -83,9 +83,13 @@ class TestIsQueryEcho(unittest.TestCase):
 
         The guard set may also contain legacy templates (superset), so we check
         containment rather than exact equality.
+
+        The PROJECT_START value is the ``None`` sentinel (keyed record lookup,
+        not a query template) and is excluded here — it is exercised by the
+        dedicated routing tests in test_auto_recall_engine.
         """
         from memchorus.auto_recall_engine import _QUERY_MAP  # type: ignore[import-not-found]
-        query_values = set(_QUERY_MAP.values())
+        query_values = {v for v in _QUERY_MAP.values() if v is not None}
         missing = query_values - _KNOWN_QUERY_TEMPLATES
         self.assertEqual(
             missing, set(),
@@ -150,13 +154,20 @@ class TestCaptureOutcomeEchoPrevention(unittest.TestCase):
         self.assertEqual(len(orch.saved_calls), 0)
 
     def test_all_query_templates_blocked(self) -> None:
-        """All query templates from _QUERY_MAP are rejected (currently 5)."""
+        """All *query templates* from _QUERY_MAP are rejected (5 templates).
+
+        The PROJECT_START ``None`` sentinel is not a query template (it is the
+        keyed-record-lookup marker routed via a dedicated branch in
+        on_decision_point), so it is excluded from this loop.
+        """
         from memchorus.auto_recall_engine import _QUERY_MAP  # type: ignore[import-not-found]
 
         orch = _MockOrchestrator()
         engine = AutoStorageEngine(orchestrator=orch)
 
         for _dp, query_template in _QUERY_MAP.items():
+            if query_template is None:
+                continue  # PROJECT_START sentinel — keyed lookup, not a template
             result = engine.capture_outcome(query_template)
             self.assertFalse(
                 result["saved"],
@@ -164,6 +175,20 @@ class TestCaptureOutcomeEchoPrevention(unittest.TestCase):
             )
             self.assertEqual(result["reason"], "query_echo_artifact")
 
+        self.assertEqual(len(orch.saved_calls), 0)
+
+    def test_none_sentinel_degrades_gracefully(self) -> None:
+        """The PROJECT_START ``None`` sentinel degrades gracefully in the storage path.
+
+        ``capture_outcome(None)`` must not raise and must not save — it has no
+        query template to match, so it falls through to the length/content gates
+        (graceful degradation, spec §4.5).
+        """
+        orch = _MockOrchestrator()
+        engine = AutoStorageEngine(orchestrator=orch)
+
+        result = engine.capture_outcome(None)
+        self.assertFalse(result["saved"])
         self.assertEqual(len(orch.saved_calls), 0)
 
     def test_legitimate_content_still_saved(self) -> None:

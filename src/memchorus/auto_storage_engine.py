@@ -308,6 +308,13 @@ def _is_query_echo(text: str) -> bool:
     Prevents query echo artifacts -- where the search query string itself gets
     stored as memory content via the post-recall storage cycle.
     """
+    if text is None or not str(text).strip():
+        # Not a query echo — no template to match against.  Callers treat
+        # this as "not an echo" and fall through to their own length /
+        # placeholder / internal-artifact gates.  (Implements the
+        # §4.2 sentinel for PROJECT_START: the ``None`` in _QUERY_MAP means
+        # "keyed lookup", not a template.)
+        return False
     stripped = text.strip()
     if stripped in _KNOWN_QUERY_TEMPLATES:
         return True
@@ -547,14 +554,23 @@ class AutoStorageEngine:
         self._buffer = buffer
 
     def capture_outcome(
-        self, text: str, outcome_type: str = "automatic"
+        self, text: Optional[str], outcome_type: str = "automatic"
     ) -> Dict[str, Any]:
         """Capture a significant outcome from post-action text.
 
         Returns a dict with keys: saved, key, significance, outcome_type,
         reason (optional), importance_score.
 
-        Filtering pipeline (in order):
+        ``text`` may be ``None`` — in that case this method degrades gracefully
+        (no template to echo-check, no placeholder to match, no placeholder to
+        save) and returns ``saved=False``.  This implements the §4.5 graceful
+        degradation contract used by the IMPL #163.2 PROJECT_START sentinel,
+        which is routed via a *deterministic keyed lookup* before ``text`` is
+        ever consulted here; the sentinel never actually reaches this path
+        through the recall flow, but callers (e.g. tests, hooks) may pass
+        ``None`` to exercise the graceful-degradation contract directly.
+
+        Filtering pipeline (in order, when text is non-None and non-empty):
          1. Query echo prevention (existing)
          2. Min content length gate (Bug 3 AC1)
          3. Noise pattern rejection (Bug 3 AC2)
@@ -564,6 +580,23 @@ class AutoStorageEngine:
          7. Deduplication (existing)
          8. Save via orchestrator with provenance marker (Bug 3 AC4)
         """
+        # --- Step 0: graceful degradation — None sentinel (spec §4.5) ----
+        # PROJECT_START routes through a *deterministic keyed lookup*
+        # (resolve_project_record) before any text is consulted; the
+        # ``None`` in _QUERY_MAP is never meant to reach this path.
+        # If a caller passes ``None`` directly (tests, hooks), degrade:
+        # not an echo, not a placeholder — simply nothing to save.
+        if text is None:
+            logger.debug("AutoStorageEngine: capture_outcome(None) — degrading cleanly.")
+            return {
+                "saved": False,
+                "key": "",
+                "significance": "",
+                "reason": "no_content",
+                "outcome_type": outcome_type,
+                "importance_score": 0.0,
+            }
+
         # --- Step 1: filter query echo artifacts ---
         if _is_query_echo(text):
             logger.debug("AutoStorageEngine: skipping query echo artifact")
