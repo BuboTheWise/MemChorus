@@ -266,6 +266,63 @@ def test_location_change_does_not_affect_standard(orch_setup):
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# §5.2  Assertion 6 — Case-normalized keyed lookup
+# ────────────────────────────────────────────────────────────────────────────
+
+def test_resolve_project_record_across_case_boundaries(orch_setup):
+    """
+    §5.2 assertion 6 — resolving a record saved under one case of the project
+    name with a lookup in a *different* case returns the STORED record.
+
+    This is the direct suite-level proof that ``resolve_project_record()``
+    normalizes ``project:<name>`` keys to a stable slug so that a save under
+    ``project:MEMCHORUS`` and a lookup via ``memchorus`` resolve to the same
+    record (spec §3.1 / §5.2 assertion 6).  Previously this was only proven
+    indirectly: by the sibling retrieve()-level tests in
+    test_project_record_schema.py and by a manual live probe.
+
+    The discriminator is the ``source`` prefix: with no SSoT row present in a
+    clean temp store, a *miss* on the stored record would fall through to the
+    §2.4 rule-derived fallback and carry ``source.startswith("derived:")``.
+    Asserting ``source == "ssot:ORGANIZATION.md#memchorus"`` therefore proves
+    the exact-key (non-derived) stored record was returned — not the fallback.
+    """
+    orch, _ = orch_setup
+    rec = {
+        "location": {
+            "canonical_root": "/workspace/Code/MemChorus/",
+            "source": "ssot:ORGANIZATION.md#memchorus",
+            "verified_at": "2026-09-05T12:00:00Z",
+        },
+        "standard": {
+            "skill": "development-process",
+            "doc_path": "stable/development-process/SKILL.md",
+            "gist": "decompose-first, IMPL → REVIEW → RELEASE",
+            "topics": ["development", "review"],
+        },
+    }
+    # Save under an ALL-CAPS project name.
+    orch.save("project:MEMCHORUS", rec)
+    from memchorus.orchestrator import clear_project_record_cache
+    clear_project_record_cache()
+
+    # Resolve with a lowercase query — different case than the store key.
+    r = orch.resolve_project_record("memchorus")
+
+    # Exact-match canonical_root: a rule-derived fallback would be
+    # <workspace>/Code/memchorus/ (slug lowercased), never the stored form.
+    assert r["location"]["canonical_root"] == "/workspace/Code/MemChorus/"
+    # Discriminator: the STORED record's ssot: source, not the derived:
+    # fallback source that a lookup miss would yield.
+    assert r["location"]["source"] == "ssot:ORGANIZATION.md#memchorus"
+    assert r["location"]["source"].startswith("ssot:")
+    assert r["location"]["verified_at"] == "2026-09-05T12:00:00Z"
+    # The standard channel resolves from the stored record, not the default.
+    assert r["standard"]["skill"] == "development-process"
+    assert r["standard"]["doc_path"] == "stable/development-process/SKILL.md"
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # §5.1  Scratch distractor
 # ────────────────────────────────────────────────────────────────────────────
 
