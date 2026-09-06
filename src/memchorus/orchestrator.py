@@ -121,6 +121,392 @@ _PROFILE_SOURCE_HINT: Dict[MemoryProfile, List[str]] = {
 _MAX_KV_STRING_BYTES = 4_500        # key-value payloads above this are "large"
 _JSON_LARGE_LIMIT  = 1_000          # dict/list size (items/keys) > this → large
 
+# ---------------------------------------------------------------------------
+# IMPL #163.2 — project-record resolution (keyed channel, spec §4.4 / §6)
+# ---------------------------------------------------------------------------
+# Spec §6 — SSoT read protocol.  ORGANIZATION.md is the *origin* of truth; the
+# memory layer is a *cache*, never the source.  The parsed table is read ONCE
+# per session and cached; it is re-read only on cache-clear / session restart.
+# This cache is intentionally distinct from orientation's LRU (the orientation
+# cache memoises *ranked search results*); here we memoise *SSoT table rows*
+# so ``resolve_project_record`` never re-reads the file inside a session.
+_SSoT_ORGANIZATION_FILENAME = "ORGANIZATION.md"
+_SSoT_PROJECT_COLUMN        = "project"
+_SSoT_ROOT_COLUMN           = "canonical_root"
+
+
+def _iso8601_now_utc() -> str:
+    """Current instant as an ISO-8601 UTC string with a trailing ``Z``.
+
+    Validated against ``project_record._ISO8601_UTC_RE`` (the §2.4
+    ``verified_at`` contract) by the §2.3 validator at save time.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _strip_project_prefix(name: str) -> str:
+    """Accept a bare name (``MemChorus``) or a namespaced key (``project:MemChorus``).
+
+    Returns the bare segment so the caller can drive either a *record key*
+    (``project:<slug>``) or an *SSoT row* (``MemChorus``) from the same input.
+    """
+    raw = str(name).strip()
+    if raw.lower().startswith("project:"):
+        raw = raw[len("project:"):]
+    return raw.strip()
+
+
+def _slugify_local(name: str) -> str:
+    """Case-insensitive slug fallback when no exact on-disk name is available."""
+    import re
+    lowered = str(name).strip().lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    return slug or "project"
+
+
+def _valid_verified_at(value: Any) -> bool:
+    """§2.3: ``verified_at`` must be a valid ISO-8601 UTC string or ``null``/empty."""
+    if value is None or value == "":
+        return True
+    if not isinstance(value, str):
+        return False
+    s = value.strip()
+    if not s:
+        return True
+    from memchorus.project_record import _ISO8601_UTC_RE
+    return bool(_ISO8601_UTC_RE.match(s))
+
+
+def _ssot_read_cached() -> Any:
+    """Read the SSoT table ONCE per session; ``None`` means 'unavailable'.
+
+    Returns the cached list of parsed rows, or ``None`` when the SSoT could not
+    be read.  The cache is populated on first read and NOT re-populated until
+    :func:`clear_project_record_cache` is called (spec §6.4 — re-read SSoT on
+    cache-clear / session restart, never re-derive per turn).
+    """
+    global _PROJECT_RECORD_SSoT_CACHE
+    _PROJECT_RECORD_SSoT_CACHE_LOCK.acquire()
+    try:
+        if _PROJECT_RECORD_SSoT_CACHE is not None:
+            return _PROJECT_RECORD_SSoT_CACHE
+    finally:
+        _PROJECT_RECORD_SSoT_CACHE_LOCK.release()
+    rows = _read_ssot_table()
+    _PROJECT_RECORD_SSoT_CACHE_LOCK.acquire()
+    try:
+        _PROJECT_RECORD_SSoT_CACHE = rows
+    finally:
+        _PROJECT_RECORD_SSoT_CACHE_LOCK.release()
+    return rows
+
+
+def _read_ssot_table() -> Any:
+    """Load ``<workspace>/Bubo_Wisdom/Projects/ORGANIZATION.md`` and return
+    a list of ``{project, canonical_root, verified_at}`` dicts.
+
+    Row shape (spec §6): a Markdown table with a header
+    ``| project | canonical_root | … | verified_at |``.  Only rows that
+    carry a non-empty ``canonical_root`` are considered present.  On any failure
+    (file missing, unparseable) returns ``None`` so the caller degrades to the
+    §2.4 rule-derived location with ``verified_at=null``.
+    """
+    import os
+
+    # Resolve the SSoT path relative to the active profile's workspace so the
+    # resolver works across profile boundaries and test fixtures.
+    candidates = []
+    workspace = os.environ.get("HERMES_WORKSPACE")
+    if workspace:
+        candidates.append(os.path.normpath(
+            os.path.join(workspace, "Bubo_Wisdom", "Projects", _SSoT_ORGANIZATION_FILENAME)
+        ))
+    home = os.path.expanduser("~")
+    if home:
+        candidates.append(os.path.normpath(
+            os.path.join(home, ".hermes", "workspace", "Bubo_Wisdom", "Projects",
+                         _SSoT_ORGANIZATION_FILENAME)
+        ))
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        parsed = _parse_ssot_table(text)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_ssot_table(text: str) -> Any:
+    """Parse a Markdown table into ``{project, canonical_root, verified_at}`` rows.
+
+    Returns ``None`` if no valid table header is found (so callers fall back to
+    the §2.4 rule).  Column order is inferred from the header — ``project`` and
+    ``canonical_root`` are required; ``verified_at`` is optional.
+    """
+    if not text:
+        return None
+    lines = text.splitlines()
+    header_idx = -1
+    header_cols: List[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip().lstrip("|").rstrip()
+        if "|" not in stripped:
+            continue
+        cells = [c.strip() for c in stripped.split("|")]
+        cells = [c.lower() for c in cells]
+        if _SSoT_PROJECT_COLUMN in cells and _SSoT_ROOT_COLUMN in cells:
+            header_idx = i
+            header_cols = cells
+            break
+    if header_idx == -1:
+        return None
+    proj_col = header_cols.index(_SSoT_PROJECT_COLUMN)
+    root_col = header_cols.index(_SSoT_ROOT_COLUMN)
+    ver_col = header_cols.index("verified_at") if "verified_at" in header_cols else None
+
+    out: List[Dict[str, Any]] = []
+    for line in lines[header_idx + 1:]:
+        stripped = line.strip().lstrip("|").rstrip()
+        if "|" not in stripped:
+            continue
+        cells = [c.strip() for c in stripped.split("|")]
+        if len(cells) <= max(proj_col, root_col):
+            continue
+        # Skip the delimiter row (----) — cells are all dashes.
+        if all(set(c) <= set("-: ") for c in cells if c):
+            continue
+        proj = cells[proj_col]
+        root = cells[root_col]
+        if not proj or not root:
+            continue
+        verified = cells[ver_col] if (ver_col is not None and ver_col < len(cells)) else None
+        if verified == "":
+            verified = None
+        out.append({"project": proj, "canonical_root": root, "verified_at": verified})
+    return out if out else None
+
+
+def _valid_ssot_root(root: Any) -> bool:
+    """A §2.1 ``canonical_root`` must be non-empty and a plausible root path."""
+    if not isinstance(root, str):
+        return False
+    s = root.strip()
+    if not s:
+        return False
+    # Accept absolute, `~`-expanded, or `<workspace>/…` placeholder roots.
+    # Reject obviously relative fragments (no `/` and no `~` and no `<`).
+    if ("/" not in s and not s.startswith("~") and "<" not in s):
+        return False
+    return True
+
+
+def _record_channel(record: Any, field: str) -> Any:
+    """Return the raw ``record[field]`` value if *record* is a dict, else None."""
+    if isinstance(record, dict):
+        return record.get(field)
+    return None
+
+
+def _valid_location_channel(loc: Any, project_name: str) -> bool:
+    """§2.3 location contract: canonical_root + source shape correct."""
+    if not isinstance(loc, dict):
+        return False
+    root = loc.get("canonical_root")
+    src = loc.get("source")
+    if not _valid_ssot_root(root):
+        return False
+    if not isinstance(src, str) or not src.strip():
+        return False
+    if not (src.startswith("ssot:") or src.startswith("derived:")):
+        return False
+    if "verified_at" in loc and loc["verified_at"] is not None:
+        if not _valid_verified_at(loc["verified_at"]):
+            return False
+    return True
+
+
+def _valid_standard_channel(std: Any) -> bool:
+    """§2.3 standard contract: skill slug + relative doc_path present."""
+    if not isinstance(std, dict):
+        return False
+    skill = std.get("skill")
+    doc = std.get("doc_path")
+    if not isinstance(skill, str) or not skill.strip():
+        return False
+    if not isinstance(doc, str) or not doc.strip():
+        return False
+    s = doc.strip()
+    if s.startswith("/") or s.startswith("~") or s.startswith("<profile>"):
+        return False
+    return True
+
+
+def _extract_scratch_paths(text: Any) -> List[str]:
+    """Extract path-like tokens from a free-form note (spec §3.3).
+
+    A *scratch path* is an absolute / `~`-expanded / bracketed placeholder
+    directory that appears in a memory or note and is a candidate duplicate /
+    fork of the canonical root.  We return the unique path tokens in order of
+    first appearance in *text*.  The caller's job is to **exclude** the canonical
+    root itself (exact + `~`-expanded + trailing-slash-normalised) before
+    emitting the entry in ``reconciled[]``.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    import re
+    # Matches: ~-expanded, absolute (/… with dir), <placeholder>/… fragments.
+    # We use a lenient pattern — a single token that looks like a directory.
+    tokens = re.findall(
+        r"~?/[\w.\-]+(?:/[\w.\-]+)*"                            # ~/…  or  /…  (root-anchored)
+        r"|<[A-Za-z0-9_.\-]+>/[\w.\-]+(?:/[\w.\-]+)*"          # <placeholder>/…
+        r"|[\w.\-]+(?:/[\w.\-]+)+"                                # bare a/b/…  (>=2 segments)
+    , text)
+    out: "list[str]" = []
+    seen = set()
+    for t in tokens:
+        t = t.strip().strip("'\"`")
+        # Must end in "/" OR have at least 2 segments to count as a directory.
+        if not t:
+            continue
+        if "/" not in t:
+            continue
+        segs = [s for s in t.strip("/").split("/") if s]
+        if len(segs) < 2:
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(t if t.endswith("/") else t + "/")
+    return out
+
+
+def _search_source_text(result: Any) -> str:
+    """Flatten a search-result dict (or raw value) into a comparable text blob.
+
+    The scratch-distractor in the spec (§5.1) is stored as a plain string value;
+    other sources return structured dicts with the readable content under
+    ``content``/``text``/``value``.  We gather every string field so
+    ``_extract_scratch_paths`` can operate on a single string.
+    """
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        parts: List[str] = []
+        for fk in ("content", "text", "value", "body", "snippet", "note"):
+            v = result.get(fk)
+            if isinstance(v, str) and v.strip():
+                parts.append(v)
+        return " \n ".join(parts) if parts else ""
+    try:
+        return str(result)
+    except Exception:
+        return ""
+
+
+# Spec §2.4 — the deterministic versioned default standard pointer. This is the
+# channel-B floor: even a location-only record must resolve ``standard`` to this
+# (and vice versa), so the two channels are independent (spec §5.2 assertion 5).
+_DEFAULT_STANDARD_POINTER: Dict[str, Any] = {
+    "skill": "development-process",
+    "doc_path": "stable/development-process/SKILL.md",
+    "gist": "decompose-first, IMPL → REVIEW → RELEASE",
+    "topics": ["branching", "merge", "review"],
+}
+
+
+def _ssot_row_for(bare: str, slug: str) -> Optional[Dict[str, Any]]:
+    """Return the SSoT table row for *bare*/*slug*, or ``None``.
+
+    Matching is case-insensitive over the SSoT ``project`` column and falls back
+    to the slug.  ``None`` means "row absent" → the caller derives by rule
+    (spec §6.3 / §2.4).
+    """
+    import re
+    rows = _ssot_read_cached()
+    if not rows:
+        return None
+    targets = {bare.strip().lower(), slug.strip().lower()}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pname = str(row.get("project", "")).strip().lower()
+        if not pname:
+            continue
+        if pname in targets:
+            return row
+    # Secondary pass: accept a slug-ified comparison (e.g. "Mem Chorus" vs "mem-chorus").
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pname = str(row.get("project", "")).strip().lower()
+        if not pname:
+            continue
+        norm = re.sub(r"[^a-z0-9]+", "-", pname).strip("-") if re else pname
+        if norm == slug.strip().lower():
+            return row
+    return None
+
+
+def _normalize_root(path: Any) -> str:
+    """Best-effort canonical form of a root path, for equality comparison.
+
+    Expands ``~``, normalises separators to ``/``, strips trailing slashes, and
+    lower-cases.  ``""`` for unusable input.  Used to exclude the canonical root
+    (and its internal sub-paths) from ``reconciled[]``.
+    """
+    import os
+    if not isinstance(path, str):
+        return ""
+    s = path.strip().strip("'\"`")
+    if not s:
+        return ""
+    try:
+        s = os.path.expanduser(s)
+        s = os.path.normpath(s).replace(os.sep, "/").rstrip("/")
+    except Exception:
+        pass
+    return s.lower()
+
+
+def _is_same_root(candidate: Any, canonical_root: Any) -> bool:
+    """True if *candidate* is the same project root as *canonical_root* under
+    normalisation, or an internal subpath of it (a file inside the canonical
+    root is not a "scratch duplicate")."""
+    a = _normalize_root(candidate)
+    b = _normalize_root(canonical_root)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # candidate is inside b (internal) → same project, not a fork.
+    if a.startswith(b + "/"):
+        return True
+    return False
+
+
+# Module-level cache state (populated lazily, cleared by clear_project_record_cache).
+_PROJECT_RECORD_SSoT_CACHE: Any = None
+import threading as _threading_mod
+_PROJECT_RECORD_SSoT_CACHE_LOCK = _threading_mod.Lock()
+
+
+def clear_project_record_cache() -> None:
+    """Reset the IMPL #163.2 SSoT table cache (spec §6.4).
+
+    The SSoT table is read **once** per session and cached so
+    ``resolve_project_record`` never re-reads the file inside a turn/loop.
+    This clears that cache so a subsequent read re-reads the file fresh —
+    used at session restart / cache-clear, and by tests to reset state.
+    Never raises.
+    """
+    global _PROJECT_RECORD_SSoT_CACHE
+    with _PROJECT_RECORD_SSoT_CACHE_LOCK:
+        _PROJECT_RECORD_SSoT_CACHE = None
+
 
 class MemoryOrchestrator:
     """
@@ -838,6 +1224,23 @@ class MemoryOrchestrator:
         """
         # --- explicit source override takes precedence ------------------
         self._save_call_count += 1
+        # IMPL #163 — normalize ``project:<name>`` record keys to their stable
+        # form so that a store under ``project:MemChorus`` and a retrieve via
+        # ``project:memchorus`` resolve to the same record (spec §3.1).  This
+        # must happen before ANY downstream use: the retrieve cache, the merge
+        # engine pre-save check, and every source write all key off *key*, so a
+        # case-mismatch without it would be a silent lookup miss.  Non-``project:``
+        # keys (and plain-string saves) are untouched — byte-identical to before.
+        try:
+            from memchorus.project_record import (
+                is_project_key,
+                normalize_project_key,
+            )
+
+            if is_project_key(key):
+                key = normalize_project_key(name=None, key=key)
+        except Exception as exc:  # pragma: no cover - never fail a save
+            logger.debug("project key normalization skipped for key=%r: %s", key, exc)
 
         # GH-122: validate and inject explicit category before anything else
         effective_category = None
@@ -855,6 +1258,32 @@ class MemoryOrchestrator:
         # — it rides on the payload dict, so whichever backend persists it stores
         # the locator alongside the body.  No-op when nothing extractable.
         stored_value = self._attach_payload_locator(stored_value, key, source_name)
+
+        # IMPL #163 — project record channels.  ``location`` and ``standard`` ride
+        # on the payload at the TOP LEVEL as two independent optional channels and
+        # stay OUT of the free-text/body path (spec §3.2) — exactly as the locator
+        # attaches but as a separate channel, never serialized into the body.
+        #
+        # Two steps, in order:
+        #   1. FAIL-LOUD validation — a malformed structured channel is rejected
+        #      here (``ProjectRecordError``) rather than persisted and later
+        #      masquerading as a canonical root (spec §2.3).  This only fires when
+        #      the payload actually carries a ``location``/``standard`` object, so
+        #      ordinary saves are unaffected.
+        #   2. attach — a no-op pass-through that keeps the channels on the
+        #      top-level dict for the source to persist; it never bloats the body
+        #      and never raises.
+        if isinstance(stored_value, dict) and (
+            "location" in stored_value or "standard" in stored_value
+        ):
+            from memchorus.project_record import (
+                attach_project_channels,
+                validate_project_record,
+            )
+
+            validate_project_record(stored_value)  # may raise ProjectRecordError
+            stored_value = attach_project_channels(stored_value, key)
+
         self._validate_categories_in_value(stored_value)  # reject bad categories early
 
         # Auto-infer profile from the enriched payload (category info helps inference)
@@ -1121,6 +1550,17 @@ class MemoryOrchestrator:
         Returns:
             Any: The memory content if found, None otherwise
         """
+        # IMPL #163 — normalize ``project:<name>`` keys on the retrieve side too.
+        # Without this, a store under ``project:MemChorus`` (normalized to
+        # ``project:memchorus`` in save) would be missed by
+        # ``retrieve("project:MemChorus")`` — a silent lookup miss (spec §3.1).
+        if isinstance(key, str) and key.startswith("project:"):
+            try:
+                from memchorus.project_record import normalize_project_key
+                key = normalize_project_key(name=None, key=key)
+            except Exception:
+                pass  # never fail a retrieve — fall through with the raw key
+
         # --- GAP008: check LRU cache first ---------------------------
         if key in self._retrieve_cache:
             cached_value, cached_ts = self._retrieve_cache[key]
@@ -1583,6 +2023,235 @@ class MemoryOrchestrator:
             }
             for r in ranked
         ]
+
+    # ------------------------------------------------------------------
+    # IMPL #163.2 — keyed project-record resolution (spec §4.4 / §6 / §3.3)
+    # ------------------------------------------------------------------
+    def resolve_project_record(self, project_name: str) -> Dict[str, Any]:
+        """Resolve the structured project record for *project_name*.
+
+        This is a **keyed, deterministic** lookup — distinct from the ranked
+        ``search``/``retrieve`` path — so a scratch note can never out-rank the
+        canonical root (spec §3-4 crux).  It returns the §3.3 return contract:
+
+            {
+              "location":  { "canonical_root": …, "source": "ssot:…"|"derived:…",
+                             "verified_at": <ISO8601 str | None> },
+              "standard":  { "skill": …, "doc_path": …, "gist": …, "topics": […] },
+              "reconciled":[ { "role": "scratch", "path": …, "relation": … } ]
+            }
+
+        Both ``location`` and ``standard`` are **always** present and
+        **independent** of one another (spec §2.2, §5.2 assertion 5):
+
+        * ``location`` — first the exact-key record ``retrieve("project:<slug>")``;
+          on miss, the SSoT row (spec §6) if present; else the §2.4 rule-derived
+          default (``<workspace>/Code/<stem>/``), each carrying ``verified_at``
+          from the SSoT row or ``None`` (derived-by-rule, unverified).
+        * ``standard`` — the record's own ``standard`` channel if present and
+          valid; else the §2.4 versioned default pointer.
+        * ``reconciled[]`` — **only** a `reconcile_project_locations`-style scan
+          of sibling/backup/scratch paths that are NOT the canonical root
+          (delegated to :meth:`reconcile_project_locations`).  A canonical-root
+          sub-path or the canonical root itself is excluded.
+
+        **Lazy import:** uses :meth:`_ssot_read_cached` (cached per session) and
+        the module-level helpers; no top-level ``os``/``re`` dependency.
+
+        **Graceful degradation (spec §4.5):** any SSoT/record error degrades the
+        affected channel to its derived/default floor — the other channels still
+        populate.  No exception escapes ``resolve_project_record``.
+        """
+        if not project_name or not str(project_name).strip():
+            raise ValueError("resolve_project_record: project_name is required")
+
+        # --- 1. Normalize the key ------------------------------------------
+        try:
+            from memchorus.project_record import normalize_project_key, is_project_key
+            slug = _strip_project_prefix(project_name)
+            key = normalize_project_key(name=slug) if slug else None
+        except Exception:
+            key = None
+            slug = ""
+        bare = _strip_project_prefix(project_name)
+        slug_val = _slugify_local(slug or bare) if (slug or bare) else ""
+
+        # --- 2. Exact-key record lookup first ------------------------------
+        loc: Optional[Dict[str, Any]] = None
+        std: Optional[Dict[str, Any]] = None
+        rec: Optional[Any] = None
+        if key:
+            try:
+                rec = self.retrieve(key)
+            except Exception:
+                rec = None
+            if isinstance(rec, dict):
+                raw_loc = _record_channel(rec, "location")
+                raw_std = _record_channel(rec, "standard")
+                if _valid_location_channel(raw_loc, bare):
+                    loc = dict(raw_loc)  # shallow-copy to protect the stored record
+                if _valid_standard_channel(raw_std):
+                    std = dict(raw_std)
+
+        # --- 3. SSoT-derived location (spec §6) ----------------------------
+        if not _valid_location_channel(loc, bare):
+            row = _ssot_row_for(bare or slug_val, slug_val)
+            if row is not None:
+                root = row.get("canonical_root")
+                if _valid_ssot_root(root):
+                    ver = row.get("verified_at")
+                    if not _valid_verified_at(ver):
+                        ver = None
+                    loc = {
+                        "canonical_root": root,
+                        "source": "ssot:ORGANIZATION.md#%s" % (bare or slug_val),
+                        "verified_at": ver,
+                    }
+
+        # --- 4. Rule-derived fallback (spec §2.4) --------------------------
+        if not _valid_location_channel(loc, bare):
+            stem = bare or slug_val or "project"
+            try:
+                import os
+                ws = os.environ.get("HERMES_WORKSPACE", "").strip()
+                if ws:
+                    fallback_root = os.path.normpath(
+                        os.path.join(ws, "Code", stem)
+                    ).replace(os.sep, "/") + "/"
+                else:
+                    fallback_root = "<workspace>/Code/%s/" % stem
+            except Exception:
+                fallback_root = "<workspace>/Code/%s/" % stem
+            loc = {
+                "canonical_root": fallback_root,
+                "source": "derived:%s->%s" % (bare or slug_val, fallback_root),
+                "verified_at": None,  # §2.4 — unverified until SSoT row exists
+            }
+
+        # --- 5. Default standard pointer (spec §2.4, independence) ---------
+        if not _valid_standard_channel(std):
+            std = dict(_DEFAULT_STANDARD_POINTER)  # deep enough (all scalars + list)
+            # deep-copy the list to avoid aliasing to the module-level constant
+            std["topics"] = list(_DEFAULT_STANDARD_POINTER.get("topics", []))
+
+        # --- 6. Reconcile scratch vs canonical (spec §3.3) -----------------
+        cr = str(loc["canonical_root"]) if loc else ""
+        reconciled = self.reconcile_project_locations(project_name, cr)
+
+        return {
+            "location": loc,
+            "standard": std,
+            "reconciled": reconciled,
+        }
+
+    def reconcile_project_locations(self, project_name: str,
+                                    canonical_root: str) -> List[Dict[str, Any]]:
+        """Return the ``reconciled[]`` scratch-vs-canonical report (spec §3.3).
+
+        This is the **only** place a non-canonical path may surface (spec §3.3).
+        The list is populated with **labeled** entries only:
+
+            [
+              { "role": "scratch",
+                "path": "~/mempalace",
+                "relation": "duplicate/fork, not the working copy" }
+            ]
+
+        **Never** does an entry here become ``location.canonical_root`` — the
+        canonical root is already resolved by :meth:`resolve_project_record`
+        before this is called.  Entries that *are* the canonical root (under
+        ``~``-expand / trailing-slash / case-normalisation), or that are an
+        internal sub-path of it, are **excluded**.
+
+        **Sources scanned** (best-effort, any failure degrades to fewer entries):
+
+        * The stored ``project:<slug>`` record's ``location``/``standard``
+          channels (if any) — to detect a recorded scratch alias.
+        * A bounded memory search over the project namespace — only to surface
+          the scratch *distractor* the ranked path would otherwise promote.
+
+        **Lazy import / graceful degradation:** this method never raises; a
+        missing SSoT or unavailable source yields an empty report.
+        """
+        report: List[Dict[str, Any]] = []
+
+        def _emit(p: Any) -> None:
+            if not isinstance(p, str):
+                return
+            p = p.strip().strip("'\"`")
+            if not p:
+                return
+            if _is_same_root(p, canonical_root):
+                return
+            # Normalize for output: ensure trailing "/" (directory semantics).
+            out_p = p if p.endswith("/") else p + "/"
+            for e in report:
+                if e.get("path") == out_p:
+                    return  # already emitted
+            report.append({
+                "role": "scratch",
+                "path": out_p,
+                "relation": "duplicate/fork, not the working copy",
+            })
+
+        # (a) Stored record channels, if any ---------------------------------------------------------------
+        try:
+            from memchorus.project_record import normalize_project_key
+            slug = _strip_project_prefix(project_name)
+            key = normalize_project_key(name=slug) if slug else None
+            if key:
+                rec = self.retrieve(key)
+                if isinstance(rec, dict):
+                    # (a1) any ``location`` channel path that is NOT the canonical root
+                    raw_loc = _record_channel(rec, "location")
+                    if isinstance(raw_loc, dict):
+                        for fk in ("path", "root", "location", "canonical_root"):
+                            if fk in raw_loc:
+                                _emit(raw_loc[fk])
+                    # (a2) any ``scratch``/``fork``/``backup`` channel if present
+                    for fk in ("scratch", "fork", "backup", "aliases"):
+                        if fk in rec:
+                            v = rec[fk]
+                            if isinstance(v, list):
+                                for item in v:
+                                    if isinstance(item, str):
+                                        _emit(item)
+                                    elif isinstance(item, dict):
+                                        for f2 in ("path", "root", "location", "canonical_root"):
+                                            if f2 in item:
+                                                _emit(item[f2])
+                            elif isinstance(v, str):
+                                _emit(v)
+        except Exception:
+            pass  # graceful — report may be shorter
+
+        # (b) Bounded memory search — the scratch distractor ------------------------------------
+        try:
+            stem = (_strip_project_prefix(project_name) or _slugify_local(project_name)).lower()
+            query = stem
+            results: List[Any] = []
+            # Try up to 2 sources (bounded — keep this fast and deterministic)
+            candidate_sources = list(self.memory_sources.keys())[:4]
+            for src_name in candidate_sources:
+                source = self.memory_sources.get(src_name)
+                if not (source and _check_source_available(source)
+                        and self.is_source_enabled(src_name)):
+                    continue
+                try:
+                    rs = source.search(query, limit=5)
+                except Exception:
+                    continue
+                if rs:
+                    results.extend(rs)
+                    break  # first source with hits dominates
+            for r in results:
+                text = _search_source_text(r)
+                for path_token in _extract_scratch_paths(text):
+                    _emit(path_token)
+        except Exception:
+            pass
+
+        return report
 
     def _sort_and_deduplicate_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
