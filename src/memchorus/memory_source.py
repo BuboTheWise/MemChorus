@@ -187,3 +187,35 @@ class MemorySource(ABC):
             or ``None`` if the source has no KG backing.
         """
         return None
+
+    # -- Project-record recall (--recall-location-standard channels) -------
+    # The base-class default is a no-op so concrete sources that do not back
+    # keyed ``project:<name>`` records need no code change.  Returns ``(None, None)``
+    # — the ``(location, standard)`` tuple where ``None`` means "this channel
+    # is absent on this source" — so #163.2's orchestrator fallback can treat a
+    # base no-op as *no data here, derive from the project key*, exactly as it
+    # does for ``recall_kg`` returning ``None``.
+
+    def resolve_project_record(
+        self,
+        key_or_name: str,
+        *,
+        channels: Optional[List[str]] = None,
+    ) -> Optional[tuple]:
+        """Resolve a ``project:<name>`` record's structured channels.
+
+        IMPL #163 (base-class hook; the schema/contract lives in
+        :mod:`memchorus.project_record`).  Returns the record's two independent
+        optional channels ``location`` and ``standard`` as a ``(location,
+        standard)`` tuple, or ``(None, None)`` for a base-class no-op.
+
+        Args:
+            key_or_name: a ``project:<name>`` key or a raw project name.
+            channels: optional subset of ``{"location", "standard"}`` to
+                resolve; ``None`` resolves both.
+
+        Returns:
+            (location | None, standard | None) — each entry validated and
+            independent; either or both may be ``None``.
+        """
+        return None

@@ -44,6 +44,10 @@ class DecisionPoint(Enum):
     TOOL_CALL_INTENT = auto()                 # Agent prepares to execute a tool/operation
     POST_ACTION_COMPLETE = auto()             # Agent finishes a task/tool execution
     CONTEXTUAL_SYNTHESIS_COMPLETION = auto()  # Agent processes docs and produces understanding
+    # IMPL #163.2 — session-start keyed project-record lookup (NOT a free-text
+    # semantic query). Signals "resolve the stored project:<name> record";
+    # it is never dispatched through the ranked search path. See spec §4.1.
+    PROJECT_START = auto()                    # Session start: resolve keyed project record
 
     @classmethod
     def priority(cls, dp: "DecisionPoint") -> int:
@@ -54,6 +58,11 @@ class DecisionPoint(Enum):
             cls.TOOL_CALL_INTENT:               2,
             cls.POST_ACTION_COMPLETE:           3,
             cls.CONTEXTUAL_SYNTHESIS_COMPLETION: 4,
+            # PROJECT_START is a *keyed* record lookup, not a semantic query.
+            # It sits last in the ranking so it never displaces a text query,
+            # and ``AutoRecallEngine`` routes it to ``resolve_project_record``
+            # instead of ``orchestrator.search`` (spec §4.1/§4.3).
+            cls.PROJECT_START:                  5,
         }
         return order[dp]
 
@@ -71,6 +80,12 @@ class DetectedPoint:
     confidence: float          # 0.0 – 1.0
     matched_keyword: str       # the keyword (lower-cased) that triggered detection
     text_span: Optional[str]   # the matching span from the input text, if available
+    # IMPL #163.2 (spec §4.1) — for PROJECT_START, the keyed project name to
+    # resolve (``resolve_project_record(name)``).  Optional + defaulted so every
+    # existing positional/keyword constructor site (``detect``) keeps working
+    # unchanged.  ``AutoRecallEngine`` reads this field for the keyed dispatch
+    # branch; falls back to ``matched_keyword`` if unset.
+    project_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
