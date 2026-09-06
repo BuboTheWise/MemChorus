@@ -7,6 +7,31 @@ on:
     branches: [master]
 
 jobs:
+  opsec-sweep:
+    name: OPSEC working-tree leak sweep
+    runs-on: ubuntu-latest
+    # This gate is pure stdlib + git. It must succeed on a *fresh checkout* (no
+    # editable install, no local venv) to catch the class of leak that only
+    # appears in untracked/new files — the exact gap the pre-commit-opsec-sweep
+    # skill targets and this card's finding (17× operator-path strings in
+    # tests/test_recall_locationstandard.py that ``git grep`` in tracked files
+    # missed). Running it as its own job means a leak fails the whole run
+    # regardless of whether test-linux passes.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run OPSEC sweep (fails the run on any hard operator-path / e-mail leak)
+        run: python scripts/opsec_sweep.py --verbose
+
+      - name: Allowlist dump (for auditing; informational)
+        run: python scripts/opsec_sweep.py --list-allow
+
   test-linux:
     runs-on: ubuntu-latest
     strategy:

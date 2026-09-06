@@ -373,6 +373,279 @@ _OTEL_LINE_PACKAGES = (
 _OTEL_PREFIXES = ("opentelemetry",)
 
 
+# ---------------------------------------------------------------------------
+# Recall Location Standard  (IMPL #163.4, spec §4.7 / §3.3)
+#
+# Two surfaces:
+#
+#   1. A default install-health check (``check_project_record_resolution``)
+#      that confirms the resolver pipeline is importable, the orchestrator
+#      exposes the API, and the base-class no-op degrade returns the
+#      documented (None, None) contract (spec §4.5) — the graceful path a
+#      fresh orchestrator (or a source that doesn't back the project
+#      namespace) relies on.
+#
+#   2. A focused ``--project <name>`` diagnostic that resolves a single
+#      project's keyed record and renders the §3.3 contract
+#      (``location`` / ``standard`` / ``reconciled``) in distinct labeled
+#      blocks — the same shape the live agent injects, so what an operator
+#      reads in a doctor is the same shape the agent would surface.
+# ---------------------------------------------------------------------------
+
+def _project_record_report(project_name: str) -> Dict[str, Any]:
+    """Resolve the keyed record for *project_name* (spec §4.7).
+
+    Returns a report dict with ``status`` (
+    ``ok`` | ``no_orchestrator`` | ``no_data`` | ``error``
+    ), the raw ``record`` when one resolved, and a human-readable
+    ``reason`` otherwise. Never raises for expected failure modes —
+    mirrors the ``_recall_query`` diagnostic style.
+    """
+    from memchorus import get_orchestrator
+
+    orchestrator = get_orchestrator()
+    if orchestrator is None:
+        return {
+            "project": project_name,
+            "status": "no_orchestrator",
+            "reason": (
+                "No MemoryOrchestrator is registered in this process. "
+                "A keyed project-record resolution requires a source that "
+                "backs the project:<name> namespace; a fresh interpreter "
+                "has not auto-bootstrapped one yet."
+            ),
+            "record": None,
+        }
+
+    resolver = getattr(orchestrator, "resolve_project_record", None)
+    if not callable(resolver):
+        return {
+            "project": project_name,
+            "status": "no_orchestrator",
+            "reason": (
+                "This orchestrator build lacks resolve_project_record — "
+                "upgrade memchorus to the #163.2 release or newer."
+            ),
+            "record": None,
+        }
+
+    try:
+        record = resolver(project_name)
+    except Exception as exc:  # noqa: BLE001 — doctor must report, not crash
+        return {
+            "project": project_name,
+            "status": "error",
+            "reason": (
+                f"resolve_project_record({project_name!r}) raised "
+                f"{type(exc).__name__}: {exc}"
+            ),
+            "record": None,
+        }
+
+    if record is None:
+        return {
+            "project": project_name,
+            "status": "no_data",
+            "reason": (
+                "resolve_project_record returned None — the base-class "
+                "no-op degrade (spec §4.5). This typically means no source "
+                "in this process backs the project:<name> namespace."
+            ),
+            "record": None,
+        }
+
+    return {
+        "project": project_name,
+        "status": "ok",
+        "reason": None,
+        "record": record,
+    }
+
+
+def _render_project_report_human(report: Dict[str, Any]) -> None:
+    """Human render for ``--project <name>`` (spec §4.7 / §3.3)."""
+    name = report.get("project", "?")
+    status = report.get("status", "?")
+
+    print(f"project record: {name}  [{status}]")
+    if report.get("reason"):
+        print()
+        print(report["reason"])
+
+    record = report.get("record")
+    if not isinstance(record, dict):
+        return
+
+    loc = record.get("location") or {}
+    std = record.get("standard") or {}
+    rec = record.get("reconciled") or []
+
+    if loc:
+        print()
+        print(
+            "location: {root} (source: {src}, verified_at: {v})".format(
+                root=loc.get("canonical_root", "?"),
+                src=loc.get("source", "?"),
+                v=loc.get("verified_at") or "<derived: unverified>",
+            )
+        )
+    if std:
+        topics = std.get("topics") or []
+        topics_str = ", ".join(topics) if topics else "<none>"
+        print(
+            "standard: skill={skill} doc={doc} gist={gist} topics=[{tr}]".format(
+                skill=std.get("skill", "?"),
+                doc=std.get("doc_path", "?"),
+                gist=std.get("gist", ""),
+                tr=topics_str,
+            )
+        )
+    if rec:
+        print(f"reconciled: {len(rec)} scratch path(s):")
+        for e in rec:
+            print(
+                "  role={role} path={path} ({relation})".format(
+                    role=e.get("role", "scratch"),
+                    path=e.get("path", "?"),
+                    relation=e.get("relation", ""),
+                )
+            )
+    else:
+        print("reconciled: <none>")
+
+
+def _render_project_report_json(report: Dict[str, Any]) -> None:
+    """JSON render — stable schema, ``sort_keys`` + ``default=str``."""
+    out: Dict[str, Any] = {
+        "project": report.get("project", ""),
+        "status": report.get("status", ""),
+    }
+    if report.get("reason"):
+        out["reason"] = report["reason"]
+    if isinstance(report.get("record"), dict):
+        out["record"] = report["record"]
+    print(json.dumps(out, indent=2, sort_keys=True, default=str))
+
+
+def _project_exit_code(report: Dict[str, Any]) -> int:
+    """``ok`` -> 0.  ``no_data`` / ``no_orchestrator`` / ``error`` -> 1.
+
+    A diagnostic that ran but found no data is not a crash; operators
+    still want a non-zero exit to script-gate on it (e.g. CI check that
+    a given project name resolves in *this* environment).
+    """
+    return 0 if report.get("status") == "ok" else 1
+
+
+def check_project_record_resolution() -> CheckResult:
+    """The keyed project-record pipeline is importable and degrades cleanly.
+
+    IMPL #163.4 (spec §4.7): the install-health surface confirms
+
+      * ``MemoryOrchestrator.resolve_project_record`` exists (spec §3.1);
+      * ``MemorySource.resolve_project_record`` base hook exists (the
+        no-op degrade path, spec §4.5);
+      * ``memchorus.project_record`` module is importable (schema —
+        #163.1); and
+      * the base-class no-op returns the documented
+        ``(None, None)`` contract rather than raising — the graceful
+        path a fresh orchestrator with no project backing relies on.
+    """
+    try:
+        from memchorus.orchestrator import MemoryOrchestrator as _Orch
+        from memchorus.memory_source import MemorySource as _Src
+        import memchorus.project_record  # noqa: F401
+    except ImportError as exc:
+        return CheckResult(
+            name="project_record_resolution",
+            status=FAIL,
+            message=f"Cannot import project-record pipeline: {exc}",
+            hint="pip install --upgrade memchorus",
+        )
+
+    orch_ok = hasattr(_Orch, "resolve_project_record")
+    src_ok = hasattr(_Src, "resolve_project_record")
+
+    if not orch_ok:
+        return CheckResult(
+            name="project_record_resolution",
+            status=FAIL,
+            message="MemoryOrchestrator lacks resolve_project_record (spec §3.1)",
+            hint="pip install --upgrade memchorus (need the #163.2 release)",
+        )
+
+    # Verify the base-class no-op degrades to an explicit opt-out signal,
+    # not an unraised exception (spec §4.5).  MemorySource is an ABC, so use
+    # the same minimal concrete stub the #163.1 test suite uses.
+    no_op_ok = True
+    no_op_err = ""
+    if src_ok:
+        class _StubSource(_Src):
+            SUPPORTED_METHODS = ['save', 'retrieve', 'search', 'get_source_info']
+
+            def __init__(self, name="doctor_stub", config=None):
+                self.name = name
+                self.config = config or {}
+
+            @property
+            def is_available(self):
+                return True
+
+            def save(self, key, value):
+                return True
+
+            def retrieve(self, key):
+                return None
+
+            def search(self, query, limit=10):
+                return []
+
+            def get_source_info(self):
+                return {"name": self.name}
+
+            def proactive_check(self, context=None):
+                return {}
+
+            def proactive_save(self, key, value, context=None):
+                return True
+
+            def delete(self, key):
+                return False
+
+        inst = _StubSource()
+        try:
+            res = inst.resolve_project_record("project:sample")
+        except Exception as exc:  # noqa: BLE001
+            no_op_ok = False
+            no_op_err = f"{type(exc).__name__}: {exc}"
+        else:
+            # §4.5 contract: either None or the (None, None) tuple — both
+            # channels opted out, no crash.
+            if not (res is None or (isinstance(res, tuple) and res == (None, None))):
+                no_op_ok = False
+                no_op_err = f"expected None / (None, None), got {type(res).__name__}"
+    else:
+        no_op_ok = False
+        no_op_err = "base-class hook missing"
+
+    if not no_op_ok:
+        return CheckResult(
+            name="project_record_resolution",
+            status=WARN,
+            message=f"Base-class no-op contract not met: {no_op_err}",
+            hint="Verify MemorySource.resolve_project_record returns (None, None).",
+        )
+
+    return CheckResult(
+        name="project_record_resolution",
+        status=PASS,
+        message=(
+            "resolve_project_record present on MemoryOrchestrator; "
+            "base-class no-op degrades to (None, None)"
+        ),
+    )
+
+
 def _otel_packages_present() -> Dict[str, str]:
     """Return {distribution_name: version} for installed opentelemetry-* dists.
 
@@ -1032,6 +1305,7 @@ def run_checks() -> List[CheckResult]:
         check_config_validation,
         check_auto_tune_pipeline,
         check_data_directory,
+        check_project_record_resolution,
         check_test_suite,
     ]
     return [fn() for fn in checks]
@@ -1133,6 +1407,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         memchorus-doctor --palace-root <root>
                                          classify this specific root rather
                                          than ``~/.mempalace``
+        memchorus-doctor --project <name>  resolve the keyed ``project:<name>``
+                                         record (IMPL #163.4 / spec §4.7) and
+                                         print its location / standard /
+                                         reconciled channels
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
 
@@ -1144,6 +1422,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         the result set is empty), 1 when the pipeline could not run (no
         registered orchestrator, or ``search`` raised), 2 on bad arguments.
         A diagnostic is always printed.
+      * ``--project <name>`` -> 0 when the record resolved (``status`` ``ok``),
+        1 when it did not (no orchestrator registered, source opted out, or
+        the resolver raised), 2 on bad arguments. A diagnostic is always
+        printed (human or ``--json``).
     """
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
@@ -1182,6 +1464,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             _render_recall_human(report)
         return _recall_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --project "<name>" — resolve the keyed project:<name> record        #
+    # (IMPL #163.4, spec §4.7)                                            #
+    # ------------------------------------------------------------------ #
+    if "--project" in args:
+        try:
+            idx = args.index("--project")
+            if idx + 1 >= len(args):
+                print('error: --project requires a project name, e.g. --project "memchorus"')
+                return 2
+            project_name = args[idx + 1]
+        except ValueError:  # unreachable — `in` already gated this branch
+            return 2
+
+        report = _project_record_report(project_name)
+        if as_json:
+            _render_project_report_json(report)
+        else:
+            _render_project_report_human(report)
+        return _project_exit_code(report)
 
     # ------------------------------------------------------------------ #
     # --palace-layout / --deps-check / full install-health report          #
