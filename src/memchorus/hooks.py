@@ -531,6 +531,14 @@ class MemChorusHooks:
 
         Reads HERMES_KANBAN_TASK or WORKSPACE from env, queries relevant memories,
         and returns them so the session starts with project context already available.
+
+        IMPL #163.2 (spec §4.1) — before the ranked orientation search, this hook
+        runs a *keyed* :meth:`MemoryOrchestrator.resolve_project_record` lookup for
+        the detected project so the session starts with the canonical root +
+        standard-pointer + reconciled scratch report (top-level structured
+        channels, spec §3.2) **independent of** the free-text orientation items.
+        Any failure to resolve the keyed record degrades the *block* to empty —
+        the rest of ``on_session_start`` (orientation items AC-O3) is unaffected.
         """
         orchestrator = _get_orchestrator()
         if orchestrator is None:
@@ -547,9 +555,51 @@ class MemChorusHooks:
         try:
             kanban_task = os.environ.get("HERMES_KANBAN_TASK")
 
-            # Delegate the full orientation sequence to the module — it handles
-            # cache checks, project detection, query construction, and silent
-            # degradation all at once.
+            # ---- IMPL #163.2 — keyed project record (prepended) ------------
+            # Resolve the project name the same way orientation_search does (env
+            # HERMES_KANBAN_TASK → HERMES_WORKSPACE → CWD basename), then issue a
+            # structured, per-keyed record lookup.  The result rides at the
+            # *top* of the returned context block so the ranked orientation
+            # items can never out-rank the canonical root (spec §3-4 crux).
+            project_record_block = ""
+            try:
+                proj_name = orient_module._resolve_project(kanban_task) if hasattr(
+                    orient_module, "_resolve_project"
+                ) else kanban_task
+            except Exception:
+                proj_name = kanban_task
+            proj_name = (proj_name or "").strip()
+            if proj_name:
+                resolver = getattr(orchestrator, "resolve_project_record", None)
+                if callable(resolver):
+                    try:
+                        # Accept a bare name or the "project:" form — the
+                        # orchestrator normalises internally (spec §3.1).
+                        key = (
+                            proj_name
+                            if proj_name.lower().startswith("project:")
+                            else "project:" + proj_name
+                        )
+                        rec = resolver(key)
+                        if isinstance(rec, dict):
+                            project_record_block = _render_project_record_block(
+                                key, rec
+                            )
+                    except Exception as exc:  # pragma: no cover - graceful
+                        logger.warning(
+                            "on_session_start: resolve_project_record failed — "
+                            "proceeding without the keyed block. %s", exc,
+                        )
+                else:
+                    # Base-stub MemorySource (no orchestrator impl) — silently
+                    # skip the keyed block; the search-based orientation below
+                    # still runs.
+                    logger.debug(
+                        "on_session_start: orchestrator lacks "
+                        "resolve_project_record — skipping keyed block."
+                    )
+
+            # ---- Ranked orientation search (unchanged AC-O1/O2/O3) ---------
             all_items = orient_module.orientation_search(
                 env_task=kanban_task,
                 orchestrator=orchestrator,
@@ -557,12 +607,21 @@ class MemChorusHooks:
                 cache_ttl_seconds=getattr(orient_module, "DEFAULT_CACHE_TTL_SECONDS", 60.0),
             )
 
-            if not all_items:
-                return None  # empty → silent skip (AC-O3)
+            # AC-O3: silent skip when there is *nothing* to inject — no keyed
+            # record AND no ranked items.
+            if not all_items and not project_record_block:
+                return None
+
+            pieces: List[str] = []
+            if project_record_block:
+                pieces.append(project_record_block)
+            if all_items:
+                pieces.append(_format_context_block(all_items))
 
             result: Dict[str, Any] = {
                 "source": "memchorus_auto_orientation",
-                "project_context": _format_context_block(all_items),
+                "project_record": project_record_block,
+                "project_context": "\n\n".join(pieces),
             }
             return result
 
@@ -1143,6 +1202,91 @@ def _unwrap_content_field(value: Any) -> str:
         except (TypeError, ValueError):
             return str(value)
     return str(value)
+
+def _render_project_record_block(project_name: str, record: Any) -> str:
+    """Render a §3.3 project record (``location``/``standard``/``reconciled``) into a
+    compact, top-level pointer block for session-start injection (IMPL #163.2, spec §2.4).
+
+    The two structured channels ride at **block top-level** — never serialised into a
+    memory body — and are kept visually independent of the oriented-memory block that
+    follows (spec §2.2, §3.2).  The ``reconciled[]`` scratch report, when present, is
+    the *only* place a non-canonical path may appear (spec §3.3).
+
+    **Graceful degradation (spec §4.5):** any ``record`` that is not a dict, or with
+    missing/invalid sub-channels, degrades that channel to an omitted line (or a
+    "(unverified)" marker) — the function never raises and returns "" only when there
+    is genuinely nothing to show (no ``location`` *and* no ``standard``).
+    """
+    if not isinstance(record, dict):
+        return ""
+
+    name = (str(project_name).strip() if project_name else "").strip()
+    if name and not name.lower().startswith("project:"):
+        name = "project:" + name
+    name = name or "project"
+
+    out_lines: List[str] = ["[%s]" % name]
+
+    # --- location channel (top-level, spec §3.2) ---------------------------
+    loc = record.get("location")
+    if isinstance(loc, dict):
+        root = str(loc.get("canonical_root") or "").strip() or "(unresolved)"
+        source = str(loc.get("source") or "").strip()
+        verified_raw = loc.get("verified_at")
+        verified = (
+            str(verified_raw).strip()
+            if verified_raw not in (None, "")
+            else "unverified (derived-by-rule)"
+        )
+        out_lines.append("  location: canonical_root=%s" % root)
+        meta_bits: List[str] = []
+        if source:
+            meta_bits.append("source=%s" % source)
+        meta_bits.append("verified_at=%s" % verified)
+        out_lines.append("    %s" % "  ".join(meta_bits))
+
+    # --- standard channel (top-level, independent of location, spec §2.2) --
+    std = record.get("standard")
+    if isinstance(std, dict):
+        std_bits: List[str] = []
+        for fk in ("skill", "doc_path", "gist"):
+            v = std.get(fk)
+            if v not in (None, ""):
+                std_bits.append("%s=%s" % (fk, v))
+        topics = std.get("topics")
+        if isinstance(topics, (list, tuple)) and topics:
+            std_bits.append("topics=[%s]" % ", ".join(str(t) for t in topics))
+        if std_bits:
+            out_lines.append("  standard: %s" % "  ".join(std_bits))
+
+    # --- reconciled[] scratch report (spec §3.3) ---------------------------
+    rec = record.get("reconciled")
+    if isinstance(rec, (list, tuple)):
+        scratch_entries = [e for e in rec if isinstance(e, dict)]
+        if scratch_entries:
+            relations = {
+                str(e.get("relation") or "").strip() for e in scratch_entries
+            }
+            header_tail = (
+                ("(%s)" % sorted(relations)[0])
+                if len(relations) == 1 and next(iter(relations))
+                else "(scratch — not the working copy)"
+            )
+            out_lines.append("  reconciled %s:" % header_tail)
+            for e in scratch_entries:
+                path = str(e.get("path") or "").strip()
+                if path:
+                    rel = str(e.get("relation") or "").strip()
+                    suffix = ("  — %s" % rel) if rel else ""
+                    out_lines.append("    - %s%s" % (path, suffix))
+
+    # Nothing to show if neither structured channel survived (fully degraded)
+    if len(out_lines) <= 1:
+        return ""
+
+    out_lines.append("[/MemChorus project record]")
+    return "\n".join(out_lines)
+
 
 def _build_context_entries(
     items: List[Dict[str, Any]],

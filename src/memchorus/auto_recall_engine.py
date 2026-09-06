@@ -47,7 +47,7 @@ _REC_GUARD: bool = False  # flipped during enforce() to catch re-entry
 # GAP P0-3 FIX (2026-07-19): Expanded query templates to cover real-world recall needs.
 # The original templates were engineering-focused, missing key terms from actual stored
 # memories like user preferences, project conventions, debug notes, etc.
-_QUERY_MAP: Dict[DecisionPoint, str] = {
+_QUERY_MAP: Dict[DecisionPoint, Optional[str]] = {
     DecisionPoint.PLANNING_START: (
         "past planning patterns architecture decisions strategy notes "
         "project organization conventions documentation standards workflow"
@@ -69,6 +69,13 @@ _QUERY_MAP: Dict[DecisionPoint, str] = {
         "synthesis analysis findings key insight understanding learned important "
         "patterns review summary conclusions takeaways documentation research"
     ),
+    # IMPL #163.2 — sentinel: PROJECT_START is a *keyed* record lookup, not a
+    # semantic query. ``None`` means "resolve the project:<name> record via
+    # orchestrator.resolve_project_record(); do not run orchestrator.search()".
+    # The dispatch branch in ``on_decision_point`` catches this DP **before**
+    # ``_extract_query`` is consulted, so the sentinel is defensive only
+    # (spec §4.2).
+    DecisionPoint.PROJECT_START: None,
 }
 
 
@@ -147,8 +154,17 @@ class AutoRecallEngine:
         _REC_GUARD = True
         self._in_enforcement_recall = True
         try:
-            query = self._extract_query(dp_type)
-            results = self._do_search(query)
+            # IMPL #163.2 (spec §4.1) — PROJECT_START is a *keyed* record
+            # resolution, NOT a free-text semantic query.  Dispatch it to the
+            # orchestrator's ``resolve_project_record(name)`` API so the ranked
+            # search path is never consulted with the ``None`` sentinel (the
+            # bug this branch prevents: ``_do_search(None)`` falling through
+            # to ``orchestrator.search(None, limit=3)``).
+            if dp_type is DecisionPoint.PROJECT_START:
+                results = self._do_resolve_project_record(decision_point)
+            else:
+                query = self._extract_query(dp_type)
+                results = self._do_search(query)
 
             # Harden: enforce hard limit of 3 regardless of orchestrator output
             results = results[:3]
@@ -212,6 +228,56 @@ class AutoRecallEngine:
             return []
 
         return results
+
+    def _do_resolve_project_record(self, point: DetectedPoint) -> List[Dict[str, Any]]:
+        """Resolve the *keyed* project record for a PROJECT_START decision point.
+
+        Returns the §3.3 record contract as a **1-element list** so the caller's
+        ``List[Dict]`` shape and ``[:3]`` hard-limit are preserved.  Graceful
+        degradation: a missing/blank project name, a missing orchestrator API,
+        or any exception all return ``[]`` — never an escape (spec §4.2/§4.5).
+        """
+        name = getattr(point, "project_name", None)
+        if not name:
+            # Fall back to the matched keyword (e.g. a project name surfaced in
+            # a session-start banner), stripping any ``project:`` prefix.
+            name = getattr(point, "matched_keyword", None)
+        if not name or not str(name).strip():
+            logger.warning(
+                "AutoRecallEngine: PROJECT_START has no project_name to resolve — "
+                "returning empty list (no keyed lookup possible)"
+            )
+            return []
+        name = str(name).strip()
+        # resolve_project_record strips its own ``project:`` prefix, but it can
+        # also accept a bare slug (spec §3.1).  Ensure a bare slug is keyed so
+        # normalize_project_key always receives the canonical ``project:<slug>``
+        # form.  A name that is *already* keyed is left untouched.
+        if name and not name.lower().startswith("project:"):
+            name = "project:" + name
+
+        resolver = getattr(self._orchestrator, "resolve_project_record", None)
+        if not callable(resolver):
+            logger.warning(
+                "AutoRecallEngine: orchestrator has no resolve_project_record API — "
+                "degrading PROJECT_START to empty list"
+            )
+            return []
+        try:
+            record = resolver(name)
+        except Exception as exc:
+            logger.warning(
+                "AutoRecallEngine: resolve_project_record failed for '%s' — "
+                "returning empty list. %s", name, exc
+            )
+            return []
+        if not isinstance(record, dict):
+            logger.warning(
+                "AutoRecallEngine: resolve_project_record returned %s (expected dict) — "
+                "degrading to empty list", type(record).__name__
+            )
+            return []
+        return [record]
 
     def _get_cached(self, dp_type: DecisionPoint) -> Optional[List[Dict[str, Any]]]:
         """Return cached context if the same DP fired within cache_ttl; else None."""
