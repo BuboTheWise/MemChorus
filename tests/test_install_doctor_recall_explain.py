@@ -187,6 +187,44 @@ def test_recall_cli_limit_is_propagated_to_search(monkeypatch):
     assert captured == {"limit": 3}
 
 
+def test_recall_dict_typed_content_does_not_crash(capsys, monkeypatch):
+    """Regression: the real orchestrator (degraded fallback path) returns
+    rows where ``content`` is a *dict* — ``{"text": "..."}`` — not a plain
+    string.  Earlier releases only fed string-content fixtures into
+    ``_recall_query``, so the ``[...][:200]`` slice was never exercised on a
+    dict and raised ``TypeError: unhashable type: 'slice'``.  That crash
+    fired on the very doctor path (#184) that is supposed to *surface* the
+    degradation, masking the banner it adds.  Lock the dict shape in so it
+    renders instead of raising, and so the preview keeps the readable text."""
+
+    class _DictContentOrch:
+        def search(self, query, limit=10, **kw):
+            # Mirrors the live degraded-bootstrap row shape (orchestrator.py
+            # "PATH 1: dict-typed content").
+            return [
+                {
+                    "key": "note-1",
+                    "source": "hermes_default",
+                    "score": 0.83,
+                    "content": {"text": "pinned the OTel family at 1.39.1 — " * 30},
+                    "score_breakdown": _breakdown(0.8, 0.7, 0.4, final=0.83),
+                },
+            ]
+
+    _register(monkeypatch, _DictContentOrch())
+    # Must not raise; exit code 0 (ok) is returned.
+    code = main(["--recall", "otel pin", "--json"])
+    assert code == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["status"] == "ok"
+    item = doc["results"][0]
+    # The slice must draw from the dict's ``text`` field, not raise and not
+    # be the empty string fallback.
+    assert item["content_preview"]
+    assert item["content_preview"].startswith("pinned the OTel family")
+    assert len(item["content_preview"]) <= 200
+
+
 # ---------------------------------------------------------------------------
 # (b) --json stable schema
 # ---------------------------------------------------------------------------
