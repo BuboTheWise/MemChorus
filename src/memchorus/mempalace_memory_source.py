@@ -1163,6 +1163,15 @@ class MemPalaceMemorySource(MemorySource):
     # weak/off-topic ones, mirroring the siblings' MIN_RECALL_SCORE default.
     MIN_RECALL_SCORE = 0.5
 
+    # (#184) Read-path source markers — distinguish live-MemPalace hits from
+    # hits served out of the local fallback cache so agents and operators can
+    # tell which content is authoritative and which is a stale snapshot.
+    # These values stamp the `source` field on recall hits (previously the
+    # source-name "mempalace" for both paths, which made live vs. cached
+    # content indistinguishable downstream).
+    SOURCE_MCP_LIVE = "mcp-live"
+    SOURCE_LOCAL_FALLBACK = "local-fallback"
+
     def _ensure_connected(self) -> bool:
         """Establish MCP connection if it hasn't been established yet.
 
@@ -1336,16 +1345,29 @@ class MemPalaceMemorySource(MemorySource):
         results: List[Dict[str, Any]] = []
         seen_keys: set = set()
 
-        if self._ensure_connected() and self._client.is_alive:
+        # (#184) AC3 recovery probe: `_ensure_connected()` is itself the
+        # re-availability check — on a fresh call it attempts one reconnect
+        # when the live path is down, so a MemPalace server that recovered
+        # mid-session is picked back up automatically (the "re-sync" the issue
+        # calls out: "no re-sync / re-availability check is attempted before
+        # the next recall"). `skip_mcp` config (default False) toggles this
+        # off for callers where the reconnect cost is material. If the probe
+        # still fails, we fall through to the local cache serve below and mark
+        # the hits as local-fallback.
+        mcp_alive = self._ensure_connected() and self._client.is_alive
+
+        if mcp_alive:
             mp_results = self._client.search(
                 query=query, limit=limit, wing=wing, room=room
             )
             if mp_results:
                 min_score = self._resolve_min_recall_score()
                 for r in mp_results:
-                    wing = r.get("wing", "unknown") if isinstance(r, dict) else None
-                    room = r.get("room", "unknown") if isinstance(r, dict) else None
-                    comp_key = f"{wing}/{room}" if wing and room else query
+                    r_wing = r.get("wing", "unknown") if isinstance(r, dict) else None
+                    r_room = r.get("room", "unknown") if isinstance(r, dict) else None
+                    comp_key = (
+                        f"{r_wing}/{r_room}" if r_wing and r_room else query
+                    )
 
                     content_val = (
                         r.get("text", "") or r.get("content", str(r))
@@ -1355,7 +1377,12 @@ class MemPalaceMemorySource(MemorySource):
                     entry: Dict[str, Any] = {
                         "key": comp_key,
                         "content": self._from_str(str(content_val)),
-                        "source": self._name,
+                        # (#184) AC1: Served from the live MemPalace graph —
+                        # the hit was produced this call by a connected MCP
+                        # backend. Downstream consumers (relevance engine,
+                        # doctor, rendered recall block) distinguish this from
+                        # local-fallback cache hits on this field.
+                        "source": self.SOURCE_MCP_LIVE,
                     }
                     if "similarity" in r:
                         try:
@@ -1370,7 +1397,9 @@ class MemPalaceMemorySource(MemorySource):
                     results.append(entry)
                     seen_keys.add(comp_key)
 
-        # Also search local cache.
+        # Also search local cache. Only entries NOT already served by the live
+        # path are served here — and they carry the distinctive local-fallback
+        # marker (#184 AC1) so a consumer can tell stale cache from live graph.
         try:
             for filename in os.listdir(self._cache_dir):
                 if len(results) >= limit:
@@ -1386,7 +1415,13 @@ class MemPalaceMemorySource(MemorySource):
                 results.append({
                     "key": lo_key,
                     "content": content,
-                    "source": self._name,
+                    # (#184) AC1: Served from the local fallback cache — the
+                    # live MemPalace MCP backend was unreachable (or returned
+                    # nothing) for this hit, so it came from a local file
+                    # snapshot. Marked distinctly so an agent / operator can
+                    # tell stale-cache content apart from live graph content
+                    # (see DEGRADATION_NOTE in hooks.py).
+                    "source": self.SOURCE_LOCAL_FALLBACK,
                 })
                 seen_keys.add(lo_key)
         except Exception:
@@ -1458,7 +1493,10 @@ class MemPalaceMemorySource(MemorySource):
                 {
                     "key": key,
                     "content": dict(rel),
-                    "source": self._name,
+                    # (#184) recall_kg is a live-only channel (gated on an alive
+                    # MCP connection) — stamp it as served from the live graph,
+                    # consistent with the vector/keyword recall path above.
+                    "source": self.SOURCE_MCP_LIVE,
                     "channel": "kg",
                     "score": confidence,
                 }

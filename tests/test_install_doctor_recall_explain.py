@@ -230,7 +230,12 @@ def test_recall_json_stable_schema(capsys, monkeypatch):
 
     # Render sub-schema.
     rd = doc["render"]
-    assert set(rd) == {"rendered", "injected", "dropped", "full_body_mark"}
+    # (#184) The render report carries a top-level ``degraded`` flag so a
+    # machine consumer can assert whether any hit was served from the local
+    # fallback cache without parsing the rendered text. Fake orchestrator
+    # returns live-style hits (no "local-fallback" source), so it is False.
+    assert set(rd) == {"rendered", "injected", "dropped", "full_body_mark", "degraded"}
+    assert rd["degraded"] is False
     for item in rd["injected"]:
         assert set(item) == {"key", "score", "content", "suppressed"}
     for drop in rd["dropped"]:
