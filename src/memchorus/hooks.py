@@ -1326,6 +1326,29 @@ def _build_context_entries(
     seen_keys: set = set()
     entries: List[Tuple[str, float, Optional[Any], Optional[str]]] = []
 
+    # (#184) Degrade detection. If ANY item in this recall response was served
+    # from the local fallback cache (its ``source`` field carries the local-
+    # fallback marker), surface a single machine- AND human-readable line right
+    # after the "[MemChorus injected context]" header so the agent and any
+    # human reviewing the block can tell that at least one memory is a stale
+    # local snapshot rather than live graph content. Computed once up front —
+    # the check is O(n) over the incoming items and only runs when the list is
+    # non-empty. This note is present in BOTH the live injection path and the
+    # doctor read-only simulation because they all go through this same core.
+    _FALLBACK_MARKER = "local-fallback"
+    degraded = any(
+        isinstance(it, dict) and it.get("source") == _FALLBACK_MARKER
+        for it in items
+    )
+    degraded_note = (
+        "\n"
+        "part of this recall was served from the local fallback cache "
+        "because the MemPalace MCP backend was unreachable."
+    )
+    # Ceiling accounting: the note lives inside the rendered block, so its
+    # length must count toward the per-block budget just like header/footer.
+    _note_len = len(degraded_note) if degraded else 0
+
     for item in items:
         key = item.get("key") or str(item)
         if key in seen_keys:
@@ -1401,9 +1424,11 @@ def _build_context_entries(
     # --- Hard total block ceiling (drops complete entries, not partial lines)-
     _header_len = len("[MemChorus injected context]\n")
     _footer_len = len("\n[/MemChorus injected block]")
+    # (#184) The degradation note, when present, also occupies block budget.
+    _ceiling = max_chars - _note_len
 
     dropped: List[Dict[str, Any]] = []
-    while entries and len(joined) + _header_len + _footer_len > max_chars:
+    while entries and len(joined) + _header_len + _footer_len > _ceiling:
         _removed_line, _removed_score, _removed_key, _ = entries.pop(0)
         dropped.append(
             {
@@ -1438,10 +1463,21 @@ def _build_context_entries(
     ]
 
     return {
-        "rendered": f"[MemChorus injected context]\n{joined}\n[/MemChorus injected block]",
+        # (#184) The degradation note (if any) sits immediately after the
+        # header, before the ranked entries, so it reads as a banner over the
+        # whole block rather than a per-entry annotation.
+        "rendered": (
+            "[MemChorus injected context]"
+            + (degraded_note if degraded else "")
+            + f"\n{joined}\n[/MemChorus injected block]"
+        ),
         "injected": injected,
         "dropped": dropped,
         "full_body_mark": full_body_mark,
+        # (#184) Machine-readable degrade flag so a --json consumer (or a test)
+        # can assert the state without parsing rendered text. False on any
+        # all-live response — so the mcp-live byte-identical lock is preserved.
+        "degraded": degraded,
     }
 
 
@@ -1508,7 +1544,10 @@ def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     (budget drops), and ``full_body_mark`` (the render-accurate mark set).
     """
     if not items:
-        return {"rendered": "", "injected": [], "dropped": [], "full_body_mark": []}
+        return {
+            "rendered": "", "injected": [], "dropped": [],
+            "full_body_mark": [], "degraded": False,
+        }
     max_chars = _resolve_char_limit()
     window = _get_suppression_window()
     return _build_context_entries(items, max_chars, window)
