@@ -29,6 +29,35 @@ logger = logging.getLogger(__name__)
 # Public API types
 # ---------------------------------------------------------------------------
 
+# (#184) The read-path now stamps recall hits with a *distinctive* source
+# marker — ``mcp-live`` for content served by a live MemPalace MCP backend, and
+# ``local-fallback`` for content served out of the local JSON cache — instead of
+# the bare registered source name (``mempalace``) for *both* paths.  That lets
+# agents and ``memchorus-doctor --recall`` tell authoritative live content apart
+# from a stale local snapshot (issue #184 AC1 + AC4).
+#
+# The relevance engine's own priors tables and ``context.domain_weights`` are,
+# however, keyed on the *registered* source name (``mempalace``).  If we scored
+# the raw marker, live content would fall through to the neutral 0.25 floor and
+# re-rank against pre-#184 output — breaking the acceptance-criterion-5
+# guarantee that the rendered success-path recall block stays byte-identical.
+# So before *any* scoring lookup we canonicalize the live marker back to the
+# registered name.  The reported ``source`` field on the hit (read by doctor and
+# carried into the rendered block) keeps the distinctive marker untouched, so
+# live vs. cached content remains distinguishable exactly where it matters.
+# ``local-fallback`` is deliberately *not* canonicalized: it should keep its own
+# identity and score below live content (it is a degraded snapshot, not the
+# authoritative graph).
+def _canonical_source_for_scoring(source: str) -> str:
+    """Map a recall hit's ``source`` marker to the name scoring tables key on.
+
+    ``mcp-live`` → ``mempalace`` (score as the live source, byte-identical lock);
+    every other value is returned unchanged.
+    """
+    if source == "mcp-live":
+        return "mempalace"
+    return source
+
 
 @dataclass
 class ContextWeight:
@@ -610,7 +639,13 @@ class RelevanceScorer:
             context = ContextWeight()
 
         content = result.get("content", "")
-        source = result.get("source", "unknown")
+        # (#184 AC5) Canonicalize the distinctive read-path marker back to the
+        # registered source name for *scoring lookups* only, so live content
+        # scores identically to pre-#184 and the rendered success-path block
+        # stays byte-identical.  The reported `source` field on the RankedResult
+        # (set separately, line ~776) keeps the original marker so doctor and
+        # agents continue to distinguish mcp-live from local-fallback.
+        source = _canonical_source_for_scoring(result.get("source", "unknown"))
 
         # -- Raw dimension values ------------------------------------------------------
         quality = self._score_quality(query, content)
