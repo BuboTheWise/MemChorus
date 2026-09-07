@@ -909,6 +909,22 @@ def _recall_query(query: str, limit: int) -> Dict[str, Any]:
     injected_keys = {i["key"] for i in render_report.get("injected", []) if i.get("key")}
     dropped_keys = {d["key"] for d in render_report.get("dropped", []) if d.get("key")}
     for r in results:
+        content_raw = r.get("content")
+        # Real orchestrator rows (both healthy and the degraded fallback) carry
+        # ``content`` as a dict with the readable text under ``text`` (the
+        # orchestrator treats dict content as its primary shape — see
+        # orchestrator.py "PATH 1: dict-typed content").  Earlier releases used
+        # only string-content fixtures, so a blind string slice on the dict
+        # raised ``unhashable type: 'slice'``.  Normalise to a string first.
+        if isinstance(content_raw, dict):
+            content_text = (
+                content_raw.get("text")
+                or content_raw.get("content")
+                or content_raw.get("value")
+                or ""
+            )
+        else:
+            content_text = content_raw or ""
         explained.append({
             "key": r.get("key"),
             "source": r.get("source"),
@@ -919,7 +935,7 @@ def _recall_query(query: str, limit: int) -> Dict[str, Any]:
                 else "dropped_by_budget" if r.get("key") in dropped_keys
                 else "suppressed_shown_earlier"
             ),
-            "content_preview": (r.get("content") or "")[:200],
+            "content_preview": str(content_text)[:200],
         })
 
     return {
