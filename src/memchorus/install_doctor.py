@@ -1004,8 +1004,15 @@ def _render_recall_human(report: Dict[str, Any]) -> None:
         inj = render.get("injected") or []
         dropped = render.get("dropped") or []
         print(f"Render (read-only simulation): {len(inj)} would be injected, {len(dropped)} dropped by budget.")
+        # (#184) Surface the degradation state as an explicit banner so the
+        # operator can see at a glance that at least one hit was served from
+        # the local fallback cache rather than the live MemPalace graph.
+        if render.get("degraded"):
+            print("  ⚠ DEGRADED READ: part of this recall was served from the")
+            print("    local fallback cache because the MemPalace MCP backend was")
+            print("    unreachable at recall time. Those entries may be stale.")
         for i in inj:
-            flag = " (suppressed→marker only)" if i.get("suppressed") else ""
+            flag = " (suppressed→marker only)" if i.get('suppressed') else ""
             print(f"    + {i.get('key')} score={i.get('score')}{flag}")
         for d in dropped:
             print(f"    - {d.get('key')} score={d.get('score')} reason={d.get('reason')}")

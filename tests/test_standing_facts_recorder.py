@@ -97,6 +97,13 @@ class _SandboxedStandingFactsOrchestratorMixin:
         )
         if "mempalace" in self.orch.memory_sources:
             self.orch.disable_source("mempalace")
+        # PR #190 (163.x) auto-registered a third live source, `session_history`,
+        # at highest priority. It reads the real session DB, which leaks live
+        # session rows into this hermetic sandbox and displaces the seeded
+        # scratch fixture from the recall window. Disable it to preserve the
+        # #160/#161 hermetic intent (only `hermes_default` is under test).
+        if "session_history" in self.orch.memory_sources:
+            self.orch.disable_source("session_history")
 
     def tearDown(self):
         shutil.rmtree(self._tmp_dir, ignore_errors=True)

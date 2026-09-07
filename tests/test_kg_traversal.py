@@ -208,7 +208,10 @@ class TestMemPalaceRecallKg:
         entry = out[0]
         assert entry["channel"] == "kg"
         assert entry["score"] == pytest.approx(0.9)
-        assert entry["source"] == "fake-mempalace"
+        # (#184) recall_kg is a live-only channel (served from the live graph,
+        # or None when MCP is unreachable) — so it stamps the live marker
+        # rather than a bare source name.
+        assert entry["source"] == "mcp-live"
         assert "works_on" in entry["key"]
 
     def test_recall_kg_none_on_unreachable(self, mp_source, monkeypatch):
