@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.47] - 2026-09-07
+
+### Fixed
+- **Bootstrap circular-import fix (RELEASE #191 / Issue #191):** v2.0.46 silently regressed the `MEMCHORUS_CONFIG` `memory_dir` override — during `_bootstrap()`, `mempalace_memory_source` read `palace_path` as a package attribute while the package was only partly initialised, which re-entered the package `__getattr__('palace_path')` → `_trigger_lazy_bootstrap()` → `_bootstrap()` and re-imported the same module mid-import, raising `ImportError`. Bootstrap then fell back to a bare `MemoryOrchestrator`, dropping the configured `memory_dir`. The one-line fix binds the module directly with `import memchorus.palace_path as palace_path`, which loads the submodule straight into `sys.modules` and bypasses the package `__getattr__` re-entry. Single-file, +1/−1 on the import line. RED→GREEN independently reproduced in isolated non-editable installs: pre-fix head `d5f919f` shows the `#191` circular-import `ImportError` + inactive orchestrator; post-fix head `26c26b1` is clean with the orchestrator active. Independent review **APPROVE** — OPSEC clean, single commit. Bumps `__version__` 2.0.46 → 2.0.47.
+
 ## [2.0.45] - 2026-09-06
 
 ### Added
