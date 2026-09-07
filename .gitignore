@@ -24,6 +24,9 @@ __pycache__/
 build/
 dist/
 
+# Issue drafts / working scratch dir (not versioned)
+.pending-issues/
+
 # Test runner caches, scratch work (not versioned — QA-reports in Bubo_Wisdom)
 .pytest_cache/
 .coverage
