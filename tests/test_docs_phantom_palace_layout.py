@@ -50,7 +50,10 @@ _PHANTOM_PALACE_PATH = "workspace/mempalace"
 #                asserting against it).
 #   - build/   : packaging artifact from a prior install — noise.
 #   - .git/    : noise.
-_EXCLUDE_DIRS = {".git", "build", "tests", "node_modules", "dist"}
+#   - .pending-issues/ : working scratch dir for issue drafts — never
+#                        published docs, so a draft mentioning the old layout
+#                        must not trip this lock (issue #192).
+_EXCLUDE_DIRS = {".git", "build", "tests", "node_modules", "dist", ".pending-issues"}
 
 # Human-facing doc files we MUST scan.
 _DOC_SUFFIXES = {".md"}
