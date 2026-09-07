@@ -23,7 +23,7 @@ import yaml
 
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_home import hermes_home
-from memchorus import palace_path
+import memchorus.palace_path as palace_path
 
 logger = logging.getLogger(__name__)
 
