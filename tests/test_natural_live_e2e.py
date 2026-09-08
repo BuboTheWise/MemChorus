@@ -319,6 +319,7 @@ def live_agent_run(tmp_path_factory: pytest.TempPathFactory) -> _RunResult:
         + f"\n==META==\nreturncode={cp.returncode} duration_s={dur:.1f}",
         encoding="utf-8",
     )
+    result.load()
     return result
 
 
