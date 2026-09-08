@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.48] - 2026-09-07
+
+### Fixed
+- **Docs test exclusion: `.pending-issues/` scratch dir no longer trips the phantom-palace-layout lock (RELEASE #192 / Issue #192):** `test_docs_phantom_palace_layout` scans human-facing markdown for stale references to a previously-removed palace layout and asserts they're gone. Issue-draft scratch notes under `.pending-issues/` legitimately quote the old layout while still being worked on, so they must be excludable from that lock without weakening it. The fix adds `.pending-issues` to the test's `_EXCLUDE_DIRS` path-component set **and** to `.gitignore`, leaving every real doc (README, docs/, tests/) still scanned. Exclusion is narrow and the `".pending-issues"` entry matches the test's own `part in _EXCLUDE_DIRS` logic exactly (empirically confirmed). RED→GREEN reproduced independently in isolated non-editable installs: pre-fix head `d5f919f` fails the scratch note, post-fix head `42e7825` passes with the guard still alive. Independent review **APPROVE** — OPSEC clean, two files, zero new ruff findings. Bumps `__version__` 2.0.47 → 2.0.48.
+
 ## [2.0.47] - 2026-09-07
 
 ### Fixed

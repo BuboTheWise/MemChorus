@@ -630,7 +630,11 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.47 (current — 2026-09-07)
+### v2.0.48 (current — 2026-09-07)
+
+- **Docs test exclusion: `.pending-issues/` scratch dir no longer trips the phantom-palace-layout lock (RELEASE #192 / Issue #192):** `test_docs_phantom_palace_layout` scans human-facing markdown for stale references to a previously-removed palace layout and asserts they're gone. Issue-draft scratch notes under `.pending-issues/` legitimately quote the old layout while still being worked on, so they must be excludable from that lock without weakening it. The fix adds `.pending-issues` to the test's `_EXCLUDE_DIRS` path-component set **and** to `.gitignore`, leaving every real doc (README, docs/, tests/) still scanned. Exclusion is narrow and the `".pending-issues"` entry matches the test's own `part in _EXCLUDE_DIRS` logic exactly (empirically confirmed). RED→GREEN reproduced independently in isolated non-editable installs: pre-fix head `d5f919f` fails the scratch note, post-fix head `42e7825` passes with the guard still alive. Independent review **APPROVE** — OPSEC clean, two files, zero new ruff findings. Bumps `__version__` 2.0.47 → 2.0.48.
+
+### v2.0.47 (2026-09-07)
 
 - **Bootstrap circular-import fix: bind `palace_path` as a real submodule (RELEASE #191 / Issue #191):** v2.0.46 silently regressed the `MEMCHORUS_CONFIG` `memory_dir` override — during `_bootstrap()`, `mempalace_memory_source` read `palace_path` as a package attribute while the package was only partly initialised, which re-entered the package `__getattr__('palace_path')` → `_trigger_lazy_bootstrap()` → `_bootstrap()` and re-imported the same module mid-import, raising `ImportError`. Bootstrap then fell back to a bare `MemoryOrchestrator`, dropping the configured `memory_dir`. The one-line fix binds the module directly with `import memchorus.palace_path as palace_path`, which loads the submodule straight into `sys.modules` and bypasses the package `__getattr__`. Single-file, +1/−1 on the import line. RED→GREEN reproduced independently in isolated non-editable installs: pre-fix head `d5f919f` shows the `#191` circular-import `ImportError` + inactive orchestrator; post-fix head `26c26b1` is clean with the orchestrator active. Independent review **APPROVE** — OPSEC clean, single commit, zero new ruff findings. Bumps `__version__` 2.0.46 → 2.0.47.
 
