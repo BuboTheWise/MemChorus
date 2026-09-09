@@ -59,7 +59,10 @@ and ``tests/test_memchorus_benchmark.py`` — it proves the agent loop itself.
 from __future__ import annotations
 
 import os
-import fcntl
+try:
+    import fcntl
+except ImportError:  # fcntl is Unix-only; absent on Windows CI. The live tests
+    fcntl = None  # marker-skip before the lock is ever used, so None is fine.
 import pathlib
 import shutil
 import signal
@@ -137,6 +140,12 @@ def _exclusive_llm():
     still runs at full solo-pace, just one at a time).
     """
     lock_file = open(_LOCK_PATH, "w")
+    if fcntl is None:  # Windows (no POSIX flock): no cross-worker lock needed —
+        try:          # the live tests marker-skip before this context manager is
+            yield     # ever entered, and under -n 0 there is only one worker anyway.
+        finally:
+            lock_file.close()
+        return
     # Lock-acquisition window: at least as large as the per-test cap
     # (AGENT_TIMEOUT_S) so that, under -n 4, even the last worker in the
     # serialized queue (waiting up to (N-1) × AGENT_BUDGET_S behind its
