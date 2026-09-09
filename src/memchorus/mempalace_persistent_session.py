@@ -17,10 +17,48 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import timedelta
+
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def summarize_exception_group(exc: BaseExceptionGroup) -> str:
+    """Build a single diagnostic line from a BaseExceptionGroup.
+
+    anyio TaskGroups nest failures; the top-level group is usually opaque
+    ("unhandled errors in a TaskGroup") while the *first* sub-exception carries
+    the real reason (TypeError, CancelledError, OSError, etc). Logging the group
+    by name alone ("ExceptionGroup") is what masked the mcp ``read_timeout``
+    TypeError in MemChorus #196. Extract the first sub-exception (recursing if a
+    single nested ExceptionGroup is the sole wrapper) and attach one traceback
+    frame so the failure site is visible in worker logs.
+    """
+    sub = exc.exceptions[0] if exc.exceptions else exc
+    # Peel single-exception wrapper groups to surface the true root cause.
+    while isinstance(sub, BaseExceptionGroup) and len(sub.exceptions) == 1:
+        sub = sub.exceptions[0]
+
+    if isinstance(sub, BaseExceptionGroup):
+        # Still a multi-exception group: list each sub-exception name + the
+        # first one's message so the real failure is visible.
+        names = ", ".join(type(e).__name__ for e in sub.exceptions)
+        detail = f"{type(sub).__name__}({names}): {sub.exceptions[0]}" if sub.exceptions else str(sub)
+    else:
+        detail = f"{type(sub).__name__}: {sub}"
+
+    tb = " (origin: no traceback)"
+    tb_obj = sub.__traceback__
+    if tb_obj is not None:
+        # Walk to the deepest frame — that's where the failure actually raised.
+        while tb_obj.tb_next is not None:
+            tb_obj = tb_obj.tb_next
+        frame = tb_obj.tb_frame
+        tb = (
+            f" (origin: {frame.f_code.co_filename}:{tb_obj.tb_lineno} "
+            f"in {frame.f_code.co_name})"
+        )
+    return detail + tb
 
 
 @dataclass
@@ -166,7 +204,7 @@ class PersistentMcpSession:
                     async with ClientSession(
                         read_stream=r_stream,
                         write_stream=w_stream,
-                        read_timeout_seconds=timedelta(seconds=self.timeout * 2),
+                        read_timeout_seconds=float(self.timeout * 2),
                     ) as session:
                         await session.initialize()
 
@@ -232,10 +270,13 @@ class PersistentMcpSession:
             except BaseExceptionGroup as exc:
                 # Outer catch: only fires during session-level teardown
                 # (stdio_client/ ClientSession context manager exit), not per-call.
+                # Surface the first sub-exception + one traceback frame — see
+                # summarize_exception_group docstring for rationale.
                 logger.warning(
-                    "PersistentMcpSession worker: session-level BaseExceptionGroup (%d): %s",
+                    "PersistentMcpSession worker: session-level BaseExceptionGroup "
+                    "(%d sub-exc) — %s",
                     len(exc.exceptions),
-                    ", ".join(type(e).__name__ for e in exc.exceptions),
+                    summarize_exception_group(exc),
                 )
             except Exception as exc:
                 logger.error("PersistentMcpSession worker crashed: %s", exc)
