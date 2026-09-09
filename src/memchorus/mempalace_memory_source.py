@@ -15,7 +15,7 @@ import shutil
 import sys
 import time
 import asyncio
-from datetime import timedelta
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -24,6 +24,7 @@ import yaml
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_home import hermes_home
 import memchorus.palace_path as palace_path
+from memchorus.mempalace_persistent_session import summarize_exception_group
 
 logger = logging.getLogger(__name__)
 
@@ -477,7 +478,7 @@ async def _call_tool_async(
             async with ClientSession(
                 read_stream=r_stream,
                 write_stream=w_stream,
-                read_timeout_seconds=timedelta(seconds=timeout),
+                read_timeout_seconds=float(timeout),
             ) as session:
                 await session.initialize()
                 result = await session.call_tool(name, arguments=arguments)
@@ -495,9 +496,9 @@ async def _call_tool_async(
     # anyio's BaseExceptionGroup which does NOT inherit from Exception.
     except BaseExceptionGroup as exc:
         logger.warning(
-            "_call_tool_async: caught BaseExceptionGroup (%d sub-exc(s)): %s",
+            "_call_tool_async: caught BaseExceptionGroup (%d sub-exc(s)) — %s",
             len(exc.exceptions),
-            ", ".join(type(e).__name__ for e in exc.exceptions),
+            summarize_exception_group(exc),
         )
         return {}
 
@@ -746,7 +747,7 @@ class _McpClient:
                 async with ClientSession(
                     read_stream=r_stream,
                     write_stream=w_stream,
-                    read_timeout_seconds=timedelta(seconds=self.timeout),
+                    read_timeout_seconds=float(self.timeout),
                 ) as session:
                     await session.initialize()
             return True
@@ -761,9 +762,9 @@ class _McpClient:
             return True
         except BaseExceptionGroup as exc:
             logger.warning(
-                "connect: MCP init failed with BaseExceptionGroup (%d sub-exc(s)): %s",
+                "connect: MCP init failed with BaseExceptionGroup (%d sub-exc(s)) — %s",
                 len(exc.exceptions),
-                ", ".join(type(e).__name__ for e in exc.exceptions),
+                summarize_exception_group(exc),
             )
             self._connected = False
             return False
@@ -840,9 +841,9 @@ class _McpClient:
             # anyio TaskGroup raises this when internal reader/flusher tasks
             # are cancelled or crash (does NOT inherit from Exception).
             logger.warning(
-                "_call: MCP call raised BaseExceptionGroup (%d sub-exc(s)): %s",
+                "_call: MCP call raised BaseExceptionGroup (%d sub-exc(s)) — %s",
                 len(exc.exceptions),
-                ", ".join(type(e).__name__ for e in exc.exceptions),
+                summarize_exception_group(exc),
             )
             self._connected = False
             return None
