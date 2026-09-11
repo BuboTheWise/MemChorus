@@ -68,7 +68,7 @@ def board_db(tmp_path: Path) -> Path:
         (VALID_CARD_ID, "IMPL #203", "body", "default", "running"),
         (ARCHIVED_CARD_ID, "old card", "body", "default", "archived"),
         (UNOWNED_CARD_ID, "unowned card", "body", "", "ready"),
-        ("t_done_card", "done card", "body", "cthugha", "done"),
+        ("t_done_card", "done card", "body", "lead", "done"),
     ]
     con.executemany(
         "INSERT INTO tasks (id, title, body, assignee, status, priority) "
