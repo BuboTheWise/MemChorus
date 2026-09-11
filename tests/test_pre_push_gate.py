@@ -267,3 +267,96 @@ def test_env_override_missing_file_yields_none(monkeypatch, tmp_path: Path):
     from memchorus.pre_push_gate import get_kanban_db
 
     assert get_kanban_db() is None
+
+
+# ---------------------------------------------------------------------------
+# Git-plumbing regression: new-branch push must NOT re-gate shared history.
+#
+# This is the anchor bug found in real-world push (2026-09-10). When a
+# brand-new branch is pushed and the remote has no prior ref for it, git
+# reports rsha = ZERO on the ref line. The old code anchored at the tip
+# SHA (`rev-list <lsha>`) and walked the branch's *entire* history,
+# failing on every legacy PR-ref commit that predates the convention.
+#
+# The fix uses `--not --remotes` for the ZERO case so that shared
+# ancestors (already present on any remote ref, e.g. origin/master) are
+# excluded and only genuinely-new commits are gated.
+# ---------------------------------------------------------------------------
+import os
+import shutil
+import subprocess
+import sys
+
+# Repo root (two levels up from tests/) — gives us src/ for PYTHONPATH
+# without hardcoding a path.
+_REPO = Path(__file__).resolve().parent.parent
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args], cwd=cwd, text=True, stderr=subprocess.DEVNULL
+    ).strip()
+
+
+def test_new_branch_push_only_gates_new_commits(tmp_path: Path):
+    """New-branch (rsha=ZERO) case must not walk full branch history."""
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    from memchorus.pre_push_gate import collect_new_commits, ZERO_SHA
+
+    local = tmp_path / "local"
+    remote = tmp_path / "remote.git"
+    local.mkdir()
+    subprocess.check_call(
+        ["git", "init", "-q", "--bare", str(remote)],
+        cwd=tmp_path, stderr=subprocess.DEVNULL,
+    )
+    subprocess.check_call(
+        ["git", "init", "-q", "-b", "master", str(local)],
+        cwd=tmp_path, stderr=subprocess.DEVNULL,
+    )
+    _git(local, "config", "user.email", "test@example.invalid")
+    _git(local, "config", "user.name", "Test")
+    _git(local, "remote", "add", "origin", str(remote))
+
+    # Seed 10 legacy commits, every other one a PR ref (no trailer).
+    # On the REAL board these legacy PR-refs would all FAIL — that's the
+    # bug. If the gate walks full history they appear; if it anchors to
+    # remote refs they don't.
+    for i in range(1, 11):
+        _git(local, "commit", "-q", "--allow-empty", "-m", f"feat: legacy ({i})")
+    _git(local, "push", "-q", "origin", "master")
+    # remote now has the 10 legacy commits on refs/heads/master.
+
+    # Branch off, add 1 new PR-ref commit with a valid trailer.
+    _git(local, "checkout", "-qb", "feat-new")
+    _git(local, "commit", "-q", "--allow-empty",
+         "-m", "feat: new thing (#990)\n\nBoard-Card: t_e88e59c3")
+    tip = _git(local, "rev-parse", "HEAD")
+
+    # Drive the FULL gate pipeline the same way git does: run the module
+    # in the scratch repo's cwd, pipe the pre-push ref-line on stdin.
+    # (collect_new_commits inherits os.getcwd(), so a bare in-process
+    #  call here would run git from the *memchorus* checkout and miss
+    #  the scratch repo's remote refs entirely.)
+    env = dict(os.environ, PYTHONPATH=str(_REPO / "src"),
+               MEMCHORUS_KANBAN_DB=os.environ.get("MEMCHORUS_KANBAN_DB",
+                                                  str(Path.home() / ".hermes" / "kanban.db")))
+    ref_line = f"refs/heads/feat-new {tip} refs/heads/feat-new {ZERO_SHA}"
+    proc = subprocess.run(
+        [sys.executable, "-m", "memchorus.pre_push_gate"],
+        input=ref_line + "\n", text=True, capture_output=True, cwd=str(local),
+        env=env,
+    )
+    out = proc.stdout
+    # Gate should look at exactly 1 commit (the tip), not the 10 legacy
+    # PR-ref commits already on origin/master.
+    assert "gated 1 new commit(s)" in out, (
+        f"new-branch case is re-gating shared history. Full output:\n{out}"
+    )
+    # And that 1 commit (with a valid trailer) should PASS.
+    assert "PASS" in out and "BLOCKED" not in out, (
+        f"expected the valid-trailer tip to pass. Output:\n{out}"
+    )
+    assert proc.returncode == 0, f"gate returned {proc.returncode}:\n{out}\n{proc.stderr}"
+
