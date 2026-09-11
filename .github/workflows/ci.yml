@@ -51,10 +51,28 @@ jobs:
       - name: Install package + test deps
         run: pip install .[mcp,dev] pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
 
+      - name: Pre-push board-card gate tests (IMPL #203 — local hook logic, CI-safe)
+        # The hook's decision logic (memchorus/pre_push_gate::check_commit) is pure
+        # stdlib + sqlite3 and runs against a fixture board, so it works on any CI
+        # runner. The hook itself gates a *local* push (CI hosts don't ship the
+        # kanban store). Running it as a named step makes the gate's logic visible
+        # in its own CI line, separate from the full-suite "test-linux" step.
+        env:
+          PYTEST_ADDOPTS: ""
+        run: PYTHONPATH=src python -m pytest tests/test_pre_push_gate.py --tb=short -rA --override-ini="addopts=-p no:profiling --timeout=30"
+
       - name: Run full test suite
         env:
           PYTEST_ADDOPTS: ""
         run: PYTHONPATH=src python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts="
+
+      - name: Pre-push board-card gate (IMPL #203)
+        # Decision-logic + fixture-board cases for the local pre-push gate.
+        # Pure pytest against a fixture kanban.db — no operator board, no
+        # kanban shell-out, so it is safe to run on a CI host.
+        env:
+          PYTEST_ADDOPTS: ""
+        run: PYTHONPATH=src python -m pytest tests/test_pre_push_gate.py --tb=short -rA --override-ini="addopts="
 
       - name: Recall quality battery + regression gate (IMPL #168)
         # Numeric recall floors: recall@5, recall@10, MRR, precision@5, plus

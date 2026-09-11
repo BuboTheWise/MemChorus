@@ -1,0 +1,40 @@
+#!/usr/bin/env sh
+# Pre-push board-card gate (IMPL #203).
+#
+# Thin POSIX dispatcher over `python -m memchorus.pre_push_gate`, which
+# reads the push refs git feeds on stdin and enforces the commit convention.
+# Keeping the logic in Python means the tests exercise the real decision
+# path without shelling out to a repo-relative hook (see
+# tests/test_pre_push_gate.py).
+#
+# The gate reads the operator's local board; CI hosts don't ship it, so
+# this is a local pre-push gate, not a CI step.
+
+set -eu
+
+# Locate a usable python first (PATH, else the system default).
+PY=
+if command -v python3 >/dev/null 2>&1; then
+  PY=python3
+elif command -v python >/dev/null 2>&1; then
+  PY=python
+else
+  echo "pre-push: no python interpreter found (need python3 or python)" >&2
+  exit 2
+fi
+
+# Repo root (where src/memchorus/pre_push_gate.py lives). The hook runs
+# from the repo working tree, so $GIT_DIR is present when git invoked us.
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Ensure the package is importable even when the operator has not
+# `pip install -e .`-ed the repo: make `src/` importable as a source dir.
+PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+
+# Pass through the same stdin (the ref list) the hook received.
+if [ -t 0 ]; then
+  # No stdin (e.g. invoked interactively for a dry run) — nothing to gate.
+  exit 0
+fi
+
+PYTHONPATH="$PYTHONPATH" exec "$PY" -m memchorus.pre_push_gate "$@"
