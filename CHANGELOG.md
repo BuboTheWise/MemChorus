@@ -2,6 +2,11 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.52] - 2026-09-10
+
+### Added
+- **Pre-push board-card gate (RELEASE #203 / Issue #203):** a mechanical `git pre-push` gate enforces that every PR-referencing commit (`(#N)`) carries a `Board-Card: t_<hex>` trailer pointing at a real, owned, non-archived Kanban card — closing the recurring "PR merged with an unowned board card" gap (IMPL #201 was the concrete instance). New module `memchorus/pre_push_gate.py` (pure, unit-testable decision logic + read-only board lookup via `$MEMCHORUS_KANBAN_DB` or `~/.hermes/kanban.db`), `.githooks/pre-push` dispatcher, `scripts/install-hooks.sh` idempotent installer, `tests/test_pre_push_gate.py` (20 tests, fixture-board, CI-safe). Local pre-push gate (CI hosts don't ship the operator's board). Skill `development-process` names the gate. Bumps `__version__` 2.0.51 → 2.0.52.
+
 ## [2.0.50] - 2026-09-08
 
 ### Fixed
