@@ -8,6 +8,7 @@ Covers:
 * on_session_end() hook integration — the checkpoint block runs (calls save)
   before auto-tuning, and never interrupts teardown on failure.
 """
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
@@ -20,6 +21,10 @@ from memchorus.checkpoint import (
     write_checkpoint,
 )
 from memchorus.project_record import validate_project_record
+
+# Neutral placeholder root for synthetic fixture paths (no operator home path —
+# keeps the OPSEC hard-tier sweep clean; see scripts/opsec_sweep.py).
+FIX = Path("/var/projects")
 
 
 class FakeOrchestrator:
@@ -45,7 +50,7 @@ def test_build_checkpoint_record_produces_valid_location_and_standard() -> None:
     """A built record must survive §2.3 validation — the save gate is the truth."""
     key, value = build_checkpoint_record(
         project_name="Acme Repo",
-        cwd="/home/user/Projects/acme-repro",
+        cwd=str(FIX / "acme-repro"),
         user_texts=["please fix the checkpoint on session end for memchorus"],
     )
     # Key normalisation: case-folded slug (spec §3.1).
@@ -55,7 +60,7 @@ def test_build_checkpoint_record_produces_valid_location_and_standard() -> None:
 
     # Location (verified, not rule-derived).
     loc = value["location"]
-    assert loc["canonical_root"] == "/home/user/Projects/acme-repro"
+    assert loc["canonical_root"] == str(FIX / "acme-repro")
     assert loc["source"].startswith(CHECKPOINT_SOURCE_PREFIX + "acme-repo")
     assert loc["verified_at"]  # non-null — we were actually working here
 
@@ -102,7 +107,7 @@ def test_cwd_is_used_canonical_root_and_source_is_verified() -> None:
 
 def test_write_checkpoint_persists_via_save_and_returns_key() -> None:
     orch = FakeOrchestrator(saved_key="project:acme")
-    saved = write_checkpoint(orch, "Acme", cwd="/home/user/Projects/acme",
+    saved = write_checkpoint(orch, "Acme", cwd=str(FIX / "acme"),
                              user_texts=["work on checkpoint please"])
     assert saved == "project:acme"
     assert len(orch.calls) == 1
@@ -113,7 +118,7 @@ def test_write_checkpoint_persists_via_save_and_returns_key() -> None:
     assert metadata and metadata.get("provenance")
     # The persisted value is valid and checkpoint-stamped.
     validate_project_record(value)
-    assert value["location"]["canonical_root"] == "/home/user/Projects/acme"
+    assert value["location"]["canonical_root"] == str(FIX / "acme")
     assert value["location"]["source"].startswith(CHECKPOINT_SOURCE_PREFIX)
 
 
