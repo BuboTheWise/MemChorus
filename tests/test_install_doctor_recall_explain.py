@@ -272,10 +272,15 @@ def test_recall_json_stable_schema(capsys, monkeypatch):
     # machine consumer can assert whether any hit was served from the local
     # fallback cache without parsing the rendered text. Fake orchestrator
     # returns live-style hits (no "local-fallback" source), so it is False.
-    assert set(rd) == {"rendered", "injected", "dropped", "full_body_mark", "degraded"}
+    # (#207) ``mode_split`` + per-entry ``mode`` carry the inline-vs-
+    # locator_preview routing split so a machine consumer can assert which
+    # entries collapsed to the locator+preview form vs which inlined in full.
+    assert set(rd) == {"rendered", "injected", "dropped", "full_body_mark", "degraded", "mode_split"}
+    assert set(rd["mode_split"]) == {"inline", "locator_preview", "suppressed"}
     assert rd["degraded"] is False
     for item in rd["injected"]:
-        assert set(item) == {"key", "score", "content", "suppressed"}
+        assert set(item) == {"key", "score", "content", "suppressed", "mode"}
+        assert item["mode"] in ("inline", "locator_preview", "suppressed")
     for drop in rd["dropped"]:
         assert set(drop) == {"key", "score", "reason"}
 

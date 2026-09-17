@@ -41,6 +41,14 @@ LOCATOR_INJECT_THRESHOLD = 240
 # path_or_url pointer), per the #140 acceptance criterion (~150 chars).
 LOCATOR_LINE_MAX_CHARS = 150
 
+# (Issue #207) Opening-lines preview of the body that rides behind the
+# locator line when the hot path collapses a long entry.  Without this the
+# injected entry was a *reference* ("read it: retrieve(key=...)") with zero
+# usable content — the same "remember to use it" mode the system exists to
+# eliminate.  Short entries are never collapsed (see should_inject_locator);
+# long ones inject locator line + capped preview, full body on demand.
+PREVIEW_MAX_CHARS = 240
+
 # Caps that keep individual locator fields compact.
 GEST_MAX_CHARS = 120
 TOPICS_MAX = 6
@@ -632,13 +640,54 @@ def format_locator(locator: Dict[str, Any], source_name: Optional[str] = None,
     return line
 
 
-def should_inject_locator(content_text: str, locator: Optional[Dict[str, Any]]) -> bool:
+def should_inject_locator(content_text: str, locator: Optional[Dict[str, Any]],
+                          threshold: Optional[int] = None) -> bool:
     """True when recall should prefer the locator over the full body.
 
-    Requires a usable locator and a body longer than LOCATOR_INJECT_THRESHOLD.
+    Requires a usable locator and a body longer than the collapse threshold.
     Short bodies are left as-is — the locator exists to cut bloat, not to
     replace already-tiny context.
+
+    *threshold* (Issue #207) is the per-entry inline threshold: bodies at or
+    below it are injected inline, even when a locator is stored.  When left
+    ``None`` the legacy hard-coded LOCATOR_INJECT_THRESHOLD applies, so
+    pre-#207 call sites keep their exact behaviour.  A configured threshold
+    of 0 collapses every entry that carries a locator, however small.
     """
     if not locator:
         return False
-    return len(content_text or "") > LOCATOR_INJECT_THRESHOLD
+    cut = LOCATOR_INJECT_THRESHOLD if threshold is None else int(max(0, threshold))
+    return len(content_text or "") > cut
+
+
+def make_preview(content_text: str, max_chars: int = PREVIEW_MAX_CHARS) -> str:
+    """Line-boundary-capped opening preview of a long body (Issue #207).
+
+    When the hot path injects a locator line instead of the full blob, this
+    preview of the body's opening lines rides behind the pointer so the agent
+    gets *usable* content in-turn rather than an opaque "read it" reference.
+    Keeps complete lines (never a torn-off fragment), appends ``"..."`` when
+    text was cut.  Returns the input verbatim when it already fits — callers
+    may use that as a no-op sentinel.  Never raises (falls back to a hard
+    character cut on pathological input).
+    """
+    text = (content_text or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    lines = text.split("\n")
+    if len(lines) == 1:
+        # Single-line body: no line boundary to snap to — hard cut.
+        return text[:max_chars].rstrip() + "..."
+    kept: List[str] = []
+    running = 0
+    for line in lines:
+        if running + len(line) + 1 > max_chars:
+            break
+        kept.append(line)
+        running += len(line) + 1
+    if not kept:
+        # First line alone overflows the cap — fall back to a hard cut.
+        return text[:max_chars].rstrip() + "..."
+    return "\n".join(kept) + "..."
