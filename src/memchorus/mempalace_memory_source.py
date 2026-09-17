@@ -1536,6 +1536,74 @@ class MemPalaceMemorySource(MemorySource):
             "version": "2.1",
         }
 
+    def status_report(self, active_project: Optional[str] = None) -> Dict[str, Any]:
+        """Return a compact corpus / closet diagnostic payload.
+
+        (#209 / #206) Combines two read-only signals so the agent can answer
+        "what is my palace skewed toward, and did the cloak apply?"::
+
+            {
+              "active_project": "acme",               # slug or None
+              "closet": {"queries_seen": N, "queries_with_active_project": L,
+                          "bound_results_surfaced": M},
+              "top_wings": [{"wing": "acme", "drawers": 12}, ...],   # if available
+              "total_drawers": 1234,
+              "source": "mempalace",
+              "status": "ok" | "no_orchestrator" | "partial",
+              "reason": "..."                          # only on non-ok
+            }
+
+        Never raises for the *expected* failure modes (no orchestrator
+        registered, MCP down) — those are reported via ``status`` + ``reason``
+        so the caller can emit ``--status`` with exit 0 (a diagnostic, not a
+        failure) and ``--json`` can be consumed by a gate.
+        """
+        from memchorus.relevance_engine import _closet_stats
+
+        report: Dict[str, Any] = {
+            "active_project": active_project,
+            "closet": _closet_stats(),
+            "top_wings": [],
+            "total_drawers": 0,
+            "source": self._name,
+            "status": "partial",
+            "reason": "",
+        }
+
+        # Try the local cache first (always available; cheap).
+        try:
+            cache_dir = getattr(self, "_cache_dir", None)
+            if cache_dir is not None:
+                wings: Dict[str, int] = {}
+                total: int = 0
+                import os as _os
+                # Walk the cache dir; each subdirectory named after a wing
+                # holds one drawer per file (the MemPalace layout uses
+                # <root>/<wing>/<room>/ for live data).
+                for wing_name in sorted(_os.listdir(str(cache_dir))):
+                    wing_path = _os.path.join(str(cache_dir), wing_name)
+                    if not _os.path.isdir(wing_path):
+                        continue
+                    # Count drawers as any file under this wing (recursive).
+                    drawer_count = 0
+                    for root, _dirs, files in _os.walk(wing_path):
+                        drawer_count += sum(1 for f in files if not f.startswith("."))
+                    if drawer_count > 0:
+                        wings[wing_name] = drawer_count
+                        total += drawer_count
+                if wings:
+                    top = sorted(wings.items(), key=lambda kv: -kv[1])[:5]
+                    report["top_wings"] = [
+                        {"wing": w, "drawers": n} for w, n in top
+                    ]
+                    report["total_drawers"] = total
+                    report["status"] = "ok"
+        except Exception as exc:  # pragma: no cover - defensive
+            report["reason"] = f"local cache scan failed: {exc}"
+
+        return report
+
+
     @property
     def name(self) -> str:
         return self._name

@@ -29,6 +29,113 @@ logger = logging.getLogger(__name__)
 # Public API types
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# (#206 / #209) Active-project closet boost — module-level counters + predicate
+#
+# The per-result ``closet_boost`` is computed inside ``RelevanceScorer.
+# score_breakdown`` and carried on each ranked result's ``meta`` and reported in
+# the score-breakdown dict.
+#
+# Separately, session-scoped *counters* live here so that a ``status`` /
+# ``--status`` diagnostic (issue #209) can surface "how many recall queries this
+# session saw the cloak applied" without requiring a live orchestrator.  The
+# counters are process-global, reset by any test that calls
+# ``reset_closet_counters()`` or by an explicit session start in the hooks
+# layer.  Kept module-level (not a singleton) so imports stay cheap and the
+# counters are trivially testable.
+# ---------------------------------------------------------------------------
+
+_CLOSET_STATS_LOCK = __import__("threading").Lock()
+_CLOSET_STATS: Dict[str, int] = {
+    "queries_seen": 0,             # every recall query that scored at least one result
+    "queries_with_active_project": 0,  # queries where context.active_project was set
+    "bound_results_surfaced": 0,  # results carrying closet_boost > 0 in their meta
+}
+
+
+def _closet_stats() -> Dict[str, int]:
+    """Return a snapshot of the closet counters (read-only copy)."""
+    with _CLOSET_STATS_LOCK:
+        return dict(_CLOSET_STATS)
+
+
+def reset_closet_counters() -> None:
+    """Zero the closet counters (used by tests + session-start hook)."""
+    with _CLOSET_STATS_LOCK:
+        for k in _CLOSET_STATS:
+            _CLOSET_STATS[k] = 0
+
+
+def record_closet_query(has_active_project: bool) -> None:
+    """Bump the per-query counters when a recall score pass starts."""
+    with _CLOSET_STATS_LOCK:
+        _CLOSET_STATS["queries_seen"] += 1
+        if has_active_project:
+            _CLOSET_STATS["queries_with_active_project"] += 1
+
+
+def record_bound_result(boost: float) -> None:
+    """Bump the bound-result counter when a scored result received the cloak."""
+    if boost and boost > 0.0:
+        with _CLOSET_STATS_LOCK:
+            _CLOSET_STATS["bound_results_surfaced"] += 1
+
+
+def closet_bound_result(result: Dict[str, Any], active_project: Optional[str]) -> bool:
+    """Return True when *result* is *bound* to the active project.
+
+    Binding signals — any ONE of:
+    * ``result["project"] == active_project`` (drawer's explicit project tag)
+    * ``result["key"]`` starts with ``project:<slug>`` and the slug matches
+      (the canonical ``project:<slug>`` key from the §2.1 contract)
+    * ``result["wing"] == active_project`` (a wing named after the project)
+
+    All comparisons are case-insensitive; missing fields simply fail the test,
+    so a drawer that carries no project signal is ``False`` (no boost).
+
+    Args:
+        result: a single search hit dict (shape per ``orchestrator.search``
+            — carries ``key``, ``content``, ``source``, etc; optional
+            ``wing``/``room``/``project``).
+        active_project: the slug of the active project (may be ``None``/""
+            when the agent isn't inside a project context; the boost is then
+            always ``False`` and the boost value is 0.0).
+
+    Returns:
+        bool.
+    """
+    if not active_project:
+        return False
+    active_l = str(active_project).strip().lower()
+    if not active_l:
+        return False
+    if not isinstance(result, dict):
+        return False
+    for field in ("project", "wing"):
+        v = result.get(field)
+        if isinstance(v, str) and v.strip().lower() == active_l:
+            return True
+    key = result.get("key", "")
+    if isinstance(key, str):
+        kl = key.lower()
+        if kl.startswith("project:"):
+            slug = kl.split(":", 1)[1].strip()
+            if slug == active_l:
+                return True
+        # (#206) The live MemPalace recall path emits entries whose ``key`` is
+        # a ``wing/room`` compound (see ``mempalace_memory_source.search`` —
+        # ``comp_key = f"{r_wing}/{r_room}"``).  When the *first* path segment
+        # matches the active project's slug, treat the drawer as bound.
+        # A trailing-slash-free key with no "/" is not a compound, so this
+        # branch is naturally a no-op for single-segment keys.
+        first = kl.split("/", 1)[0].strip()
+        if first == active_l and "/" in kl:
+            return True
+    return False
+
+
+
+
 # (#184) The read-path now stamps recall hits with a *distinctive* source
 # marker — ``mcp-live`` for content served by a live MemPalace MCP backend, and
 # ``local-fallback`` for content served out of the local JSON cache — instead of
@@ -69,6 +176,27 @@ class ContextWeight:
         recency_weight:  Normalised importance of the recency dimension (0..1).
         quality_weight:  Normalised importance of the text-match quality dimension (0..1).
         source_type_weight: Importance of the source-type bias (0..1).
+        active_project:  (#206) Slug of the project an agent is actively working
+                        in, resolved at session start (e.g. ``"memchorus"``).
+                        Set to ``None`` / empty outside a project context.
+        closet_boost_factor: (#206/#209) Additive bonus applied to the similarity
+                        score when a result is *bound* to ``active_project``
+                        (its drawer's ``project`` field or its key prefix
+                        ``project:<slug>`` matches).  Bound results are
+                        partitioned to the TOP of the ranked list before
+                        similarity is compared, and the boost value is
+                        surfaced per-result as ``closet_boost``.
+                        Default 0.35 sits between the "strong but not dominant"
+                        band: enough to flip typical top-similarity ordering
+                        (learning-* at ~0.27 → project drawer at ~0.30 +
+                        0.35 = ~0.42), low enough that a genuinely unrelated
+                        high-similarity hit won't outrank it on its own.
+
+    The active-project partition is a *pure tiebreak*, not a new weighting
+    dimension: it only changes the relative order among candidates that the
+    existing relevance score already considers "relevant" (score ≥ recall
+    threshold).  This keeps ``closet_boost`` cheap, deterministic, and fully
+    reversible via ``closet_boost_factor=0``.
     """
 
     domain_weights: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
@@ -78,6 +206,8 @@ class ContextWeight:
     recency_weight: float = 0.30
     quality_weight: float = 0.45
     source_type_weight: float = 0.25
+    active_project: Optional[str] = None
+    closet_boost_factor: float = 0.35
 
 
 @dataclass
@@ -724,6 +854,17 @@ class RelevanceScorer:
         # Safety clamp (floating-point drift / user error guard)
         final = float(min(max(raw, 0.0), score_max))
 
+        # (#206) Active-project closet boost — a *reporting* field, computed
+        # from (a) the context's active_project and (b) whether this specific
+        # result is bound to that project.  The partition (bound-first) happens
+        # in score_and_rank; the numeric boost value here is surfaced on every
+        # ranked result for the agent (``retrieve('k', field='...')``) and for
+        # the #209 ``--status`` diagnostic.
+        active_project = getattr(context, "active_project", None)
+        boost_value = 0.0
+        if closet_bound_result(result, active_project):
+            boost_value = float(getattr(context, "closet_boost_factor", 0.0) or 0.0)
+
         return {
             "quality": quality,
             "recency": recency,
@@ -741,6 +882,7 @@ class RelevanceScorer:
                 "factor": penalty_factor,
                 "matches": [[label, factor] for label, factor in penalty_matches],
             },
+            "closet_boost": boost_value,
             "raw": raw,
             "final": final,
         }
@@ -760,12 +902,19 @@ class RelevanceScorer:
             context = ContextWeight()
 
         scored: Dict[str, RankedResult] = {}
+        active_project = getattr(context, "active_project", None)  # (#206)
+        # (#209) Bump the per-query counters once per score pass, not per
+        # result — so the "L of Q queries" diagnostic is meaningful.  The L
+        # counter only counts a result that *won* its key slot and is bound,
+        # i.e. a bound item actually surfaced in the ranked output.
+        record_closet_query(has_active_project=bool(active_project))
         for r in results:
             # Compute once via the authoritative breakdown so the score and the
             # per-component explanation stay in lockstep (IMPL #173).
             breakdown = self.score_breakdown(r, query, context)
             s = breakdown["final"]
             key = r.get("key", str(r))
+            closet_boost = float(breakdown.get("closet_boost", 0.0) or 0.0)  # (#206)
             meta = {
                 k: v
                 for k, v in r.items()
@@ -775,19 +924,44 @@ class RelevanceScorer:
             # caller reading ``RankedResult.meta``) can explain *why* this candidate
             # ranked where it did, and so the score and explanation can never diverge.
             meta["score_breakdown"] = breakdown
-            if key not in scored or s > scored[key].score:
-                scored[key] = RankedResult(
-                    key=key,
-                    content=r.get("content"),
-                    source=r.get("source", "unknown"),
-                    score=round(s, 4),
-                    # Exclude 'score' so the RelevanceScorer's normalized value is not
-                    # overwritten by the raw source-level word-count score (G3 fix).
-                    meta=meta,
-                )
+            # (#206) Surface the cloak value on the result itself so agents can
+            # branch on it (e.g. "show me what the cloak boosted").
+            meta["closet_boost"] = closet_boost
 
-        ranked = sorted(scored.values(), key=lambda x: x.score, reverse=True)
-        return ranked
+            # De-duplicate: per key, the highest-scoring candidate wins (this was
+            # pre-#206 semantics — the dict is the source of truth, and "replace
+            # on strictly-better score" keeps the highest).
+            is_winning = (key not in scored) or (s > scored[key].score)
+            if not is_winning:
+                continue  # earlier version of this key was strictly better; skip
+            scored[key] = RankedResult(
+                key=key,
+                content=r.get("content"),
+                source=r.get("source", "unknown"),
+                score=round(s, 4),
+                # Exclude 'score' so the RelevanceScorer's normalized value is not
+                # overwritten by the raw source-level word-count score (G3 fix).
+                meta=meta,
+            )
+            # (#209) A "bound surface event" is a candidate that (a) won its key
+            # slot AND (b) is bound to the active project — i.e. it actually
+            # made it to the ranked output under cloak influence.
+            if closet_boost > 0.0:
+                record_bound_result(closet_boost)
+
+        # (#206) Two-bucket partition: bound (active project) first, then unbound.
+        # ``scored.values()`` is already de-duplicated (one RankedResult per key),
+        # so the two lists together are exactly the ranked set, ordered:
+        #   bucket 0 (bound)   — sorted by score desc
+        #   bucket 1 (unbound) — sorted by score desc
+        # This is the whole point of #206: a lower-similarity hit bound to the
+        # active project now beats a higher-similarity unbound hit.
+        all_results = list(scored.values())
+        bound_first = [rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) > 0.0]
+        unbound     = [rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) <= 0.0]
+        bound_first.sort(key=lambda x: x.score, reverse=True)
+        unbound.sort(key=lambda x: x.score, reverse=True)
+        return bound_first + unbound
 
     def rank_sources(
         self,

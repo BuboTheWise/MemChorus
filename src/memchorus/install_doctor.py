@@ -848,6 +848,105 @@ def deps_check_report() -> List[CheckResult]:
 #     transformation the doctor applies is JSON/human formatting.
 # ---------------------------------------------------------------------------
 
+def _status_report() -> Dict[str, Any]:
+    """(#209 / #206) Assemble the active-project closet + corpus diagnostic.
+
+    Composes the two read-only signals:
+      * ``memchorus.orientation._resolve_project`` — the active project slug
+        (the *same* resolver the E2 write path uses, so read and write agree)
+      * ``memchorus.mempalace_memory_source.MemPalaceMemorySource.status_report``
+        — local cache wing/drawer census + closet counters (from the
+        relevance engine)
+
+    Never raises.  Returns a report dict with ``status`` + ``reason`` so the
+    renderer can degrade gracefully outside an agent session.
+    """
+    base: Dict[str, Any] = {
+        "status": "partial",
+        "reason": "",
+    }
+
+    # 1) Active project — reuse the canonical resolver.
+    active_project: Optional[str] = None
+    try:
+        from memchorus import orientation as _orient
+        raw = _orient._resolve_project(
+            os.environ.get("HERMES_KANBAN_TASK", "").strip() or None
+        )
+        if raw:
+            active_project = str(raw).strip().lower() or None
+    except Exception:
+        pass  # silent — no cloak applied
+    base["active_project"] = active_project
+
+    # 2) Corpus census + closet counters.
+    try:
+        from memchorus import get_orchestrator
+        orch = get_orchestrator()  # type: ignore[assignment]
+        if orch is not None:
+            source = None
+            for name, src in (getattr(orch, "sources", {}) or {}).items():  # type: ignore
+                if getattr(src, "_name", None) == "mempalace" or isinstance(
+                    type(src).__name__, str
+                ) and "MemPalace" in type(src).__name__:
+                    source = src
+                    break
+            if source is not None and hasattr(source, "status_report"):
+                base.update(source.status_report(active_project=active_project))
+                if base.get("status") != "ok":
+                    base["reason"] = base.get("reason") or "no data available"
+        else:
+            base["reason"] = (
+                "No MemoryOrchestrator is registered in this process — "
+                "a fresh interpreter has not auto-bootstrapped yet. "
+                "Run --status inside an active Hermes agent session for a "
+                "full census."
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        base["reason"] = f"status_report failed: {exc}"
+        base["status"] = "partial"
+
+    return base
+
+
+def _render_status_human(report: Dict[str, Any]) -> None:
+    print("MemChorus — active-project recall status (#209 / #206)")
+    print("=" * 56)
+    ap = report.get("active_project")
+    if ap:
+        print(f"Active project: {ap}")
+    else:
+        print("Active project: (none — no project context resolved)")
+    closet = report.get("closet", {}) or {}
+    qs = closet.get("queries_seen", 0)
+    qp = closet.get("queries_with_active_project", 0)
+    br = closet.get("bound_results_surfaced", 0)
+    print(f"Closet — queries seen: {qs}, with active project: {qp}, "
+          f"bound results surfaced: {br}")
+    top = report.get("top_wings") or []
+    if top:
+        print("Top wings by drawer count:")
+        for w in top:
+            print(f"  - {w.get('wing')}: {w.get('drawers')} drawers")
+        total = report.get("total_drawers", 0)
+        top_total = sum(w.get("drawers", 0) for w in top)
+        if total and top_total:
+            pct = 100.0 * top_total / total
+            print(f"  (top {len(top)} wings = {top_total}/{total} "
+                  f"drawers ≈ {pct:.1f}% of corpus)")
+    else:
+        print("Wing census: (no local cache data available)")
+    if report.get("status") != "ok":
+        reason = (report.get("reason") or "n/a").strip()
+        if reason:
+            print(f"note: {reason}")
+
+
+def _render_status_json(report: Dict[str, Any]) -> None:
+    import json as _json
+    print(_json.dumps(report, indent=2, sort_keys=True, default=str))
+
+
 def _recall_query(query: str, limit: int) -> Dict[str, Any]:
     """Execute the live recall path for *query* and assemble the explanation.
 
@@ -1452,6 +1551,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     """
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
+
+    # ------------------------------------------------------------------ #
+    # --status — active-project closet + corpus-imbalance diagnostic       #
+    # (#209 + #206)                                                      #
+    # ------------------------------------------------------------------ #
+    if "--status" in args:
+        report = _status_report()
+        if as_json:
+            _render_status_json(report)
+        else:
+            _render_status_human(report)
+        return 0  # a diagnostic is never a failure; it is information.
 
     # ------------------------------------------------------------------ #
     # --recall "<query>" — explain a live recall decision (IMPL #173)     #
