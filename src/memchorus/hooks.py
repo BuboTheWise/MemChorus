@@ -642,6 +642,7 @@ class MemChorusHooks:
         Returns dict with flush confirmation or None if nothing to flush.
         """
         global _CAPTURE_BATCHER
+        checkpoint_key: Optional[str] = None  # IMPL #208 — set by the checkpoint block below
         try:
             batcher = _CAPTURE_BATCHER
             if batcher is not None:
@@ -668,6 +669,50 @@ class MemChorusHooks:
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_session_end failed — atexit still active. %s", exc, exc_info=True)
             return None
+
+        # IMPL #208 — session-end auto-checkpoint (write side of the #163 chain).
+        # Refresh the active project's project:<slug> record so the next
+        # on_session_start / resolve_project_record reads a verified working root
+        # plus this session's gist+topics.  Best-effort: any failure degrades to
+        # a no-op and never reaches the auto-tuning below.
+        try:
+            from memchorus.checkpoint import write_checkpoint
+
+            try:
+                import os as _os
+                from memchorus.orientation import _resolve_project as _resolve_proj
+
+                # Same canonical project seam as on_session_start (env task →
+                # workspace → CWD basename).  Empty/None → write_checkpoint
+                # degrades to a no-op, which is exactly the "no project" case.
+                _proj = _resolve_proj(os.environ.get("HERMES_KANBAN_TASK"))
+
+                # Reuse the same conversation shape the auto-tuning path below
+                # already knows how to read (list of {role,content} or bare strs).
+                _hist = kwargs.get("conversation_history") or []
+                _user_texts: List[str] = []
+                for _m in _hist:
+                    if isinstance(_m, dict):
+                        if _m.get("role") in ("user", "human"):
+                            _t = _m.get("content") or _m.get("text")
+                            if _t:
+                                _user_texts.append(str(_t))
+                    elif isinstance(_m, str):
+                        _user_texts.append(_m)
+
+                saved_key = write_checkpoint(
+                    orchestrator=_get_orchestrator(),
+                    project_name=_proj,
+                    cwd=_os.getcwd(),
+                    user_texts=_user_texts,
+                )
+                if saved_key:
+                    checkpoint_key = saved_key
+            except Exception as _exc:  # noqa: BLE001 - teardown guard
+                logger.debug("checkpoint wiring failed — degrading. %s", _exc)
+
+        except Exception as exc:  # pragma: no cover - checkpoint must never break teardown
+            logger.debug("on_session_end checkpoint block skipped. %s", exc)
 
         # Auto-tuning: session-end mistake detection (§10.2 turn-retrospective)
         try:
@@ -758,10 +803,13 @@ class MemChorusHooks:
         except Exception:  # noqa: BLE001
             pass  # calibration must never break session teardown
 
-        return {
+        result: Dict[str, Any] = {
             "source": "memchorus_session_end",
             "teardown": "complete",
         }
+        if checkpoint_key:
+            result["checkpoint"] = checkpoint_key
+        return result
 
 
 # ---------------------------------------------------------------------------
