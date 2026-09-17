@@ -1018,6 +1018,74 @@ def _build_search_terms(kwargs: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _resolve_inline_threshold() -> Optional[int]:
+    """Return the per-entry inline threshold for recall injection (Issue #207).
+
+    Resolution order (first match wins):
+      1. ``MEMCHORUS_RECALL_INLINE_THRESHOLD`` env var
+         - Integer string: threshold in characters (0..50000); ``0`` collapses
+           every entry to locator+preview form regardless of body length.
+         - Empty string: falls through to the next layer (treated as unset).
+      2. Per-profile ``config.yaml``: ``memchorus.recall.inline_threshold``
+         - Integer: same semantics as the env var.
+         - ``~`` / ``null`` / ``''``: explicit legacy behaviour (return ``None``,
+           i.e. keep the pre-#207 ``LOCATOR_INJECT_THRESHOLD`` hard-coded gate).
+         - Missing key: fall through to the default.
+      3. Default: ``300`` — short entries (≤300 chars) are injected inline in
+         full; longer ones collapse to the locator line + a capped preview of
+         the body's opening lines (per the "first ~3 lines" spec in #207).
+
+    Returns ``None`` when the operator explicitly asked for the pre-#207
+    keys-only behaviour.  The call-site branch in the recall renderer maps:
+
+      * ``threshold is None`` → legacy mode (locator injected only when body is
+        longer than ``LOCATOR_INJECT_THRESHOLD`` = 240, no preview appended);
+      * ``threshold == 0``    → every stored locator wins, body always previewed;
+      * ``threshold > 0``     → bodies ≤ threshold inline in full; longer ones
+        collapse to locator + preview.
+    """
+    # Layer 1: environment variable
+    env_val = os.environ.get("MEMCHORUS_RECALL_INLINE_THRESHOLD")
+    if env_val is not None:
+        s = env_val.strip()
+        if s == "":
+            # Empty string → treated as unset; fall through to config/default.
+            pass
+        elif s.lower() in ("none", "null", "~"):
+            return None
+        else:
+            try:
+                return int(max(0, min(int(s), 50000)))
+            except ValueError:
+                pass  # fall through to config
+
+    # Layer 2: per-profile config.yaml
+    try:
+        from memchorus import _sanitize_profile
+        profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
+        cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
+        p = _Path(cfg_path)
+        if p.exists():
+            data = _yml.safe_load(p.read_text()) or {}
+            memchorus_cfg = data.get("memchorus", {})
+            if isinstance(memchorus_cfg, dict):
+                recall_cfg = memchorus_cfg.get("recall", None)
+                if isinstance(recall_cfg, dict):
+                    val = recall_cfg.get("inline_threshold")
+                    if val is None:
+                        return None
+                    if isinstance(val, bool):
+                        # bools are ints in Python — guard explicitly
+                        return 0 if val else None
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        return int(max(0, min(int(val), 50000)))
+    except Exception:
+        pass
+
+    # Layer 3: default
+    return 300
+
+
 def _resolve_char_limit() -> int:
     """Return effective recall block character ceiling (GH-96).
 
@@ -1372,7 +1440,12 @@ def _build_context_entries(
     """
     max_chars = max(200, int(max_chars))
     seen_keys: set = set()
-    entries: List[Tuple[str, float, Optional[Any], Optional[str]]] = []
+    # 5-tuple: (line, score, key, content_hash, mode)
+    #   mode ∈ {"inline", "locator_preview", "suppressed", "dropped-marker"}
+    # Tagged per entry so the doctor / a --json consumer can report the
+    # "N of M entries injected inline, K as key+preview" line from #207
+    # without re-parsing the rendered text.
+    entries: List[Tuple[str, float, Optional[Any], Optional[str], str]] = []
 
     # (#184) Degrade detection. If ANY item in this recall response was served
     # from the local fallback cache (its ``source`` field carries the local-
@@ -1411,7 +1484,7 @@ def _build_context_entries(
         content_raw = _unwrap_content_field(content_raw)
         raw_content = content_raw.rstrip()
 
-        # --- Issue #140: locator-first injection -------------------------------
+        # --- Issue #140 + #207: locator-first injection -----------------------
         # When a locator was stored alongside the body and the body is long,
         # replace the blob with the compact "go-read-it" locator line
         # (gist/title/topics + path_or_url pointer, ≤ ~150 chars).  The full
@@ -1420,14 +1493,77 @@ def _build_context_entries(
         # every prompt.  Degrades to the legacy blob path on any error.
         # (Runs BEFORE suppression so the suppression window hashes the same
         #  compact content the agent actually sees, per profile.)
+        #
+        # (#207) Threshold policy, resolved once per render pass below:
+        #   threshold is None  → legacy: collapse when body > 240 chars, no
+        #                          preview (pre-#207 behaviour, opt-in escape).
+        #   threshold == 0    → always collapse when a locator is stored.
+        #   threshold > 0     → inline when body ≤ threshold, else collapse
+        #                          to locator line + capped opening preview.
+        # The mode tag ("inline" vs "locator_preview") is recorded on the
+        # entry so the doctor can report the inline/preview split (#207 AC4).
+        mode = "inline"
+        _inline_threshold = _resolve_inline_threshold()
         try:
             from memchorus import locator as _locator_mod
             loc = _locator_mod.has_locator(item)
-            if loc and _locator_mod.should_inject_locator(raw_content, loc):
-                _src = item.get("source") or item.get("source_name") or ""
-                raw_content = _locator_mod.format_locator(loc, source_name=_src, key=key)
+            if loc is None:
+                pass
+            elif _inline_threshold is None:
+                # Legacy: keep pre-#207 gate (LOCATOR_INJECT_THRESHOLD = 240),
+                # byte-identical rendered line, no preview appended.
+                if _locator_mod.should_inject_locator(raw_content, loc):
+                    _src = item.get("source") or item.get("source_name") or ""
+                    raw_content = _locator_mod.format_locator(loc, source_name=_src, key=key)
+                    mode = "locator_preview"
+            else:
+                if len(raw_content or "") <= int(_inline_threshold):
+                    pass  # body fits — inject inline in full, locator stays on demand
+                else:
+                    # Collapse to locator line + capped opening-lines preview.
+                    # (AC4: rendered text shows "key — locator — read it" AND a
+                    # preview of the opening body lines.  make_preview returns
+                    # an opening-lines slice; when the body fits the cap it
+                    # is unchanged, in which case we still emit the locator
+                    # line and the preview as the first preview-cap-worth of
+                    # the body so the "read it:" hint is always paired with
+                    # a content peek.)
+                    _preview_cap = 300  # matches locator.PREVIEW_MAX_CHARS default
+                    _src = item.get("source") or item.get("source_name") or ""
+                    _loc_line = _locator_mod.format_locator(loc, source_name=_src, key=key)
+                    _preview = _locator_mod.make_preview(raw_content)
+                    if _preview and _preview != raw_content:
+                        raw_content = _loc_line + "\n" + _preview
+                    elif len(raw_content or "") > _preview_cap:
+                        # make_preview returned the body unchanged (fits the
+                        # cap) but the body still exceeds the preview budget —
+                        # use the first _preview_cap chars as the preview, on
+                        # a line boundary, so the "read it:" line is always
+                        # paired with a content peek per #207 AC4.
+                        _plines = raw_content.split("\n")
+                        _preview_lines: List[str] = []
+                        _running = 0
+                        for _pl in _plines:
+                            if _running + len(_pl) + 1 > _preview_cap:
+                                break
+                            _preview_lines.append(_pl)
+                            _running += len(_pl) + 1
+                        if _preview_lines:
+                            _preview = "\n".join(_preview_lines)
+                            raw_content = _loc_line + "\n" + _preview
+                        else:
+                            raw_content = _loc_line
+                    else:
+                        # Body small enough that make_preview returned it
+                        # unchanged AND it fits within the preview cap —
+                        # keep it inline (the threshold branch above would
+                        # have caught it, but if the threshold was set
+                        # lower than the body length we still need a
+                        # collapsed form, so emit locator line + body).
+                        raw_content = _loc_line + "\n" + raw_content
+                    mode = "locator_preview"
         except Exception:  # pragma: no cover - locator path must never break recall
-            pass
+            mode = "inline"
 
         # --- Cross-turn suppression (GH-141): if this exact key+content was
         # already rendered recently (per profile), collapse to a marker line
@@ -1440,7 +1576,7 @@ def _build_context_entries(
                 key,
                 content_hash[:12],
             )
-            entries.append((f"- {key}: {_SUPPRESSION_MARKER}", score, None, None))
+            entries.append((f"- {key}: {_SUPPRESSION_MARKER}", score, None, None, "suppressed"))
             continue
 
         # --- Per-entry budget enforcement (line-boundary aware) --------------
@@ -1462,7 +1598,7 @@ def _build_context_entries(
                     raw_content = content_lines[0][:_MAX_CONTENT_CHARS] + "..."
 
         line = f"- **{key}** — {raw_content}"
-        entries.append((line, score, key, content_hash))
+        entries.append((line, score, key, content_hash, mode))
 
     # Sort by score ascending so we can pop lowest-scored first if over budget
     entries.sort(key=lambda e: e[1])
@@ -1477,7 +1613,7 @@ def _build_context_entries(
 
     dropped: List[Dict[str, Any]] = []
     while entries and len(joined) + _header_len + _footer_len > _ceiling:
-        _removed_line, _removed_score, _removed_key, _ = entries.pop(0)
+        _removed_line, _removed_score, _removed_key, _removed_hash, _removed_mode = entries.pop(0)
         dropped.append(
             {
                 "key": _removed_key if _removed_key is not None else "(marker)",
@@ -1497,17 +1633,21 @@ def _build_context_entries(
 
     # Full-body entries that actually rendered (skip suppressed markers) — the
     # exact set a production caller should pass to window.mark().
-    full_body_mark = [(_key, _hash) for (_line, _score, _key, _hash) in entries if _key is not None and _hash is not None]
+    full_body_mark = [(_key, _hash) for (_line, _score, _key, _hash, _mode) in entries if _key is not None and _hash is not None]
 
     # Final rendered order (descending by score) for the structured report.
+    # (#207) Each entry carries ``mode``: "inline", "locator_preview",
+    # "suppressed" — so the doctor and any --json consumer can count the
+    # inline vs preview split without parsing the rendered text.
     injected = [
         {
             "key": _key if _key is not None else "(suppressed-marker)",
             "score": _score,
             "content": _line,
             "suppressed": _key is None,
+            "mode": _mode,
         }
-        for (_line, _score, _key, _hash) in entries
+        for (_line, _score, _key, _hash, _mode) in entries
     ]
 
     return {
@@ -1526,6 +1666,13 @@ def _build_context_entries(
         # can assert the state without parsing rendered text. False on any
         # all-live response — so the mcp-live byte-identical lock is preserved.
         "degraded": degraded,
+        # (#207) Per-mode split counts over ``injected`` (excludes ``dropped``
+        # which are budget-evicted before they render).
+        "mode_split": {
+            "inline": sum(1 for e in injected if e["mode"] == "inline"),
+            "locator_preview": sum(1 for e in injected if e["mode"] == "locator_preview"),
+            "suppressed": sum(1 for e in injected if e["suppressed"]),
+        },
     }
 
 
@@ -1595,6 +1742,7 @@ def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {
             "rendered": "", "injected": [], "dropped": [],
             "full_body_mark": [], "degraded": False,
+            "mode_split": {"inline": 0, "locator_preview": 0, "suppressed": 0},
         }
     max_chars = _resolve_char_limit()
     window = _get_suppression_window()
