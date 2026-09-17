@@ -1118,7 +1118,21 @@ def _render_recall_human(report: Dict[str, Any]) -> None:
     if render is not None:
         inj = render.get("injected") or []
         dropped = render.get("dropped") or []
-        print(f"Render (read-only simulation): {len(inj)} would be injected, {len(dropped)} dropped by budget.")
+        mode_split = render.get("mode_split") or {"inline": 0, "locator_preview": 0, "suppressed": 0}
+        print(
+            f"Render (read-only simulation): {len(inj)} would be injected, {len(dropped)} dropped by budget."
+        )
+        # (#207) Explicit hot-injection mode split so the reader sees at a
+        # glance how many entries collapsed to the compact locator+preview
+        # form vs how many inlined the full body (plus the suppressed-marker
+        # bucket) — the card's AC4 "Render (read-only simulation): N of M
+        # entries injected {inline | locator+preview}" requirement.
+        inline_n = int(mode_split.get("inline", 0))
+        preview_n = int(mode_split.get("locator_preview", 0))
+        suppressed_n = int(mode_split.get("suppressed", 0))
+        print(
+            f"  hot-injection split: {inline_n} inline · {preview_n} locator+preview · {suppressed_n} suppressed-marker"
+        )
         # (#184) Surface the degradation state as an explicit banner so the
         # operator can see at a glance that at least one hit was served from
         # the local fallback cache rather than the live MemPalace graph.
@@ -1127,8 +1141,13 @@ def _render_recall_human(report: Dict[str, Any]) -> None:
             print("    local fallback cache because the MemPalace MCP backend was")
             print("    unreachable at recall time. Those entries may be stale.")
         for i in inj:
-            flag = " (suppressed→marker only)" if i.get('suppressed') else ""
-            print(f"    + {i.get('key')} score={i.get('score')}{flag}")
+            if i.get("suppressed"):
+                tag = " suppressed-mark"
+            elif i.get("mode") == "locator_preview":
+                tag = " locator+preview"
+            else:
+                tag = " inline"
+            print(f"    + {i.get('key')} score={i.get('score')}{tag}")
         for d in dropped:
             print(f"    - {d.get('key')} score={d.get('score')} reason={d.get('reason')}")
     else:
