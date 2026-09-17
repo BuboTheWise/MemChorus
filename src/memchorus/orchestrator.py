@@ -15,6 +15,7 @@ Lifecycle management (§8 Phase 1): config schema, LifecycleManager skeleton,
 SweepScheduler, AuditLogger — all opt-in, disabled by default for backward compat (§9).
 """
 
+import os
 import time
 import json
 import logging
@@ -508,6 +509,27 @@ def clear_project_record_cache() -> None:
         _PROJECT_RECORD_SSoT_CACHE = None
 
 
+# ---------------------------------------------------------------------------
+# (#206) Active-project auto-injection helpers
+# ---------------------------------------------------------------------------
+
+def _ctx_with_active_project(context: ContextWeight, slug: str) -> ContextWeight:
+    """Return a *copy* of *context* with ``active_project`` set to *slug*.
+
+    Uses ``dataclasses.replace`` under the hood so the caller's original
+    object is left untouched (it's a plain dataclass, so copy semantics are
+    cheap and predictable).  If the context object somehow isn't a normal
+    instance of the dataclass (e.g. a hand-rolled mock in tests), we fall
+    back to in-place mutation.
+    """
+    import dataclasses
+    try:
+        return dataclasses.replace(context, active_project=slug)
+    except Exception:
+        context.active_project = slug  # type: ignore[attr-defined]
+        return context
+
+
 class MemoryOrchestrator:
     """
     Core orchestrator for managing multiple memory sources in MemChorus.
@@ -628,6 +650,44 @@ class MemoryOrchestrator:
         # participate.  Default is False — backward compatible.
         if not bool(self.config.get('skip_init_sources', False)):
             self._initialize_default_sources()
+
+    # ------------------------------------------------------------------
+    # (#206) Active-project slug auto-resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_active_project_slug(self) -> Optional[str]:
+        """Return the slug of the active project, or ``None`` outside a project.
+
+        Reuses ``memchorus.orientation._resolve_project`` — the *exact*
+        resolver that :func:`memchorus.checkpoint.write_checkpoint` (PR #210 /
+        IMPL #163 write side) and ``on_session_start`` already use.  Using the
+        same function on the read path guarantees write and read agree on
+        "what's active", so the closet boost binds to the same project name
+        that E2's checkpoint writer used to tag the project drawer.
+
+        Priority chain (see ``orientation._resolve_project``):
+          1. ``HERMES_KANBAN_TASK`` (skipped when it matches a hex Kanban ID
+             pattern — a bare task ID isn't a project name)
+          2. ``HERMES_WORKSPACE`` basename
+          3. ``os.getcwd()`` basename
+          4. ``None`` (silent — no cloak applied)
+
+        Never raises: any failure returns ``None`` so the search path keeps
+        working when the helper is unavailable (e.g. in minimal test harnesses
+        where the orientation module isn't imported yet).
+        """
+        try:
+            from memchorus import orientation as _orient
+            raw = _orient._resolve_project(
+                os.environ.get("HERMES_KANBAN_TASK", "").strip() or None
+            )
+        except Exception:  # pragma: no cover - defensive
+            return None
+        # Normalise: strip whitespace, lowercase, drop empty strings.
+        if not raw:
+            return None
+        slug = str(raw).strip().lower()
+        return slug if slug else None
 
     def _get_enforcement_manager(self) -> Optional[BehavioralEnforcementManager]:
         """Lazily instantiate BehavioralEnforcementManager once enforcement is needed.
@@ -1708,6 +1768,16 @@ class MemoryOrchestrator:
 
         if context is None:
             context = ContextWeight()
+
+        # (#206) Auto-inject the active-project slug when the caller hasn't
+        # explicitly set one.  A caller that *does* pass a slug (or the empty
+        # string, meaning "suppress auto-injection") is honoured verbatim.
+        # Resolution is cheap (env vars / basename) and only fires when the
+        # slug is currently unset, so the cost is negligible.
+        if not getattr(context, "active_project", None):
+            slug = self._resolve_active_project_slug()
+            if slug:
+                context = _ctx_with_active_project(context, slug)
 
         # GAP040: normalise list/tuple queries to space-joined strings before
         # passing to source.search(query, ...) or scorer.score_and_rank(...).
