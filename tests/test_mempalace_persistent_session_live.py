@@ -35,14 +35,15 @@ import json
 from contextlib import contextmanager
 from unittest import mock
 
+# The worker resolves `StdioServerParameters` / `stdio_client` / `ClientSession`
+# via a LAZY `from mcp.client... import ...` inside `_worker()` (see docstring),
+# so we import the two real modules here and patch them — the worker then picks
+# up our doubles because the patch is applied before the lazy import runs.
+from mcp.client import session as _session_mod  # type: ignore
+from mcp.client import stdio as _stdio_mod  # type: ignore
+
 import memchorus.mempalace_persistent_session as pps
 from memchorus.mempalace_persistent_session import PersistentMcpSession
-
-# The worker does `from mcp.client.stdio import ...` and
-# `from mcp.client.session import ...` inside _worker(), so we patch these real
-# modules (imported once here so the patch targets are stable objects).
-from mcp.client import stdio as _stdio_mod  # type: ignore
-from mcp.client import session as _session_mod  # type: ignore
 
 
 # --------------------------------------------------------------------------- fakes
@@ -86,7 +87,7 @@ class _FakeClientSession:
       - 'raise':  raises RuntimeError (→ result=None, session stays alive)
     """
 
-    _last: "_FakeClientSession | None" = None
+    _last: _FakeClientSession | None = None
 
     def __init__(self, mode: str = "ok", **kw):
         self.mode = mode
@@ -99,7 +100,7 @@ class _FakeClientSession:
         # loop continues after a tool failure).
         self._pending_failures = 1 if mode == "raise-once" else 0
 
-    async def __aenter__(self) -> "_FakeClientSession":
+    async def __aenter__(self) -> _FakeClientSession:
         _FakeClientSession._last = self
         return self
 
