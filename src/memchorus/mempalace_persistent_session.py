@@ -23,6 +23,24 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _skip_live() -> bool:
+    """Return True when the persistent worker should take the fast escape path
+    instead of launching a live MCP stdio session in its background thread.
+
+    During ``pytest`` runs the guard in ``_worker`` historically short-
+    circuited the *entire* live path (so the live loop was never exercised —
+    exactly the gap MemChorus #204 targets).  We keep the fast-path escape
+    (mcp may not be installed, and an unhandled thread exception would pollute
+    test output even when graceful degradation works in the main process) but
+    make it a **module-level seam**, so live-path tests can patch
+    ``_skip_live`` to return ``False`` and drive the real ``stdio_client`` /
+    ``ClientSession`` / ``call_tool`` run-loop against fakes — asserting the
+    live code instead of vacuously falling through to the local-JSON-cache
+    fallback.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ
+
+
 def summarize_exception_group(exc: BaseExceptionGroup) -> str:
     """Build a single diagnostic line from a BaseExceptionGroup.
 
@@ -175,10 +193,9 @@ class PersistentMcpSession:
     def _worker(self):
         """Async event loop running in a background thread."""
 
-        # Do not start the MCP persistence thread during pytest runs — mcp.client.stdio may
-        # not be installed, and letting it raise here creates unhandled thread exceptions that
-        # pollute test output even when graceful degradation works in the main process.
-        if "PYTEST_CURRENT_TEST" in os.environ:
+        # Fast escape path — see :func:`_skip_live` for the full rationale.
+        # Tests patch ``_skip_live`` to False to drive the real live loop.
+        if _skip_live():
             self._state.alive = False
             self._state.ready_event.set()
             return
@@ -212,10 +229,27 @@ class PersistentMcpSession:
                         self._state.alive = True
                         self._state.ready_event.set()
 
-                        # Main loop: wait for work events
+                        # Main loop: wait for work events.
+                        #
+                        # wait()→clear(), NOT clear()→wait(). The worker and the
+                        # caller each own one Event; the caller signals "there is
+                        # a pending tool call" with work_event.set() and then
+                        # blocks on result_ready. If the worker cleared the flag
+                        # *before* its blocking wait, a caller's set() landing in
+                        # the clear→wait interleaving (set-for-next-call preceding
+                        # the worker's clear-for-loop-top) would be wiped, the
+                        # subsequent wait() would block, and the caller's
+                        # result_ready.wait() would time out into a spurious
+                        # failure (the 2026-09-11 live crash class). Consume the
+                        # signal only after waking: wait() returns True on the
+                        # caller's set, then clear() consumes it. Under
+                        # MemChorus's single-in-flight synchronous call_tool
+                        # contract the caller never queues two set()s, so this
+                        # is race-free and the shutdown wake (stop() → set)
+                        # still drains correctly via the alive check below.
                         while self._state.alive:
-                            self._state.work_event.clear()
                             self._state.work_event.wait()
+                            self._state.work_event.clear()
 
                             if not self._state.alive:
                                 break  # shutdown signal
