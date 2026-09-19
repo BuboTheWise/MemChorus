@@ -351,11 +351,25 @@ class MemChorusHooks:
             # Guards go first so they appear before soft recall / feedback blocks
             injected_blocks.extend(guard_blocks)
 
+            # (#209 b) Corpus imbalance diagnostic — opt-in, gated on
+            # ``memchorus.balance.enabled``.  Injects a single one-line note
+            # INSIDE the [MemChorus Memory Recall] block (AC-S2) so the model
+            # sees the imbalance at the exact moment context arrives.  No
+            # line at all when the level is ``"ok"`` (silent by design); a
+            # CRIT/WARN with no soft-recall items still emits a block so the
+            # nudge is never lost on an all-lessons profile.
+            balance_line = self._try_balance_report(orchestrator)
+
+            recall_parts = []
+            if balance_line:
+                recall_parts.append(balance_line)
             if context_items:
+                recall_parts.append(_format_context_block(context_items))
+            if recall_parts:
                 injected_blocks.append(
                     "[MemChorus Memory Recall]\n"
-                    f"{_format_context_block(context_items)}\n"
-                    "[/MemChorus Memory Recall]"
+                    + "\n".join(recall_parts)
+                    + "\n[/MemChorus Memory Recall]"
                 )
 
             # 2. Evaluate feedback loop corrections (delegated to private method)
@@ -411,6 +425,74 @@ class MemChorusHooks:
         except Exception as e:
             logger.debug("hooks: feedback loop failed silently: %s", e)
             return []
+
+    def _try_balance_report(self, orchestrator) -> Optional[str]:
+        """(#209 b) Compute (or cache) the corpus-imbalance diagnostic.
+
+        Returns the one-line WARN/CRIT note (ready to go inside the
+        ``[MemChorus Memory Recall]`` block) when the diagnostic is enabled
+        AND the classification is non-``ok``; returns ``None`` when
+        disabled, when the level is ``ok`` (silent by design), or when
+        anything in the pipeline fails — so recall is never harmed.
+        """
+        try:
+            cfg = getattr(orchestrator, "config", {}) or {}
+            # The orchestrator loads config flat, so the opt-in sub-block
+            # sits at the top level as ``balance`` — matching the convention
+            # used by feedback_loop / prohibitions / recall elsewhere.
+            bal = cfg.get("balance", {}) if isinstance(cfg, dict) else {}
+            if not isinstance(bal, dict):
+                bal = {}
+            if not bal.get("enabled", False):
+                return None
+
+            # Lazy import so a corpus_balancer import failure never surfaces
+            # at plugin load time.
+            from memchorus.corpus_balancer import CorpusBalancer, render_header_line
+
+            # Reuse a session-scoped balancer if one already exists (so we
+            # share the TTL cache); otherwise create a fresh one.
+            balancer = getattr(orchestrator, "_corpus_balancer", None)
+            if not isinstance(balancer, CorpusBalancer):
+                balancer = CorpusBalancer()
+                try:
+                    orchestrator._corpus_balancer = balancer
+                except Exception:
+                    pass
+
+            # Resolve the active project slug (orientation is the same
+            # resolver the write path uses — consistent semantics).
+            slug = self._balance_active_slug()
+
+            report = balancer.compute(slug)
+            line = render_header_line(report)
+            if line:
+                logger.debug(
+                    "corpus balance: level=%s slug=%s reason=%s",
+                    report.get("level"), slug, report.get("reason"),
+                )
+            return line
+        except Exception as exc:
+            logger.debug("hooks: corpus balance report unavailable: %s", exc)
+            return None
+
+    def _balance_active_slug(self) -> Optional[str]:
+        """Resolve the active project slug for the balancer.
+
+        Uses ``memchorus.orientation._resolve_project`` (same resolver the
+        write path uses) with the current task id.  Falls back to ``None``
+        — a ``None`` slug disables the balancer's M1 "project-wing" tier
+        (the diagnostic still counts working-state rooms, which is the
+        primary v1 signal).
+        """
+        import os
+        try:
+            from memchorus import orientation as _orient
+            return _orient._resolve_project(
+                os.environ.get("HERMES_KANBAN_TASK", "").strip() or None
+            )
+        except Exception:
+            return None
 
     def _try_guard_scan(self, input_text: str, orchestrator) -> List[str]:
         """Scan input for behavioral prohibition matches and inject [[GUARD]] blocks.
