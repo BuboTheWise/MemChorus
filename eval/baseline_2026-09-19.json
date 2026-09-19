@@ -1,0 +1,238 @@
+{
+  "timestamp": "2026-09-19T15:08:47.010971+00:00",
+  "task": "#209(b)-item6: re-rank/recall eval gate",
+  "repo_head": "65971b8 baseline commit (parent t_de823538, corpus_balancer diagnostic)",
+  "corpus": "memchorus_learning=243, memchorus_decisions=8, wing_cthugha=4 (census 2026-09-17)",
+  "live_connected": true,
+  "limit": 10,
+  "ranker_min_score": 0.3,
+  "n_queries": 12,
+  "n_positive": 9,
+  "n_negative": 3,
+  "hit_rate@10": 0.7778,
+  "zero_hit_count": 2,
+  "mean_distance": 0.3466,
+  "mean_distance_provenance": "RelevanceScorer normalized score (mean over all ranked hits) \u2014 the live MCP path returns no raw cosine field",
+  "false_positive_count": 0,
+  "false_positive_rate_neg": 0.0,
+  "error_queries": [],
+  "n_ranked_scores": 9,
+  "raw_drawer_keys_top5_all": [
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/lessons-learned",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/corrections",
+    "memchorus_learning/lessons-learned",
+    "wing_cthugha/diary",
+    "wing_cthugha/diary",
+    "wing_cthugha/diary",
+    "memchorus_learning/lessons-learned",
+    "memchorus_learning/lessons-learned",
+    "memchorus_learning/lessons-learned",
+    "memchorus_learning/lessons-learned"
+  ],
+  "elapsed_s": 3.02,
+  "per_query": [
+    {
+      "query": "cthuaga kanban protocol finalization closeout before exiting",
+      "is_negative": false,
+      "raw_count": 5,
+      "ranked_count": 1,
+      "n_above_threshold": 1,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections"
+      ],
+      "mean_score_ranked": 0.3442,
+      "error": ""
+    },
+    {
+      "query": "natural language integration test prompts memchorus",
+      "is_negative": false,
+      "raw_count": 8,
+      "ranked_count": 2,
+      "n_above_threshold": 2,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "memchorus_learning/lessons-learned",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections"
+      ],
+      "mean_score_ranked": 0.3688,
+      "error": ""
+    },
+    {
+      "query": "minimum verification depth baseline merged 2026",
+      "is_negative": false,
+      "raw_count": 0,
+      "ranked_count": 0,
+      "n_above_threshold": 0,
+      "hit": 0,
+      "zero_hit": 1,
+      "raw_top5_keys": [],
+      "mean_score_ranked": 0.0,
+      "error": ""
+    },
+    {
+      "query": "hermes kanban workflow skill",
+      "is_negative": false,
+      "raw_count": 5,
+      "ranked_count": 2,
+      "n_above_threshold": 1,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/corrections",
+        "memchorus_learning/lessons-learned"
+      ],
+      "mean_score_ranked": 0.2999,
+      "error": ""
+    },
+    {
+      "query": "corrections git diff skill name",
+      "is_negative": false,
+      "raw_count": 0,
+      "ranked_count": 0,
+      "n_above_threshold": 0,
+      "hit": 0,
+      "zero_hit": 1,
+      "raw_top5_keys": [],
+      "mean_score_ranked": 0.0,
+      "error": ""
+    },
+    {
+      "query": "isolated palace proof per profile db",
+      "is_negative": false,
+      "raw_count": 2,
+      "ranked_count": 1,
+      "n_above_threshold": 1,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "wing_cthugha/diary",
+        "wing_cthugha/diary"
+      ],
+      "mean_score_ranked": 0.5271,
+      "error": ""
+    },
+    {
+      "query": "self assessment cycle tasks produced win",
+      "is_negative": false,
+      "raw_count": 1,
+      "ranked_count": 1,
+      "n_above_threshold": 1,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "wing_cthugha/diary"
+      ],
+      "mean_score_ranked": 0.3089,
+      "error": ""
+    },
+    {
+      "query": "mempalace embedding set embedder model minilm",
+      "is_negative": false,
+      "raw_count": 1,
+      "ranked_count": 1,
+      "n_above_threshold": 1,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "memchorus_learning/lessons-learned"
+      ],
+      "mean_score_ranked": 0.3214,
+      "error": ""
+    },
+    {
+      "query": "python environment setup venv hermes interpreter",
+      "is_negative": false,
+      "raw_count": 3,
+      "ranked_count": 1,
+      "n_above_threshold": 0,
+      "hit": 1,
+      "zero_hit": 0,
+      "raw_top5_keys": [
+        "memchorus_learning/lessons-learned",
+        "memchorus_learning/lessons-learned",
+        "memchorus_learning/lessons-learned"
+      ],
+      "mean_score_ranked": 0.2808,
+      "error": ""
+    },
+    {
+      "query": "quantum computing qubit decoherence error correction",
+      "is_negative": true,
+      "raw_count": 0,
+      "ranked_count": 0,
+      "n_above_threshold": 0,
+      "hit": 0,
+      "zero_hit": 1,
+      "raw_top5_keys": [],
+      "mean_score_ranked": 0.0,
+      "error": ""
+    },
+    {
+      "query": "sourdough bread fermentation starter temperature",
+      "is_negative": true,
+      "raw_count": 0,
+      "ranked_count": 0,
+      "n_above_threshold": 0,
+      "hit": 0,
+      "zero_hit": 1,
+      "raw_top5_keys": [],
+      "mean_score_ranked": 0.0,
+      "error": ""
+    },
+    {
+      "query": "Mordor goblin army battle strategy",
+      "is_negative": true,
+      "raw_count": 0,
+      "ranked_count": 0,
+      "n_above_threshold": 0,
+      "hit": 0,
+      "zero_hit": 1,
+      "raw_top5_keys": [],
+      "mean_score_ranked": 0.0,
+      "error": ""
+    }
+  ],
+  "baseline_compare": {
+    "zero_hit_count": {
+      "baseline": 2,
+      "current": 2,
+      "delta": 0
+    },
+    "hit_rate@10": {
+      "baseline": 0.7778,
+      "current": 0.7778,
+      "delta": 0.0
+    },
+    "mean_distance": {
+      "baseline": 0.3466,
+      "current": 0.3466,
+      "delta": 0.0
+    }
+  },
+  "gate": "pass"
+}
