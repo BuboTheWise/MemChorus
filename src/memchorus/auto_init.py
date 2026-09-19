@@ -130,6 +130,41 @@ def generate_config(profile: Optional[str] = None,
     # --- hermes_default_config section -------------------------------------
     config_dict["hermes_default_config"] = mp_cfg.copy()
 
+    # --- balance section (#209 working-state surface (b)): corpus-imbalance
+    #      diagnostic.  OFF by default — enabling it makes on_pre_llm_call
+    #      inject a single one-line note INSIDE the [MemChorus Memory Recall]
+    #      block whenever the corpus is classified "all-lessons, no-current-work".
+    #      Keys (spec §8, mirrored in corpus_balancer defaults):
+    #        enabled             gate (OFF by default — opt-in)
+    #        mode                "archive" suppresses the diagnostic for a
+    #                            deliberately lessons-only profile
+    #        project_min_ratio   M1 floor (fraction of corpus that must be
+    #                            active-project working-state)
+    #        settled_threshold   M2 ceiling (fraction that is settled
+    #                            knowledge before the "past-dominant" flag)
+    #        settled_wings       whitelist of "settled" wings
+    #        settled_rooms       whitelist of "settled" rooms
+    config_dict["balance"] = {
+        "enabled": False,
+        "mode": "",
+        "project_min_ratio": 0.05,
+        "settled_threshold": 0.50,
+        "settled_wings": [
+            "memchorus_learning",
+            "memchorus_decisions",
+            "memchorus_general",
+            "self-improvement",
+        ],
+        "settled_rooms": [
+            "lessons-learned",
+            "corrections",
+            "diary",
+            "evolution-reports",
+            "research-archival",
+            "pattern-recognition",
+        ],
+    }
+
     return yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
 
 
