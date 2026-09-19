@@ -1,0 +1,46 @@
+# Recall-eval fixed query set (v2026-09-18) — commit this file; the eval is
+# only comparable across runs if the inputs are identical (rerank-recall-eval-gate).
+#
+# One expected-keyword phrase per line, then the query on the next line. A top-k
+# hit is "relevant" if its key OR content case-insensitively contains ANY of the
+# listed phrases (OR within one query; every query counts toward hit_rate).
+#
+# Grounded in the live MemPalace palace as of 2026-09-18 (wing census via
+# mempalace_list_wings):
+#   memchorus_learning   = 243   (cthuaga-kanban-protocol / "Natural-language
+#                                 integration test prompts" / "Minimum
+#                                 Verification Depth Baseline" drawers)
+#   memchorus_decisions  = 8     (skill diffs, canonical_test_prompts)
+#   wing_cthugha         = 4     (CTHUGHA_PROOF / CTHUGHA_VERIFY / CYCLE diary)
+#
+# NEG (negative controls) lines carry a "~" marker in the expected-phrase field
+# and expect ZERO hits: a healthy recall path does not fabricate drawers for
+# out-of-domain queries. They pin the false-positive baseline.
+
+# --- Grounded-positive queries (should land a relevant drawer in top-10) ---
+kanban protocol|cthugha|finalization
+cthuaga kanban protocol finalization closeout before exiting
+Natural-language integration test prompts
+natural language integration test prompts memchorus
+Minimum Verification Depth Baseline
+minimum verification depth baseline merged 2026
+Hermes Kanban Workflow|kanban workflow
+hermes kanban workflow skill
+canonical_test_prompts|Integration TEST
+corrections git diff skill name
+CTHUGHA_PROOF|per-profile|isolated palace
+isolated palace proof per profile db
+self-assessment|TASKS|cycle
+self assessment cycle tasks produced win
+EmbedderIdentityUnknownWarning|set-embedder|embedder model
+mempalace embedding set embedder model minilm
+venv|python environment|hermes-agent venv
+python environment setup venv hermes interpreter
+
+# --- Negative controls (should return ZERO relevant hit) ---
+~
+quantum computing qubit decoherence error correction
+~
+sourdough bread fermentation starter temperature
+~
+Mordor goblin army battle strategy
