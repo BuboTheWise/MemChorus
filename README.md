@@ -630,7 +630,38 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.57 (current — 2026-09-17)
+### v2.0.58 (current — 2026-09-18)
+
+- **Within-Tier-0 sub-signal re-sort (Issue #206, R4–R6 seams):** the #206 v2
+  shipped the *partition* — bound drawers first, unbound after — but every
+  drawer inside the bound tier was still ranked purely by content similarity.
+  A `DONE` drawer (weight 0.10) could outrank an open `GAP` drawer (weight
+  0.40) in the active project if its text happened to overlap the query more.
+  This release adds a secondary sort key *within* the bound tier: each
+  `RankedResult` in Tier 0 now carries `meta["signal_type"]` (the category
+  label — the primary path; content-keyword scan is the fallback),
+  `meta["sub_signal_score"]` (the additive weight: `gap=0.40`, `diff=0.30`,
+  `action=0.30`, `done=0.10`, `context=0.05`), and
+  `meta["effective_score"]` = `min(score + sub_signal_score, score_max=1.0)`
+  stored alongside the uncapped `meta["_effective_raw"]`. The Tier-0 sort key
+  is now `(_effective_raw, effective_score, score, authored_at)` all
+  descending — so when two drawers compute to the same raw score (e.g. a
+  `GAP` drawer at 0.70 and a `DIFF` drawer at 0.70, both content-equal to the
+  query), the sub-signal weight is what breaks the tie on the uncapped
+  `_effective_raw` (gap → 1.10, diff → 1.00), and the stored `effective_score`
+  cap of 1.0 for both never hides the ordering. The `ContextWeight` and
+  `RelevanceScorer` public API surface is unchanged from v2.0.57 in all
+  respects except the new Tier-0-only meta fields; unbound (Tier-1) and
+  no-active-project runs are byte-identical to pre-#206 (AC-5 / EC-1). New tests in
+  `tests/test_active_project_ranking.py`: AC-1 bound-first partition,
+  AC-2 gap-leads + sub-signal partition, AC-5 no-project degradation,
+  AC-8 result-shape contract, effective-score ceiling, per-category
+  classification (metadata path + content-keyword fallback + additive
+  multi-signal + context-fallback), zero-bound counter, multi-profile
+  request-scope, and searcher-layer non-interference. OPSEC clean.
+  Bumps `__version__` 2.0.57 → 2.0.58.
+
+### v2.0.57 (2026-09-17)
 
 - **Hot-path recall injection now carries usable content (Issue #207):** before this release every long injected recall entry was a *reference* — a locator line plus `read it: retrieve(key=...)` — with zero body text, which forced the exact "remember to go read it" mode the system exists to eliminate. Now each entry decides its own form against a per-entry inline threshold: bodies at or under the threshold are injected **inline in full**; longer ones keep the locator line and `retrieve(key=…)` handle but additionally inject a **capped preview** of the body's opening lines (`PREVIEW_MAX_CHARS = 240`, capped locator line stays at 150 chars per the #140 criterion) so the agent can act on the shape of the content immediately, with the full body one tool call away on demand. New config knob, resolved in three layers with first-match-wins (`hooks._resolve_inline_threshold`): (1) `MEMCHORUS_RECALL_INLINE_THRESHOLD` env var (integer 0..50000; `0` forces locator+preview on every entry; empty string falls through); (2) per-profile `config.yaml` `memchorus.recall.inline_threshold` (same semantics; `~`/`null`/`''` is an explicit opt-out that restores the pre-#207 keys-only behaviour by returning `None`); (3) default **300**. Call-site mapping (`should_inject_locator` in `src/memchorus/locator.py`, threshold param) keeps all pre-#207 call sites working unchanged when the knob is left unset. `memchorus-doctor --status` gains the "N of M entries injected inline, K as key+preview" one-line diagnostic (Issue #207 deliverable 4) rendered from the per-render call-site tags the recall renderer already emits (`mode ∈ {inline, locator_preview, suppressed, dropped-marker}`). 18 new tests in `tests/test_207_hot_injection.py` + 3 in `tests/test_207_human_split.py`: threshold resolution order (env > config > default), the `None`/`0`/positive boundary branches end-to-end, inline-in-full vs locator+preview form selection over real fixture bodies, preview cap enforcement, and the doctor line's counts under a mixed render. OPSEC clean (`opsec_sweep.py --verbose` exit 0). Bumps `__version__` 2.0.56 → 2.0.57 (dual-digit patch per convention; 4-source sync verified via `scripts/check_version_sync.py`).
 
