@@ -122,6 +122,16 @@ ALLOW: List[Tuple[str, str, str]] = [
      "synthetic traceback example (/home/user/.local/...) — a placeholder path, not operator PII"),
     ("tests/test_project_record_schema.py", "abs_home",
      "synthetic doc-path fixture (/home/x.md) — exercises absolute-path validation, not a real location"),
+    # The header-leak test (test_header_line_never_leaks_pii_or_local_paths) ASSERTS the
+    # ABSENCE of these PII patterns — the needle strings ("bubo@", "@gmail.com") must
+    # literally appear in the assertion source or the test has nothing to check for.
+    # A self-referential false positive: the sweep cannot distinguish a needle from a
+    # leak here. A mutation control (monkey-patched renderer returning a leaker header)
+    # proves the test still catches both /home/<name> and @gmail.com leaks.
+    ("tests/test_corpus_balancer_headers.py", "bubo_at",
+     "test asserts ABSENCE of this PII pattern; the needle string is intentionally present in the assertion source"),
+    ("tests/test_corpus_balancer_headers.py", "at_gmail",
+     "test asserts ABSENCE of this PII pattern; the needle string is intentionally present in the assertion source"),
     # Documentation placeholders — install/example paths use the generic ``/home/user`` and
     # ``/home/x`` as *any-user* stand-ins (the README even shows ``/home/user/.hermes/...``
     # as a copy-paste command shape). These are not a specific operator's machine. The real
