@@ -14,7 +14,6 @@ Query construction priority chain:
     HERMES_KANBAN_TASK -> workspace dir name -> silent skip.
 """
 
-import functools
 import logging
 import os
 import re
@@ -34,9 +33,11 @@ DEFAULT_CACHE_TTL_SECONDS: float = 15.0
 # Cache helpers                                                               #
 # --------------------------------------------------------------------------- #
 
+
 @dataclass(frozen=True)
 class _CacheKey:
     """Immutable cache key built from the detected project context."""
+
     project: str
     query_types: Tuple[str, ...]  # e.g. ("kg", "semantic")
 
@@ -52,6 +53,7 @@ class _CacheEntry:
 # LRU cache for orientation queries                                           #
 # --------------------------------------------------------------------------- #
 
+
 class _CacheRegistry:
     """Simple LRU-like cache keyed by ``_CacheKey`` with TTL eviction.
 
@@ -66,7 +68,9 @@ class _CacheRegistry:
         self._cache: Dict[_CacheKey, _CacheEntry] = {}
         self._maxsize = maxsize
 
-    def get(self, key: _CacheKey, ttl_override: Optional[float] = None) -> Optional[List[Dict[str, Any]]]:
+    def get(
+        self, key: _CacheKey, ttl_override: Optional[float] = None
+    ) -> Optional[List[Dict[str, Any]]]:
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -77,7 +81,9 @@ class _CacheRegistry:
             return None
         return entry.results
 
-    def put(self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float) -> None:
+    def put(
+        self, key: _CacheKey, results: List[Dict[str, Any]], ttl_seconds: float
+    ) -> None:
         # Do NOT cache empty lists — they indicate orchestrator unavailable or
         # genuinely no data and would poison subsequent calls for the same
         # project context until TTL expiry.
@@ -87,7 +93,9 @@ class _CacheRegistry:
         if len(self._cache) >= self._maxsize:
             oldest = min(self._cache, key=lambda k: self._cache[k].timestamp)
             del self._cache[oldest]
-        self._cache[key] = _CacheEntry(results=results, timestamp=time.monotonic(), ttl=int(ttl_seconds))
+        self._cache[key] = _CacheEntry(
+            results=results, timestamp=time.monotonic(), ttl=int(ttl_seconds)
+        )
 
     def clear_project(self, project: str) -> None:
         """Invalidate all entries whose cache key matches *project*.
@@ -101,12 +109,15 @@ class _CacheRegistry:
 
     def clear(self) -> None:
         self._cache.clear()
+
+
 _cache = _CacheRegistry()
 
 
 # --------------------------------------------------------------------------- #
 # Query construction                                                          #
 # --------------------------------------------------------------------------- #
+
 
 def _build_orientation_query(
     env_task: Optional[str] = None,
@@ -167,17 +178,41 @@ def _resolve_project(env_task: Optional[str]) -> Optional[str]:
     if workspace and workspace.strip():
         return os.path.basename(os.path.normpath(workspace))  # type: ignore[return-value]
 
-    # 3. Current working directory fallback
+    # 3. Current working directory fallback.
+    # A2 (Active-Project-Detection-Design.md §7): degrade to ``None`` when the
+    # fallback path is not a usable project slug.  Two dead-slug shapes:
+    #   (a) the path no longer exists — an archived / deleted / moved project
+    #       would otherwise bind to the basename and produce a phantom boost
+    #       on every recall (binding via ``closet_bound_result`` keeps firing
+    #       on a slug that points at nothing);
+    #   (b) the basename is the logged-in user's name — a top-level home dir
+    #       (e.g. sitting in ``~``) is not a project, and binding the username
+    #       is pure noise.
+    # When either trips, recall degrades to *unbound* (no project boost) instead
+    # of binding a dead slug — the "project archived ⇒ unbound" behaviour the
+    # design doc calls out.
     cwd = os.getcwd()
     if cwd:
-        return os.path.basename(cwd)  # type: ignore[return-value]
+        base = os.path.basename(os.path.normpath(cwd))
+        if os.path.exists(cwd) and base and not base.startswith("."):
+            # (b) home-dir heuristic: if the basename looks like the current
+            # user's home (matches getlogin/getpass user), it's not a project.
+            try:
+                import getpass
 
+                user = getpass.getuser()
+            except Exception:
+                user = ""
+            if base != user:
+                return base
+    # 4. (guard tripped) — silent skip
     return None
 
 
 # --------------------------------------------------------------------------- #
 # Orientation search (executes queries through orchestrator, respects cache)  #
 # --------------------------------------------------------------------------- #
+
 
 def orientation_search(
     env_task: Optional[str],
@@ -238,7 +273,9 @@ def orientation_search(
 
     # Cap to limit (AC-O1: up to 5 items) — score-based so higher-relevance results
     # survive truncation rather than being position-dependent on query execution order.
-    all_results = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)[:limit]
+    all_results = sorted(all_results, key=lambda r: r.get("score", 0), reverse=True)[
+        :limit
+    ]
 
     # Write to LRU cache (AC-O2)
     _cache.put(cache_key, all_results, cache_ttl_seconds)
@@ -276,7 +313,9 @@ def _execute_query(
 
     # If orchestrator is missing we fall through silently (AC-O3).
     logger.debug(
-        "No orchestrator available for %s query '%s' -- returning empty.", qtype, query_str,
+        "No orchestrator available for %s query '%s' -- returning empty.",
+        qtype,
+        query_str,
     )
     return []
 
@@ -285,9 +324,11 @@ def _execute_query(
 # Cache purge (for testing / manual management)                               #
 # --------------------------------------------------------------------------- #
 
+
 def clear_orientation_cache() -> None:
     """Clear all cached orientation results.  Useful for testing."""
     # Import ourselves so we always hit the actual module-level _cache, even
     # when a previous test has monkeypatched/removed our local reference.
     import memchorus.orientation as _mod
+
     _mod._cache.clear()

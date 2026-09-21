@@ -6,6 +6,7 @@ via MCP stdio transport using the ``mcp`` Python SDK (v1.x).
 Fallback behaviour: when MCP is unreachable the source degrades to a local
 file cache so the orchestrator never loses its enhancement voice.
 """
+
 import json
 import logging
 import os
@@ -32,17 +33,23 @@ logger = logging.getLogger(__name__)
 _DEFAULT_WING_MAP: Dict[str, str] = {
     "DECISION": "memchorus_decisions",
     "LEARNING": "memchorus_learning",
-    "MISTAKE":  "memchorus_learning",      # mistakes group with lessons
-    "RESULT":   "memchorus_general",
-    "DEFAULT":  "memchorus_general",        # catch-all fallback inside the map
+    "MISTAKE": "memchorus_learning",  # mistakes group with lessons
+    "RESULT": "memchorus_general",
+    # IMPL #209 (a1): per-project working-state snapshots.  The shared
+    # "memchorus_workspace" wing groups all project working-state drawers
+    # together (design memo §2, Q3 — shared wing + project meta field).
+    "WORKING_STATE": "memchorus_workspace",
+    "DEFAULT": "memchorus_general",  # catch-all fallback inside the map
 }
 
 _DEFAULT_ROOM_MAP: Dict[str, str] = {
     "DECISION": "decisions",
     "LEARNING": "lessons-learned",
-    "MISTAKE":  "corrections",
-    "RESULT":   "outcomes",
-    "DEFAULT":  "general",
+    "MISTAKE": "corrections",
+    "RESULT": "outcomes",
+    # IMPL #209 (a1): aligned with corpus_balancer.WORKING_STATE_ROOMS.
+    "WORKING_STATE": "working-state",
+    "DEFAULT": "general",
 }
 
 
@@ -69,7 +76,9 @@ def _run_async(coro):
         # crashing the entire event loop.
         logger.warning(
             "_run_async: caught %s (%d sub-exc(s)): %s — returning None",
-            type(exc).__name__, len(exc.exceptions), exc,
+            type(exc).__name__,
+            len(exc.exceptions),
+            exc,
         )
         return None
     except RuntimeError as exc:
@@ -145,7 +154,8 @@ def _normalize_palace_args(args: list[str]) -> list[str]:
             "If this repeats on your side, point at the leaf palace/ dir "
             "directly or ask the MemPalace maintainers to fix the "
             "default-path mismatch.",
-            old, value,
+            old,
+            value,
         )
 
     for i, tok in enumerate(result):
@@ -159,7 +169,7 @@ def _normalize_palace_args(args: list[str]) -> list[str]:
 
         # Equals form: --palace=<PATH>
         if tok.startswith("--palace="):
-            parent = Path(tok[len("--palace="):])
+            parent = Path(tok[len("--palace=") :])
             resolved = palace_path.palace_data_dir(parent)
             if resolved != parent:
                 _rewrite(i, f"--palace={resolved}")
@@ -226,6 +236,7 @@ class _McpTransportDetector:
         binary = None
         try:
             from shutil import which
+
             binary = which("mempalace-mcp")
         except Exception:
             pass
@@ -295,7 +306,11 @@ class _McpTransportDetector:
         # it with the previously cached target.  This way repeated calls with the
         # SAME config get a fast cached return, but calls that pass a different
         # config_path always trigger a fresh scan (fixes CI ordering issues).
-        target = config_path if config_path is not None else _McpTransportDetector._find_config()
+        target = (
+            config_path
+            if config_path is not None
+            else _McpTransportDetector._find_config()
+        )
         target_key = str(target) if target is not None else "<auto-detect>"
 
         cached_result, cached_ts = _McpTransportDetector._DETECTION_CACHE
@@ -310,12 +325,12 @@ class _McpTransportDetector:
 
         # Try to parse config — on any failure, fall through to PATH fallback
         goto_fallback = target is None  # type: bool
-        data = None                     # typed so Pyright knows it's never unbound
+        data = None  # typed so Pyright knows it's never unbound
         parts: list[str] = []
 
         if not goto_fallback:  # target is not None here
             try:
-                with open(target) as f:   # ok – target proven Path above
+                with open(target) as f:  # ok – target proven Path above
                     data = yaml.safe_load(f)
             except Exception as exc:
                 logger.warning(
@@ -382,11 +397,18 @@ class _McpTransportDetector:
                     # "C:\x\python.exe" -m foo -> ['C:\\x\\python.exe', '-m', 'foo']
                     parts = []
                     for token in command_raw.strip().split():
-                        if len(token) >= 2 and token[0] in "'\"" and token[-1] == token[0]:
+                        if (
+                            len(token) >= 2
+                            and token[0] in "'\""
+                            and token[-1] == token[0]
+                        ):
                             token = token[1:-1]
                         parts.append(token)
             except ValueError as exc:
-                logger.warning("_McpTransportDetector: invalid command string in config.yaml: %s", exc)
+                logger.warning(
+                    "_McpTransportDetector: invalid command string in config.yaml: %s",
+                    exc,
+                )
                 goto_fallback = True
 
         if not goto_fallback and not parts:
@@ -438,7 +460,9 @@ class _McpTransportDetector:
         # Fallback: try PATH discovery
         fallback = _McpTransportDetector._fallback_to_path()
         if fallback:
-            logger.info("_McpTransportDetector: using PATH fallback -> %s", fallback["command"])
+            logger.info(
+                "_McpTransportDetector: using PATH fallback -> %s", fallback["command"]
+            )
             _McpTransportDetector._DETECTION_CACHE = (fallback, now)
             _McpTransportDetector._CACHED_TARGET = target_key
             return fallback
@@ -540,7 +564,9 @@ class _McpClient:
         self._persistent_session = None
 
         # Step 0: Check Hermes config.yaml for mcp_servers.mempalace.command override
-        self._transport_override: Optional[Dict[str, Any]] = _McpTransportDetector.detect()
+        self._transport_override: Optional[Dict[str, Any]] = (
+            _McpTransportDetector.detect()
+        )
 
         if self._transport_override:
             logger.info(
@@ -560,7 +586,9 @@ class _McpClient:
     ]
 
     @classmethod
-    def _filter_command(cls, python: str, child_cmd: Optional[list] = None) -> tuple[str, list]:
+    def _filter_command(
+        cls, python: str, child_cmd: Optional[list] = None
+    ) -> tuple[str, list]:
         """Return a command that runs MemPalace MCP server via a thin stderr filter.
 
         Spawns a tiny Python -c wrapper that starts mempalace.mcp_server and
@@ -570,14 +598,15 @@ class _McpClient:
         If ``child_cmd`` is None, defaults to [python, "-m", "mempalace.mcp_server"].
         Pass a custom list when a config override (Shape B) specifies different args/env.
         """
-        effective_cmd = child_cmd if child_cmd else [python, "-m", "mempalace.mcp_server"]
+        effective_cmd = (
+            child_cmd if child_cmd else [python, "-m", "mempalace.mcp_server"]
+        )
         # Build the filter script as plain string to avoid f-string escaping issues.
         filtered_patterns = [repr(p) for p in cls._NOISE_PATTERNS]
         patterns_str = ", ".join(filtered_patterns)
         script_lines = [
-            'import subprocess, sys;',
-            "p=subprocess.Popen(" + repr(effective_cmd) +
-            ", stderr=subprocess.PIPE);",
+            "import subprocess, sys;",
+            "p=subprocess.Popen(" + repr(effective_cmd) + ", stderr=subprocess.PIPE);",
             "for line in p.stderr:",
             "  s=line.decode('utf-8','replace').strip();",
             f"  if not any(pat in s for pat in [{patterns_str}]):",
@@ -634,7 +663,8 @@ class _McpClient:
             else:
                 logger.warning(
                     "config.python_bin points to non-existent file: %s (expanded: %s) -- skipping",
-                    user_path, expanded,
+                    user_path,
+                    expanded,
                 )
 
         # Step 2: dedicated PATH shim
@@ -651,39 +681,35 @@ class _McpClient:
             os.path.expanduser("~/.local/pipx/venvs/mempalace/bin/python"),
         ]:
             if Path(pipx_candidate).is_file():
-                logger.info(
-                    "python_bin resolved via pipx venv: %s", pipx_candidate
-                )
+                logger.info("python_bin resolved via pipx venv: %s", pipx_candidate)
                 return pipx_candidate
 
         # Step 4: sys.executable (shares env with this process)
         py = sys.executable
         if Path(py).exists():
-            logger.info(
-                "python_bin resolved via sys.executable (same env): %s", py
-            )
+            logger.info("python_bin resolved via sys.executable (same env): %s", py)
             return py
 
         # Step 5: python3 on PATH
         py3 = shutil.which("python3")
         if py3:
-            logger.info(
-                "python_bin resolved via python3 on PATH: %s", py3
-            )
+            logger.info("python_bin resolved via python3 on PATH: %s", py3)
             return py3
 
         # Step 6: absolute fallback
         abs_fallback = "/usr/bin/python3"
         if Path(abs_fallback).exists():
             logger.warning(
-                "python_bin fell back to absolute path (no other candidates): %s", abs_fallback
+                "python_bin fell back to absolute path (no other candidates): %s",
+                abs_fallback,
             )
             return abs_fallback
 
         # All paths exhausted -- sys.executable is our best guess
         logger.warning(
             "python_bin could not verify any candidate via Path.exists or shutil.which; "
-            "falling back to sys.executable: %s", py
+            "falling back to sys.executable: %s",
+            py,
         )
         return py
 
@@ -703,25 +729,30 @@ class _McpClient:
         if is_override:
             logger.info(
                 "connect: using config.yaml override (command=%r, args=%r)",
-                cmd, args,
+                cmd,
+                args,
             )
 
         # ---- Persistent session mode: one subprocess stays alive across calls ----
         try:
             from memchorus.mempalace_persistent_session import PersistentMcpSession
+
             self._persistent_session = PersistentMcpSession(
                 command=cmd, args=args, timeout=self.timeout
             )
             started = self._persistent_session.start()
             if started:
-                logger.info("connect: persistent MCP session initialized (timeout=%ss)",
-                            self.timeout)
+                logger.info(
+                    "connect: persistent MCP session initialized (timeout=%ss)",
+                    self.timeout,
+                )
                 self._connected = True
                 return True
         except Exception as exc:
             logger.warning(
                 "connect: persistent session failed (%s:%s) falling back to per-call model",
-                type(exc).__name__, exc,
+                type(exc).__name__,
+                exc,
             )
 
         # ---- Legacy one-shot probe + per-call subprocess fallback ----
@@ -736,7 +767,8 @@ class _McpClient:
             from mcp.client.session import ClientSession
         except ImportError as exc:
             logger.warning(
-                "connect: MCP SDK not installed (missing %s) — legacy probe skipped", exc
+                "connect: MCP SDK not installed (missing %s) — legacy probe skipped",
+                exc,
             )
             self._connected = False
             return False
@@ -757,7 +789,9 @@ class _McpClient:
             if result is not True:
                 self._connected = False
                 return False
-            logger.info("connect: legacy per-call probe succeeded (persistent unavailable)")
+            logger.info(
+                "connect: legacy per-call probe succeeded (persistent unavailable)"
+            )
             self._connected = True
             return True
         except BaseExceptionGroup as exc:
@@ -769,8 +803,9 @@ class _McpClient:
             self._connected = False
             return False
         except Exception as exc:
-            logger.warning("connect: legacy probe failed with %s: %s",
-                           type(exc).__name__, exc)
+            logger.warning(
+                "connect: legacy probe failed with %s: %s", type(exc).__name__, exc
+            )
             self._connected = False
             return False
 
@@ -790,7 +825,9 @@ class _McpClient:
             result = self._persistent_session.call_tool(name, arguments)
             if result is not None:
                 return result
-            logger.warning("_call: persistent session died mid-flight — tearing down for reconnect")
+            logger.warning(
+                "_call: persistent session died mid-flight — tearing down for reconnect"
+            )
             try:
                 self._persistent_session.stop()
             except Exception as exc:
@@ -807,9 +844,7 @@ class _McpClient:
         try:
             result = _run_async(
                 asyncio.wait_for(
-                    _call_tool_async(
-                        cmd, args, self.timeout * 2, name, arguments
-                    ),
+                    _call_tool_async(cmd, args, self.timeout * 2, name, arguments),
                     timeout=self.timeout * 2,
                 )
             )
@@ -857,7 +892,9 @@ class _McpClient:
             self._connected = False
             return None
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def call_tool(
+        self, name: str, arguments: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
         """Call a MemPalace MCP tool.  Returns parsed dict or None."""
         if not self._connected:
             return None
@@ -886,7 +923,14 @@ class _McpClient:
                         return inner
         return data
 
-    def search(self, query: str, limit: int = 5, *, wing: Optional[str] = None, room: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        wing: Optional[str] = None,
+        room: Optional[str] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
         """mempalace_search -\u003e list of dicts."""
         args: Dict[str, Any] = {"query": query, "limit": limit}
         if wing is not None:
@@ -912,8 +956,10 @@ class _McpClient:
             except (json.JSONDecodeError, TypeError):
                 return [{"raw_text": data}]
 
-        return data if isinstance(data, list) else (
-            [data] if isinstance(data, dict) else []
+        return (
+            data
+            if isinstance(data, list)
+            else ([data] if isinstance(data, dict) else [])
         )
 
     # Textual rejection markers used when an MCP response carries no
@@ -961,6 +1007,7 @@ class _McpClient:
         room: str,
         content: str,
         source_file: Optional[str] = None,
+        project: Optional[str] = None,
     ) -> bool:
         """mempalace_add_drawer -> True only when the server accepted the write.
 
@@ -968,10 +1015,21 @@ class _McpClient:
         to the MemPalace MCP server so the drawer's metadata carries
         non-empty provenance.  The MCP schema already declares this param;
         MemChorus simply never passed it before.
+
+        ``project`` (optional, Active-Project-Detection A3): the active project
+        slug the drawer was written under.  Forwarded to the server so the
+        drawer's metadata carries a ``project`` mark — the primary binding
+        signal for :func:`memchorus.relevance_engine.closet_bound_result`.
+        Forwarded as-is; a backward-compat server that doesn't know the param
+        still accepts the call (extra JSON-RPC params are ignored by the
+        server's arg-parsing, per the MCP tool contract) — but see the
+        A5 note in the design doc if you need a hard server-side guarantee.
         """
         args: Dict[str, Any] = {"wing": wing, "room": room, "content": content}
         if source_file:
             args["source_file"] = source_file
+        if project:
+            args["project"] = project
         result = self.call_tool("mempalace_add_drawer", args)
         if result is None:
             return False
@@ -1089,9 +1147,7 @@ class _McpClient:
         return None
 
     @staticmethod
-    def _coerce_facts(
-        inner: Any, entity: str
-    ) -> List[Dict[str, Any]]:
+    def _coerce_facts(inner: Any, entity: str) -> List[Dict[str, Any]]:
         """Return a flat fact list from an inner KG payload.
 
         The KG query response may return facts under any of these keys:
@@ -1131,6 +1187,7 @@ class _McpClient:
 
 
 # --- Memory source implementation --------------------------------------------------------
+
 
 class MemPalaceMemorySource(MemorySource):
     """Memory source backed by the live MemPalace MCP server with local fallback.
@@ -1252,6 +1309,38 @@ class MemPalaceMemorySource(MemorySource):
 
     # --- MemorySource abstract methods ------------------------------------------
 
+    def _active_slug(self) -> Optional[str]:
+        """Return the currently-active project slug, or ``None`` outside a project.
+
+        Thin wrapper over ``memchorus.orientation._resolve_project`` (the same
+        resolver :meth:`~memchorus.orchestrator.MemoryOrchestrator._resolve_active_project_slug`
+        and :func:`memchorus.checkpoint.write_checkpoint` already use), so the
+        write path tags drawers with the identical slug the read path later
+        binds on — ``closet_bound_result(result, active_project)``'s primary
+        signal is ``result["project"] == active_project`` (see
+        :mod:`memchorus.relevance_engine`).
+
+        *A3* in Active-Project-Detection-Design.md §7: stamping this mark at
+        write time is the one schema change that makes the binding predicate's
+        primary signal work for *newly-written* drawers (previously only the
+        keyed-record namespace and project-named wing were populated).
+
+        Never raises — any failure (missing module, exception inside the
+        resolver) returns ``None`` so ``save()`` keeps working. Lowercased for
+        case-insensitive comparison against the read-path slug.
+        """
+        try:
+            import os as _os  # local import; os is also top-level in this module
+            from memchorus import orientation as _orientation
+
+            slug = _orientation._resolve_project(_os.environ.get("HERMES_KANBAN_TASK"))
+            if not slug:
+                return None
+            slug = str(slug).strip().lower()
+            return slug or None
+        except Exception:
+            return None
+
     def save(self, key: str, value: Any) -> bool:
         """Persist the memory.  Tries MCP first; falls back to local cache.
 
@@ -1289,25 +1378,42 @@ class MemPalaceMemorySource(MemorySource):
 
         wing = self._resolve_wing(category)
 
+        # A3 (Active-Project-Detection-Design.md §7): stamp the active project
+        # slug on the drawer at write time.  ``closet_bound_result``'s primary
+        # signal is ``result["project"] == active_project`` — previously only
+        # the keyed-record namespace and project-named wing were populated, so
+        # the binding predicate's primary branch never fired for fresh writes.
+        # Compute *once* and forward to both the MCP write and the local cache
+        # mirror, so the read path (``search``) can re-emit it as an entry key.
+        # Never raises: the resolver wrapper falls back to ``None`` on any
+        # failure, in which case the mark is simply absent (the keyed-namespace
+        # ``startswith(project)`` signal in ``closet_bound_result`` still binds).
+        active_slug = self._active_slug()
+
         if self._ensure_connected() and self._client.is_alive:
             # §2 Room selection by significance category (AC-R2.1-2.4)
             cat_room = self._categorize_room(value, room_map=self._room_map)
             # AC-R2.3: raw string keys without category metadata fall back to legacy hashing
-            if cat_room == 'general':
+            if cat_room == "general":
                 room = self._key_to_room(key)
             else:
                 room = cat_room
             ok = self._client.add_drawer(
-                wing=wing, room=room, content=content,
+                wing=wing,
+                room=room,
+                content=content,
                 source_file=source_file,
+                **({"project": active_slug} if active_slug else {}),
             )
             if ok:
-                # Mirror locally for resilience.
-                self._cache_locally(key, value)
+                # Mirror locally for resilience.  Pass the same slug so the
+                # local JSON payload carries the mark even if MCP is later
+                # down and the local path is the only source for search.
+                self._cache_locally(key, value, project=active_slug)
                 return True
 
         # MCP unavailable or call failed -> local cache only.
-        return bool(self._cache_locally(key, value))
+        return bool(self._cache_locally(key, value, project=active_slug))
 
     def retrieve(self, key: str) -> Optional[Any]:
         """Look up the memory.  Returns cached value when available; None otherwise.
@@ -1333,11 +1439,24 @@ class MemPalaceMemorySource(MemorySource):
 
         try:
             with open(filepath) as f:
-                return json.load(f)
+                data = json.load(f)
+            # A3/A4: if this was written under an active project, the payload
+            # carries the ``_memchorus_project_mark`` wrapper — unwrap to the
+            # inner value so the round-trip test (save→retrieve) sees the
+            # original object, not the wrapper.  Bare files (no marker) are
+            # returned as-is, preserving every pre-project-mark layout.
+            return self._unwrap_local_payload(data)
         except Exception:
             return None
 
-    def search(self, query: str, limit: int = 10, *, wing: Optional[str] = None, room: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        wing: Optional[str] = None,
+        room: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Search across MCP + local cache, deduplicating by key.
 
         §6 AC-R6.3: Optional wing/room filters for targeted recall.
@@ -1366,9 +1485,7 @@ class MemPalaceMemorySource(MemorySource):
                 for r in mp_results:
                     r_wing = r.get("wing", "unknown") if isinstance(r, dict) else None
                     r_room = r.get("room", "unknown") if isinstance(r, dict) else None
-                    comp_key = (
-                        f"{r_wing}/{r_room}" if r_wing and r_room else query
-                    )
+                    comp_key = f"{r_wing}/{r_room}" if r_wing and r_room else query
 
                     content_val = (
                         r.get("text", "") or r.get("content", str(r))
@@ -1385,6 +1502,20 @@ class MemPalaceMemorySource(MemorySource):
                         # local-fallback cache hits on this field.
                         "source": self.SOURCE_MCP_LIVE,
                     }
+                    # A4 (Active-Project-Detection-Design.md §7): re-emit the
+                    # drawer's `project` mark (set by the A3 write stamp,
+                    # surfaced here from the MCP hit when the MemPalace server
+                    # returns it — see A5) AND the drawer's `wing` (present in
+                    # the live hit) so the binding predicate's secondary signal
+                    # (``drawer.wing`` startswith slug) also has its data.
+                    # Both are absent when the server does not return the field
+                    # (legacy drawers / pre-A5 servers) — the keyed-namespace
+                    # ``startswith(project)`` fallback still binds.
+                    if isinstance(r, dict):
+                        if r.get("project"):
+                            entry["project"] = str(r.get("project"))
+                        if r.get("wing"):
+                            entry["wing"] = str(r.get("wing"))
                     if "similarity" in r:
                         try:
                             entry["score"] = float(r["similarity"])
@@ -1413,7 +1544,7 @@ class MemPalaceMemorySource(MemorySource):
                 content = self._retrieve_local(lo_key)
                 if content is None or lo_key in seen_keys:
                     continue
-                results.append({
+                local_entry = {
                     "key": lo_key,
                     "content": content,
                     # (#184) AC1: Served from the local fallback cache — the
@@ -1423,7 +1554,23 @@ class MemPalaceMemorySource(MemorySource):
                     # tell stale-cache content apart from live graph content
                     # (see DEGRADATION_NOTE in hooks.py).
                     "source": self.SOURCE_LOCAL_FALLBACK,
-                })
+                }
+                # A4 (Active-Project-Detection-Design.md §7): re-emit the
+                # drawer's `project` mark stored by the A3 write stamp (in the
+                # `{"value": ..., "project": ...}` wrapper `_cache_locally`
+                # writes when `save` passes the active slug).  Read straight
+                # from the raw wrapper so we don't mutate `_retrieve_local`'s
+                # contract — it still returns just the value.
+                raw_path = self._cache_dir / filename
+                try:
+                    if raw_path.exists():
+                        with open(raw_path) as _f:
+                            _raw = json.load(_f)
+                        if isinstance(_raw, dict) and _raw.get("project"):
+                            local_entry["project"] = str(_raw["project"])
+                except Exception:
+                    pass
+                results.append(local_entry)
                 seen_keys.add(lo_key)
         except Exception:
             pass
@@ -1514,9 +1661,8 @@ class MemPalaceMemorySource(MemorySource):
         if self._connected and self._client.is_alive:
             return True
         try:
-            return (
-                self._cache_dir.exists()
-                and os.access(str(self._cache_dir), os.R_OK | os.W_OK)
+            return self._cache_dir.exists() and os.access(
+                str(self._cache_dir), os.R_OK | os.W_OK
             )
         except Exception:
             return False
@@ -1577,6 +1723,7 @@ class MemPalaceMemorySource(MemorySource):
                 wings: Dict[str, int] = {}
                 total: int = 0
                 import os as _os
+
                 # Walk the cache dir; each subdirectory named after a wing
                 # holds one drawer per file (the MemPalace layout uses
                 # <root>/<wing>/<room>/ for live data).
@@ -1593,16 +1740,13 @@ class MemPalaceMemorySource(MemorySource):
                         total += drawer_count
                 if wings:
                     top = sorted(wings.items(), key=lambda kv: -kv[1])[:5]
-                    report["top_wings"] = [
-                        {"wing": w, "drawers": n} for w, n in top
-                    ]
+                    report["top_wings"] = [{"wing": w, "drawers": n} for w, n in top]
                     report["total_drawers"] = total
                     report["status"] = "ok"
         except Exception as exc:  # pragma: no cover - defensive
             report["reason"] = f"local cache scan failed: {exc}"
 
         return report
-
 
     @property
     def name(self) -> str:
@@ -1641,12 +1785,14 @@ class MemPalaceMemorySource(MemorySource):
         Used for backward compat when category metadata is unavailable.
         """
         sanitized = key.lower().strip()
-        sanitized = re.sub(r'[^a-z0-9]', '-', sanitized)
+        sanitized = re.sub(r"[^a-z0-9]", "-", sanitized)
         parts = [p for p in sanitized.split("-") if p]
         return "-".join(parts)[:128]
 
     @staticmethod
-    def _categorize_room(memory: Any, *, room_map: Optional[Dict[str, str]] = None) -> str:
+    def _categorize_room(
+        memory: Any, *, room_map: Optional[Dict[str, str]] = None
+    ) -> str:
         """Derive a semantic room slug from the memory payload category (§2).
 
         Inspects ``category`` / ``significance`` metadata on the value.
@@ -1662,7 +1808,7 @@ class MemPalaceMemorySource(MemorySource):
         lookup = room_map or dict(_DEFAULT_ROOM_MAP)
 
         if not isinstance(memory, dict):
-            return lookup.get('DEFAULT', 'general')
+            return lookup.get("DEFAULT", "general")
 
         # Try multiple metadata paths where the category might live
         raw_cat = memory.get("category") or memory.get("significance")
@@ -1686,7 +1832,7 @@ class MemPalaceMemorySource(MemorySource):
                 return slug
 
         # Unknown category or no category → DEFAULT / general
-        return lookup.get('DEFAULT', 'general')
+        return lookup.get("DEFAULT", "general")
 
     @staticmethod
     def _resolve_wing_from_payload(payload: Any) -> str:
@@ -1697,7 +1843,7 @@ class MemPalaceMemorySource(MemorySource):
         Falls back to default wing if no category metadata found.
         """
         if not isinstance(payload, dict):
-            return _DEFAULT_WING_MAP.get('DEFAULT', 'memchorus')
+            return _DEFAULT_WING_MAP.get("DEFAULT", "memchorus")
 
         # Same extraction paths as save() for consistency
         cat = payload.get("category") or payload.get("significance")
@@ -1716,7 +1862,7 @@ class MemPalaceMemorySource(MemorySource):
             if wing:
                 return wing
 
-        return _DEFAULT_WING_MAP.get('DEFAULT', 'memchorus')
+        return _DEFAULT_WING_MAP.get("DEFAULT", "memchorus")
 
     def _resolve_wing(self, category: Optional[str] = None) -> str:
         """Resolve the target MemPalace wing for a given significance category.
@@ -1739,7 +1885,8 @@ class MemPalaceMemorySource(MemorySource):
         """
         if not category:
             return self._wing_map.get(
-                "DEFAULT", "memchorus"  # AC-R1.2 final safety fallback
+                "DEFAULT",
+                "memchorus",  # AC-R1.2 final safety fallback
             )
 
         hit = self._wing_map.get(category.upper(), None)
@@ -1748,27 +1895,73 @@ class MemPalaceMemorySource(MemorySource):
             return self._wing_map.get("DEFAULT", "memchorus")
         return hit
 
-    def _cache_locally(self, key: str, value: Any) -> bool:
-        """Write to the local JSON cache (fallback / resilience)."""
+    _CACHE_WRAPPER_MARKER = "_memchorus_project_mark"
+
+    def _cache_locally(
+        self, key: str, value: Any, project: Optional[str] = None
+    ) -> bool:
+        """Write to the local JSON cache (fallback / resilience).
+
+        ``project`` (A3, Active-Project-Detection): when provided, the JSON
+        payload is wrapped as
+        ``{"value": <value>, "project": <slug>, "_memchorus_project_mark": true}``
+        so the read path (:meth:`retrieve`, :meth:`_retrieve_local`) can detect
+        the wrapper and unwrap it, AND the search path can re-emit the mark.
+        When ``project`` is ``None`` the file contains the bare value (the same
+        layout every existing caller and test already uses), so those consumers
+        see no change.
+
+        The marker key distinguishes a wrapped payload from a user value that
+        happens to be a dict with ``value`` and ``project`` keys of its own —
+        only the marker-bearing shape is unwrapped.
+        """
         try:
             filepath = self._cache_dir / f"{key}.json"
+            if project is not None:
+                payload = {
+                    "value": value,
+                    "project": project,
+                    self._CACHE_WRAPPER_MARKER: True,
+                }
+            else:
+                payload = value
             with open(filepath, "w") as f:
-                json.dump(value, f)
+                json.dump(payload, f)
             return True
         except Exception:
             return False
 
+    @staticmethod
+    def _unwrap_local_payload(data: Any) -> Any:
+        """Return the cached value from local JSON content, unwrapping the
+        A3/A4 project-mark wrapper if and only if the marker key is present.
+
+        Non-wrapper shapes (bare value, or a user dict that lacks the marker)
+        are returned as-is, so existing payloads that predate the wrapper are
+        untouched.
+        """
+        if isinstance(data, dict) and data.get(
+            MemPalaceMemorySource._CACHE_WRAPPER_MARKER
+        ):
+            return data.get("value")
+        return data
+
     def _retrieve_local(self, key: str) -> Optional[Any]:
-        """Read from the local JSON cache."""
+        """Read from the local JSON cache, unwrapping A4-shape payloads.
+
+        Delegates the unwrap decision to :meth:`_unwrap_local_payload` so a
+        wrapper-bearing file returns its inner value and a legacy bare file
+        returns its content unchanged.
+        """
         filepath = self._cache_dir / f"{key}.json"
         if filepath.exists():
             try:
                 with open(filepath) as f:
-                    return json.load(f)
+                    data = json.load(f)
+                return self._unwrap_local_payload(data)
             except Exception:
                 pass
         return None
-
 
     # ------------------------------------------------------------------
     # Proactive methods (spec §Triggered behaviour – chorus-wide invocation)
@@ -1797,11 +1990,16 @@ class MemPalaceMemorySource(MemorySource):
         if self._ensure_connected() and self._client.is_alive:
             mp_hits = self._client.search(query=query, limit=5)
             if mp_hits:
-                for r in (isinstance(mp_hits, list) and mp_hits or []):
+                for r in isinstance(mp_hits, list) and mp_hits or []:
                     content_val = (
                         r.get("content", str(r)) if isinstance(r, dict) else str(r)
                     )
-                    findings.append({"key": "mempalace_hit", "content": self._from_str(str(content_val))})
+                    findings.append(
+                        {
+                            "key": "mempalace_hit",
+                            "content": self._from_str(str(content_val)),
+                        }
+                    )
 
         # Also try local cache.
         cache_hits = []
@@ -1832,12 +2030,15 @@ class MemPalaceMemorySource(MemorySource):
 
         if ok and context:
             action_key = f"proactive_{key}"
-            self._cache_locally(action_key, {
-                "action": "proactive_save",
-                "memory_key": key,
-                "context": context,
-                "source": self._name,
-            })
+            self._cache_locally(
+                action_key,
+                {
+                    "action": "proactive_save",
+                    "memory_key": key,
+                    "context": context,
+                    "source": self._name,
+                },
+            )
 
         return ok
 

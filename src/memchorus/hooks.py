@@ -608,6 +608,42 @@ class MemChorusHooks:
             logger.warning("on_post_tool_call failed — returning None. %s", exc)
             return None
 
+    # ------------------------------------------------------------------
+    # IMPL #209 (a1) — working-state seeder
+    # ------------------------------------------------------------------
+
+    def _seed_working_state(self, seed: bool = True) -> bool:
+        """Ensure a working-state drawer exists for the active project.
+
+        Thin coordinator over :class:`memchorus.working_state_seeder.WorkingStateSeeder`.
+        Returns True when a save was issued (or was already cached), False when
+        the seed was a no-op (no project, no mempalace source, etc.).  Never
+        raises — a seed failure must not break the rest of the hook.
+        """
+        try:
+            from memchorus.working_state_seeder import WorkingStateSeeder
+        except ImportError:
+            logger.debug("working_state_seeder not available — skipping seed.")
+            return False
+
+        orch = _get_orchestrator()
+        if orch is None:
+            return False
+
+        source = getattr(orch, "memory_sources", {}).get("mempalace")
+        if source is None:
+            logger.debug("no mempalace source — skipping working-state seed.")
+            return False
+
+        # Minimal, cheap snapshot fields.  The project slug (via CWD / env
+        # chain inside resolve_slug) is the primary binding signal; the other
+        # fields enrich the drawer for (b) corpus_balancer diagnostics.
+        kanban_task = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        open_kanban: List[str] = [kanban_task] if kanban_task else []
+
+        seeder = WorkingStateSeeder(source)
+        return seeder.ensure(seed=seed, open_kanban=open_kanban)
+
     def on_session_start(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         """Fire once when a new Hermes session begins (or task is picked up) to auto-orient the agent.
 
@@ -633,6 +669,14 @@ class MemChorusHooks:
             # Orientation subsystem not installed yet — no big deal, just skip it)
             logger.debug("Orientation module not available — skipping auto-orientation.")
             return None
+
+        # IMPL #209 (a1) — populate the active project's working-state drawer
+        # before the orientation search runs, so the (a2) ranking surface has
+        # fresh state to rank on.  Idempotent (in-process gate), never raises.
+        try:
+            self._seed_working_state(seed=True)
+        except Exception as _exc:
+            logger.debug("on_session_start working-state seed skipped. %s", _exc)
 
         try:
             kanban_task = os.environ.get("HERMES_KANBAN_TASK")
@@ -751,6 +795,16 @@ class MemChorusHooks:
         except Exception as exc:  # pragma: no cover - graceful degradation
             logger.warning("on_session_end failed — atexit still active. %s", exc, exc_info=True)
             return None
+
+        # IMPL #209 (a1) — upsert the active project's working-state drawer
+        # with the final state of this session before the #208 checkpoint
+        # refresh writes the project record.  seed=False bypasses the
+        # in-process idempotency gate so a changed state is persisted.
+        # Never raises; a no-op when there is no active project.
+        try:
+            self._seed_working_state(seed=False)
+        except Exception as _exc:
+            logger.debug("on_session_end working-state upsert skipped. %s", _exc)
 
         # IMPL #208 — session-end auto-checkpoint (write side of the #163 chain).
         # Refresh the active project's project:<slug> record so the next
