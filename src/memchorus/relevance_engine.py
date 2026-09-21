@@ -17,7 +17,6 @@ Design decisions (from Gap Analyses G1 + G2):
 from __future__ import annotations
 
 import logging
-import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 _CLOSET_STATS_LOCK = __import__("threading").Lock()
 _CLOSET_STATS: Dict[str, int] = {
-    "queries_seen": 0,             # every recall query that scored at least one result
+    "queries_seen": 0,  # every recall query that scored at least one result
     "queries_with_active_project": 0,  # queries where context.active_project was set
     "bound_results_surfaced": 0,  # results carrying closet_boost > 0 in their meta
 }
@@ -64,6 +63,13 @@ def reset_closet_counters() -> None:
     with _CLOSET_STATS_LOCK:
         for k in _CLOSET_STATS:
             _CLOSET_STATS[k] = 0
+
+
+def get_closet_counter(name: str) -> int:
+    """Read a single closet counter by name (read-only).  Raises ``KeyError``
+    for an unknown name — useful in tests to catch a typo'd counter ref."""
+    with _CLOSET_STATS_LOCK:
+        return int(_CLOSET_STATS[name])
 
 
 def record_closet_query(has_active_project: bool) -> None:
@@ -111,8 +117,8 @@ def closet_bound_result(result: Dict[str, Any], active_project: Optional[str]) -
         return False
     if not isinstance(result, dict):
         return False
-    for field in ("project", "wing"):
-        v = result.get(field)
+    for slot in ("project", "wing"):
+        v = result.get(slot)
         if isinstance(v, str) and v.strip().lower() == active_l:
             return True
     key = result.get("key", "")
@@ -134,6 +140,265 @@ def closet_bound_result(result: Dict[str, Any], active_project: Optional[str]) -
     return False
 
 
+# ---------------------------------------------------------------------------
+# (#206 R4/R6) Tier-0 working-state sub-signal classification + weights
+#
+# Among results that are ALREADY partitioned to the active project (Tier 0),
+# a lower-resolution signal distinguishes the working-state the agent is
+# actively trying to recover (open gaps / in-flight diffs / next-action items)
+# from general context, so the *most useful* bound item surfaces first.  It is
+# deliberately a moderate nudge (max weight 0.40) — the dominant signal remains
+# "bound to the project" (the partition), not the sub-signal.  These weights
+# are the MemChorus relevance engine's own constants (closet_boost_factor=0.35
+# territory), NOT the MemPalace CLOSET_RANK_BOOSTS searcher ordinal ladder —
+# they must stay separate (Rank-Weighting-Design.md §1.3 / §4).
+# ---------------------------------------------------------------------------
+
+# (R4) Sub-signal weights — EXACT values from Rank-Weighting-Design.md §2.1 and
+# Acceptance-Criteria AC-2 (gap 0.40 · diff 0.30 · action 0.30 · done 0.10 ·
+# context 0.05).  These produce the required Tier-0 priority order:
+#   gap > diff ≈ action > done > context
+# The max (0.40) is large enough to order same-raw-score items and to make a
+# lower-raw-score gap beat a higher-raw-score action (AC-2), while ``min(...,
+# score_max)`` (R5) keeps a bound drawer from exceeding the RelevanceScorer
+# ceiling (EC-6).  ``context`` (0.05) is the bound-tier fallback so a bound
+# drawer with no higher signal sits at the *bottom* of Tier 0 rather than
+# collapsing to a score-0 tie with unbound drawers (EC-5, §2.1).  These are
+# relevance-engine-LOCAL (closet_boost_factor=0.35 territory) — NOT the
+# MemPalace CLOSET_RANK_BOOSTS searcher ordinal ladder; the two must stay
+# separate (Rank-Weighting-Design.md §1.3 / §3.2).
+_SUB_SIGNAL_WEIGHTS: Dict[str, float] = {
+    "gap": 0.40,
+    "diff": 0.30,
+    "action": 0.30,
+    "done": 0.10,
+    "context": 0.05,
+}
+
+# (R4) Check order for content/keyword fallback classification: gap -> diff ->
+# action -> done.  First matched signal wins; ``context`` when nothing matches
+# (EC-5's bound-tier fallback).  Matching is a case-insensitive substring test
+# over the flattened content, with the design's issue/PR reference pattern as a
+# secondary signal for the ``diff`` bucket.
+_SIGNAL_KEYWORDS: Dict[str, tuple] = {
+    "gap": (
+        "tbd",
+        "fixme",
+        "todo",
+        "open item",
+        "unresolved",
+        "blocked",
+        "wip",
+        "in-progress",
+        "in progress",
+        "regression",
+        "gap",
+    ),
+    "diff": (
+        "in-flight",
+        "in flight",
+        "uncommitted",
+        "worktree",
+        "pull request",
+        " patch",
+        "staged",
+        "unreleased",
+    ),
+    "action": (
+        "next action",
+        "next step",
+        "action item",
+        "should do",
+        "planned",
+    ),
+    "done": (
+        "done",
+        "completed",
+        "shipped",
+        "landed",
+        "resolved",
+        "closed",
+        "delivered",
+        "finished",
+    ),
+}
+
+# (R4) Issue / PR reference detector for the ``diff`` bucket — matches
+# "#123", "PR 123", "PR#123", and bare "1234-56"-style branch refs
+# (Rank-Weighting-Design.md §2.1, signal 2 content-regex fallback).
+_ISSUE_PR_REF = re.compile(
+    r"(?<![\w#])#\d+|\bPR\s*#?\d+|\b\d{3,}-\d{2,}\b", re.IGNORECASE
+)
+
+# (R4) Metadata category -> signal map (Rank-Weighting-Design.md §2.2 — the
+# deterministic, preferred detection path. A writer can stamp a ``category``;
+# the recall path reads it verbatim, immune to phrasing noise.)
+_CATEGORY_TO_SIGNAL: Dict[str, str] = {
+    "GAP": "gap",
+    "TODO": "gap",
+    "OPEN_ITEM": "gap",
+    "DECISION_PENDING": "gap",
+    "IN_FLIGHT": "diff",
+    "PR": "diff",
+    "BRANCH": "diff",
+    "NEXT_ACTION": "action",
+    "ACTION_ITEM": "action",
+    "STEP": "action",
+    "CHECKLIST": "action",
+    "RESULT": "done",
+    "COMPLETED": "done",
+    "MERGED": "done",
+    "CLOSED": "done",
+    "NOTE": "context",
+    "REFERENCE": "context",
+    "DESIGN": "context",
+    "CONTEXT": "context",
+}
+
+
+def _content_text(content: Any) -> str:
+    """Flatten any content type to a single string for keyword scanning."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        return " ".join(_content_text(c) for c in content)
+    if isinstance(content, dict):
+        parts: List[str] = []
+        for k, v in content.items():
+            parts.append(str(k))
+            parts.append(_content_text(v))
+        return " ".join(parts)
+    try:
+        return str(content)
+    except Exception:
+        return ""
+
+
+def _detect_fired_signals(
+    content: Any = "",
+    key: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> set:
+    """Detect ALL sub-signals that fire for a result (R4 §2.1, AC-2).
+
+    The sub-signal weights are **additive** (design §2.1 L129: a gap+diff
+    drawer gets 0.40 + 0.30 = 0.70).  This function returns the set of all
+    five signals whose detectors match.
+
+    Detection priority (for ``signal_type`` display): gap > diff ≈ action
+    > done > context.
+
+    Detection rules per signal (design §2.1, §2.2):
+    - **gap**: ``signal_type == "gap"`` OR ``category`` in
+      {GAP, TODO, OPEN_ITEM, DECISION_PENDING} OR keyword/content-match.
+    - **diff**: ``signal_type == "diff"`` OR ``category == IN_FLIGHT`` OR
+      content matches issue/PR ref pattern OR keyword/content-match.
+    - **action**: ``signal_type == "action"`` OR ``category`` in
+      {NEXT_ACTION, ACTION_ITEM, STEP} OR keyword/content-match.
+    - **done**: ``signal_type == "done"`` OR ``category`` in
+      {RESULT, COMPLETED, MERGED} OR keyword/content-match.
+    - **context**: fallback when no other signal fires (weight 0.05).
+
+    Returns:
+        set of signal names (subset of {gap, diff, action, done}).
+        Empty set means "no signal fired" → caller applies context fallback.
+    """
+    fired: set = set()
+
+    # (1) Explicit metadata (preferred path, §2.2)
+    if meta is not None:
+        explicit = meta.get("signal_type")
+        if isinstance(explicit, str) and explicit.lower() in _SUB_SIGNAL_WEIGHTS:
+            explicit_l = explicit.lower()
+            if explicit_l != "context":
+                fired.add(explicit_l)
+        cat = meta.get("category")
+        if isinstance(cat, str) and cat.upper() in _CATEGORY_TO_SIGNAL:
+            mapped = _CATEGORY_TO_SIGNAL[cat.upper()]
+            if mapped != "context":
+                fired.add(mapped)
+
+    text = _content_text(content).lower()
+    key_text = _content_text(key).lower() if key is not None else ""
+
+    # (2) Keyword / content-regex fallback
+    for signal in ("gap", "diff", "action", "done"):
+        for kw in _SIGNAL_KEYWORDS[signal]:
+            kw_l = kw.lower()
+            if kw_l in text or kw_l in key_text:
+                fired.add(signal)
+                break  # signal already matched; don't double-count within signal
+
+    # (3) Issue/PR ref pattern → diff
+    if ("diff" not in fired) and (
+        _ISSUE_PR_REF.search(text) or _ISSUE_PR_REF.search(key_text)
+    ):
+        fired.add("diff")
+
+    # If meta explicitly says "context", override keyword detection
+    if meta is not None:
+        explicit = meta.get("signal_type")
+        if isinstance(explicit, str) and explicit.lower() == "context":
+            # signal_type=context means: no other signal; force context
+            fired.clear()
+
+    return fired
+
+
+def _compute_sub_signal(
+    content: Any = "",
+    key: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    """Compute (signal_type, sub_signal_score) for a bound result (R4, EC-5, AC-2).
+
+    Detection:
+    1. Metadata/signal_type-driven (preferred, §2.2).
+    2. Content-regex / keyword fallback (AC-2).
+    3. Issue/PR ref pattern (diff bucket).
+    4. Context fallback (0.05) if no other signal fires (EC-5).
+
+    Sub-signal weights are **additive**: a gap+diff drawer fires both (0.40+0.30).
+    The context fallback (0.05) applies only when NO other signal fires.
+
+    Returns:
+        (signal_type_display: str, sub_score: float)
+    """
+    fired = _detect_fired_signals(content, key, meta)
+
+    if fired:
+        sub_score = sum(_SUB_SIGNAL_WEIGHTS[s] for s in fired)
+        # signal_type = highest-priority fired
+        for priority in ("gap", "diff", "action", "done"):
+            if priority in fired:
+                return (priority, round(sub_score, 6))
+        return ("done", round(sub_score, 6))
+
+    # EC-5: context fallback
+    return ("context", 0.05)
+
+
+def _authored_sort_key(meta: Dict[str, Any]) -> str:
+    """Return an ISO-string for newest-first lexicographic tiebreak (R4 §5.3).
+
+    Newer timestamps must sort *first* under ``reverse=True``.  Missing or
+    unparseable values map to ``""`` (sorts last among effective / score ties).
+    """
+    raw = meta.get("authored_at") or meta.get("timestamp") or meta.get("_timestamp")
+    if not raw:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, (int, float)):
+        if raw > 1e12:
+            raw = raw / 1000
+        try:
+            return datetime.fromtimestamp(float(raw), tz=timezone.utc).isoformat()
+        except (ValueError, TypeError, OverflowError, OSError):
+            return ""
+    return ""
 
 
 # (#184) The read-path now stamps recall hits with a *distinctive* source
@@ -199,10 +464,12 @@ class ContextWeight:
     reversible via ``closet_boost_factor=0``.
     """
 
-    domain_weights: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
-        "memory": {"hermes_default": 1.5, "mempalace": 0.5},
-        "graph": {"mempalace": 1.5, "hermes_default": 0.5},
-    })
+    domain_weights: Dict[str, Dict[str, float]] = field(
+        default_factory=lambda: {
+            "memory": {"hermes_default": 1.5, "mempalace": 0.5},
+            "graph": {"mempalace": 1.5, "hermes_default": 0.5},
+        }
+    )
     recency_weight: float = 0.30
     quality_weight: float = 0.45
     source_type_weight: float = 0.25
@@ -255,7 +522,7 @@ _DEFAULT_PENALTY_PATTERNS = [
     (
         "changelog",
         re.compile(
-            r'^\s*(?:-|[*•])\s+v?\d+\.\d+\.\d+',  # bullet followed by version number
+            r"^\s*(?:-|[*•])\s+v?\d+\.\d+\.\d+",  # bullet followed by version number
             re.M | re.I,
         ),
         0.4,
@@ -265,7 +532,7 @@ _DEFAULT_PENALTY_PATTERNS = [
     (
         "package_list",
         re.compile(
-            r'(?:\w+\s*[<>=!~]+\s*[\d.*]+(?:\n|\s|$).*){3}',
+            r"(?:\w+\s*[<>=!~]+\s*[\d.*]+(?:\n|\s|$).*){3}",
             re.I,
         ),
         0.25,
@@ -283,7 +550,7 @@ _DEFAULT_PENALTY_PATTERNS = [
     (
         "version_block",
         re.compile(
-            r'(?s)(?:^\s*version\s*[=:]\s*[\da-f.+]+).*?\n(?:\s*version\s*[=:]\s*[\da-f.+]+)',
+            r"(?s)(?:^\s*version\s*[=:]\s*[\da-f.+]+).*?\n(?:\s*version\s*[=:]\s*[\da-f.+]+)",
             re.M | re.I,
         ),
         0.35,
@@ -299,10 +566,10 @@ _DEFAULT_PENALTY_PATTERNS = [
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DOMAIN_THRESHOLDS = {
-    "error_context": 0.5,      # When BehavioralTrigger detects ERROR_STATE
-    "code_review": 0.5,        # 'review' keyword in query / code review context
-    "planning": 0.4,           # When PLANNING_START detected
-    "general": 0.3,            # Fallback — preserves P1-1 floor for backward compat
+    "error_context": 0.5,  # When BehavioralTrigger detects ERROR_STATE
+    "code_review": 0.5,  # 'review' keyword in query / code review context
+    "planning": 0.4,  # When PLANNING_START detected
+    "general": 0.3,  # Fallback — preserves P1-1 floor for backward compat
 }
 
 # Global minimum recall threshold (preserves P1-1 value of 0.3)
@@ -359,8 +626,16 @@ class RelevanceScorer:
         penalty_patterns: Optional[List[Dict[str, Any]]] = None,
         min_score: float = _MIN_RECALL_THRESHOLD,
         domain_thresholds: Optional[Dict[str, float]] = None,
+        score_max: float = 1.0,
     ):
         self.half_life_days = half_life_days
+        # (R5) The hard ceiling for a result's ``final`` score is stored once
+        # here so that the per-call :meth:`score` / :meth:`score_breakdown`
+        # defaults AND the Tier-0 ``effective_score`` cap (R4) all read the
+        # SAME authoritative ceiling.  Defaults to 1.0 (the documented
+        # [0, 1] contract) and can be widened per-instance for callers that
+        # want a wider scoring range.  See Rank-Weighting-Design.md §6.
+        self._score_max = float(score_max)
         # Two-tier recency model (GH-99)
         self.fast_window_days = fast_window_days  # None disables two-tier mode
         self.fast_retention_pct = fast_retention_pct
@@ -375,7 +650,9 @@ class RelevanceScorer:
         # GH-100: recall-time penalty patterns (label, compiled regex, factor)
         # Override with user config; fall back to _DEFAULT_PENALTY_PATTERNS.
         self._penalty_patterns = self._compile_penalty_patterns(
-            penalty_patterns if penalty_patterns is not None else None  # None means defaults
+            penalty_patterns
+            if penalty_patterns is not None
+            else None  # None means defaults
         )
 
         # GH-98: domain-aware minimum recall thresholds
@@ -437,7 +714,8 @@ class RelevanceScorer:
                 if not 0 < factor <= 1.0:
                     logger.warning(
                         "Penalty pattern '%s' has factor %s (must be in (0, 1]) — skipping",
-                        label, factor,
+                        label,
+                        factor,
                     )
                     continue
                 compiled.append((label, regex, factor))
@@ -487,7 +765,8 @@ class RelevanceScorer:
                         effective_factor = factor
                         logger.debug(
                             "Penalty pattern '%s' matched — current min factor %.2f",
-                            label, effective_factor,
+                            label,
+                            effective_factor,
                         )
             except Exception:
                 # Defensive: a bad pattern shouldn't crash scoring
@@ -521,7 +800,8 @@ class RelevanceScorer:
             logger.warning(
                 "Recency scorer: timestamp %s is in the future (delta=%.2f days). "
                 "Check clock skew or manual edit on the data source.",
-                timestamp_str, abs(delta),
+                timestamp_str,
+                abs(delta),
             )
             delta = 0
 
@@ -665,7 +945,7 @@ class RelevanceScorer:
         result: Dict[str, Any],
         query: str,
         context: Optional[ContextWeight] = None,
-        score_max: float = 1.0,
+        score_max: Optional[float] = None,
         auto_provenance_penalty: float = 0.3,
     ) -> float:
         """Compute a single relevance score in [0, 1] for ``result``.
@@ -673,6 +953,9 @@ class RelevanceScorer:
         Thin delegate over :meth:`score_breakdown` so the returned float and the
         per-component explanation are produced by one identical computation and
         can never diverge (IMPL #173 — recall explainability).
+
+        ``score_max`` defaults to ``None`` which resolves to
+        ``self._score_max`` (R5) — the single authoritative ceiling.
 
         Scoring formula
         ~~~~~~~~~~~~~~~
@@ -730,7 +1013,7 @@ class RelevanceScorer:
         result: Dict[str, Any],
         query: str,
         context: Optional[ContextWeight] = None,
-        score_max: float = 1.0,
+        score_max: Optional[float] = None,
         auto_provenance_penalty: float = 0.3,
     ) -> Dict[str, Any]:
         """Return a full per-component explanation for a single relevance score.
@@ -768,6 +1051,14 @@ class RelevanceScorer:
         if context is None:
             context = ContextWeight()
 
+        # (R5) Resolve the ceiling: an explicit per-call ``score_max`` wins;
+        # otherwise (``None``) fall back to the instance ceiling set in
+        # ``__init__``.  This keeps the per-call default and the Tier-0
+        # effective_score cap (computed in ``score_and_rank``) reading the
+        # SAME number, so the two can never disagree on the cap.
+        if score_max is None:
+            score_max = self._score_max
+
         content = result.get("content", "")
         # (#184 AC5) Canonicalize the distinctive read-path marker back to the
         # registered source name for *scoring lookups* only, so live content
@@ -790,13 +1081,11 @@ class RelevanceScorer:
         # The source_type_weight factor is pulled *into* the L1 normalisation step
         # below, so compute the unweighted [0, 1] prior first and apply weights later.
         if domain_raw:
-            src_prior = (
-                float(
-                    context.domain_weights.get(domain_raw, {}).get(source, 0.25)
-                    / max(
-                        max(context.domain_weights[domain_raw].values(), default=1.0),
-                        1e-9,
-                    )
+            src_prior = float(
+                context.domain_weights.get(domain_raw, {}).get(source, 0.25)
+                / max(
+                    max(context.domain_weights[domain_raw].values(), default=1.0),
+                    1e-9,
                 )
             )
         else:
@@ -827,7 +1116,9 @@ class RelevanceScorer:
             entry_key = result.get("key", "")
             from memchorus.calibration_engine import CalibrationEngine
 
-            boost = CalibrationEngine.boost_factor_for_key(CalibrationEngine(), entry_key)
+            boost = CalibrationEngine.boost_factor_for_key(
+                CalibrationEngine(), entry_key
+            )
             raw *= boost
         except Exception:
             logger.debug(
@@ -934,11 +1225,43 @@ class RelevanceScorer:
             is_winning = (key not in scored) or (s > scored[key].score)
             if not is_winning:
                 continue  # earlier version of this key was strictly better; skip
+
+            # (#206 R4/R6) Tier-0 working-state sub-signal.  Only classified (and
+            # surfaced) for results bound to the active project; unbound
+            # results stay "context"/0.0 — the weak sub-signal nudge applies
+            # inside the bound tier only and must not reorder Tier 1 (AC-2,
+            # Rank-Weighting-Design.md §5, AC-8 degradation path).
+            is_bound = closet_boost > 0.0
+            if is_bound:
+                sub_signal, sub_score = _compute_sub_signal(r.get("content"), key, meta)
+            else:
+                # Bound-only path; unbound drawers carry no sub-signal fields
+                # (AC-5 / EC-5: no `signal_type` / `sub_signal_score` on Tier-1).
+                sub_signal, sub_score = "context", 0.0
+            # (R4/R6) effective_score = min(score + sub_signal_score, _score_max).
+            # AC-2 / EC-6: the STORED ``meta.effective_score`` is the capped value
+            # (a bound drawer never exceeds the RelevanceScorer ceiling); the
+            # uncapped ``score + sub_signal_score`` is kept as
+            # ``meta._effective_raw`` and drives the within-tier sort so ordering
+            # stays monotonic in the sub-signal weight even where several drawers
+            # clamp to the same ceiling.  The reported ``score`` field is the
+            # scorer's value, unchanged (meta transparency per AC-1 / AC-8).
+            raw_score_float = round(s, 4)
+            effective_uncapped = raw_score_float + sub_score
+            effective_score = min(effective_uncapped, self._score_max)
+            if is_bound:
+                meta["signal_type"] = sub_signal
+                meta["sub_signal_score"] = sub_score
+                meta["effective_score"] = round(effective_score, 6)
+                # Internal sort key (not part of the published result-shape
+                # contract in AC-8; underscore-prefixed).  Drives Tier-0 order.
+                meta["_effective_raw"] = round(effective_uncapped, 6)
+
             scored[key] = RankedResult(
                 key=key,
                 content=r.get("content"),
                 source=r.get("source", "unknown"),
-                score=round(s, 4),
+                score=raw_score_float,
                 # Exclude 'score' so the RelevanceScorer's normalized value is not
                 # overwritten by the raw source-level word-count score (G3 fix).
                 meta=meta,
@@ -946,21 +1269,45 @@ class RelevanceScorer:
             # (#209) A "bound surface event" is a candidate that (a) won its key
             # slot AND (b) is bound to the active project — i.e. it actually
             # made it to the ranked output under cloak influence.
-            if closet_boost > 0.0:
+            if is_bound:
                 record_bound_result(closet_boost)
 
-        # (#206) Two-bucket partition: bound (active project) first, then unbound.
-        # ``scored.values()`` is already de-duplicated (one RankedResult per key),
-        # so the two lists together are exactly the ranked set, ordered:
-        #   bucket 0 (bound)   — sorted by score desc
-        #   bucket 1 (unbound) — sorted by score desc
+        # (#206 R4) Two-bucket partition + within-Tier-0 sub-signal re-sort.
+        #   Tier 0 (bound)   — sorted by effective_score desc (sub-signal nudge),
+        #                      then reported score desc (tie-break) to keep a
+        #                      deterministic, stable order (AC-1, AC-8).
+        #   Tier 1 (unbound) — sorted by reported score desc ONLY (unchanged
+        #                      order; the sub-signal must not reorder Tier 1).
         # This is the whole point of #206: a lower-similarity hit bound to the
-        # active project now beats a higher-similarity unbound hit.
+        # active project now beats a higher-similarity unbound hit, and within
+        # the bound project the most useful working state surfaces first.
         all_results = list(scored.values())
-        bound_first = [rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) > 0.0]
-        unbound     = [rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) <= 0.0]
-        bound_first.sort(key=lambda x: x.score, reverse=True)
-        unbound.sort(key=lambda x: x.score, reverse=True)
+        # Tier-0 (bound): sort by the UNCAPPED sub-signal-weighted value first so
+        # ordering stays monotonic in the sub-signal weight (EC-6), then the
+        # capped effective_score, then reported score, then authored_at newest.
+        bound_first = [
+            rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) > 0.0
+        ]
+        bound_first.sort(
+            key=lambda rr: (
+                (
+                    rr.meta.get("_effective_raw")
+                    or rr.meta.get("effective_score")
+                    or 0.0
+                ),
+                (rr.meta.get("effective_score") or 0.0),
+                rr.score if rr.score is not None else 0.0,
+                _authored_sort_key(rr.meta or {}),
+            ),
+            reverse=True,
+        )
+        # Tier-1 (unbound): reported score desc ONLY (unchanged order).
+        unbound = [
+            rr for rr in all_results if (rr.meta.get("closet_boost") or 0.0) <= 0.0
+        ]
+        unbound.sort(
+            key=lambda x: x.score if x.score is not None else 0.0, reverse=True
+        )
         return bound_first + unbound
 
     def rank_sources(
@@ -994,7 +1341,7 @@ class RelevanceScorer:
         pairs: list[tuple[str, float]] = []
         for name in source_names:
             # Normalized default prior (how reliable is this source by default?)
-            prior_component = (self.priors.get(name, 0.5) / max(max_prior, 1e-9))
+            prior_component = self.priors.get(name, 0.5) / max(max_prior, 1e-9)
 
             # Domain-aware component (average normalized fit across all domains)
             domain_component = None
@@ -1010,7 +1357,9 @@ class RelevanceScorer:
 
             # Blend: higher source_type_weight → domain fit matters more vs default prior
             if domain_component is not None and source_type_w > 0:
-                final = (1 - source_type_w) * prior_component + context.source_type_weight * domain_component
+                final = (
+                    1 - source_type_w
+                ) * prior_component + context.source_type_weight * domain_component
             else:
                 final = prior_component
 
