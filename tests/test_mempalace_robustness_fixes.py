@@ -245,6 +245,126 @@ class TestFormatContextBlockUnwrap:
         assert _format_context_block([]) == ""
 
 
+class TestLowSignalGate:
+    """#217 low-signal body gate.
+
+    Recall bodies that are zero-signal — a JSON blob, a bare URL, or a
+    slash-joined command stub (e.g. ``score/rank``) — must be collapsed to a
+    one-line "read it: retrieve(key=…)" gist instead of injecting the raw body
+    verbatim.  The full body stays reachable via retrieve(key=…).  Real prose
+    and plain single words ("low", "high", "x") must still inline in full (no
+    over-suppression, AC6).
+
+    The collapsed entry reuses the EXISTING ``locator_preview`` render mode
+    (AC1) so the documented mode set / doctor --json schema stays stable.
+
+    At current HEAD (before the gate) the positive tests FAIL RED: the raw
+    body is injected (short string → inlined, no locator stored → no
+    retrieve(key) pointer).  After the gate is wired in they GREEN.
+    """
+
+    def test_json_blob_collapses_to_gist(self):
+        # AC1: a body that is a single JSON blob (stringified on one line).
+        item = {
+            "key": "LEARNING_5ae6fc94_9940",
+            "content": '{"success": true, "name": "hermes-agent", '
+                        '"description": "Configure, extend, or contribute"}',
+        }
+        out = _format_context_block([item])
+        # Raw JSON is NOT injected verbatim …
+        assert '"success": true' not in out
+        # … and a retrieve(key) pointer IS present instead.
+        assert "retrieve(key='" in out
+        assert "LEARNING_5ae6fc94_9940" in out
+
+    def test_bare_url_collapses_to_gist(self):
+        # AC2: a body that is exactly a bare URL.
+        item = {
+            "key": "MISTAKE_ac5ab347a4211a3f",
+            "content": "http://127.0.0.1:11434/api/tags",
+        }
+        out = _format_context_block([item])
+        # The bare URL appears as the gist body segment, but the line
+        # must carry the retrieve(key) pointer (not just the raw URL).
+        assert "retrieve(key='" in out
+        assert "MISTAKE_ac5ab347a4211a3f" in out
+
+    def test_slash_stub_collapses_to_gist(self):
+        # AC3: a slash-joined single-token command stub.  (A plain single word
+        # like "low" / "high" is NOT low-signal — real tests rely on it
+        # inlining in full; see test_prose_still_inlines below.)
+        item = {
+            "key": "LEARNING_2775ec98_2835",
+            "content": "score/rank",
+        }
+        out = _format_context_block([item])
+        # Raw stub is not injected as the full body …
+        assert "score/rank" not in out
+        # … but the retrieve(key) pointer IS present.
+        assert "retrieve(key='" in out
+        assert "LEARNING_2775ec98_2835" in out
+
+    def test_plain_word_still_inlines(self):
+        # AC6 (negative): a bare single word with no separator is NOT a
+        # low-signal stub — it must inline in full.  (This is the exact
+        # over-fire my gate must avoid: "low" / "high" / "x" are ordinary
+        # bodies, not tool-call artifacts.)
+        item = {
+            "key": "LEARNING_plainword",
+            "content": "low",
+        }
+        out = _format_context_block([item])
+        assert "low" in out
+        assert "retrieve(key='" not in out
+
+    def test_prose_still_inlines(self):
+        # AC6 (negative): real prose short body still injects in full —
+        # the gate must NOT over-suppress.
+        item = {
+            "key": "LEARNING_prose_keep",
+            "content": "trust execution: drop tasks into triage and expect "
+                        "autonomous completion without babysitting",
+        }
+        out = _format_context_block([item])
+        assert "trust execution: drop tasks into triage" in out
+
+    def test_low_signal_mode_split_tagged(self):
+        # AC5 (mode tag): the doctor / --json consumer reads mode_split, not
+        # just the rendered text.  (#217 AC1) A JSON blob is collapsed into the
+        # EXISTING "locator_preview" mode (not a new tag), and a prose body
+        # must stay "inline" — the tag must NOT be clobbered by the #207 path
+        # that runs after the gate.
+        from memchorus.hooks import simulate_recall_render
+        items = [
+            {
+                "key": "LEARNING_json_tag",
+                "content": '{"success": true, "name": "hermes-agent", '
+                           '"description": "cfg"}',
+                "source": "web",
+            },
+            {
+                "key": "LEARNING_prose_tag",
+                "content": "trust execution: drop tasks into triage and expect "
+                           "autonomous completion without babysitting",
+                "source": "user",
+            },
+        ]
+        render = simulate_recall_render(items)
+        split = render["mode_split"]
+        assert split.get("locator_preview") == 1, (
+            f"JSON blob should be tagged locator_preview, got mode_split={split}"
+        )
+        assert split.get("inline") == 1, (
+            f"prose should stay inline, got mode_split={split}"
+        )
+        # The injected entry for the JSON body carries the locator_preview mode.
+        injected = render["injected"]
+        json_entry = next(e for e in injected if e.get("key") == "LEARNING_json_tag")
+        assert json_entry.get("mode") == "locator_preview"
+        prose_entry = next(e for e in injected if e.get("key") == "LEARNING_prose_tag")
+        assert prose_entry.get("mode") == "inline"
+
+
 # =========================================================================== #
 #  SECTION 4 — IMPL #166 source_file provenance forwarding in save()          #
 # =========================================================================== #

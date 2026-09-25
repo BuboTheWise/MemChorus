@@ -1455,6 +1455,115 @@ def _unwrap_content_field(value: Any) -> str:
             return str(value)
     return str(value)
 
+
+# Bare-URL detector for the #217 low-signal gate.  A single token that is
+# nothing but a URL (e.g. ``http://127.0.0.1:11434/api/tags``) — no prose,
+# no surrounding words — carries almost no signal beyond "an API hit this
+# path at some point".
+_BARE_URL_RE = re.compile(r"^https?://\S+$")
+
+
+def _should_collapse_low_signal(body: str) -> bool:
+    """Decide whether a recall body is a zero-signal blob that should collapse
+    to a one-line "read it: retrieve(key=…)" gist instead of the raw text.
+
+    Issue #217 (continuation of #143/#207).  The body still stays fully
+    reachable via :func:`retrieve(key)`, so collapsing it loses no
+    information — it just stops paying the prompt-window cost of injecting a
+    raw tool-output blob every turn.
+
+    Returns True when the body is:
+
+    * a tool-output JSON blob — parseable as JSON after ``strip()`` and
+      either (i) a dict with 2+ top-level keys (a multi-field tool-response
+      envelope such as ``skill_view()`` / ``kanban_show()`` /
+      ``add_drawer`` results), (ii) a single-key dict carrying one of the
+      recognized payload keys (``content`` / ``text`` / ``output`` /
+      ``data`` / ``result`` / ``body``) with a non-empty value (the
+      double-serialised ``{"output": "..."}`` or ``{"content": "..."}``
+      pattern), or (iii) a JSON list of 2+ items.  A single-key dict with
+      a *non-payload* key (e.g. ``{"payload": [1, 2, 3]}``) inlines — it
+      is a meaningful single record, not a tool-response envelope.
+    * a bare URL — a single token matching ``^https?://\\S+$`` (e.g.
+      ``http://127.0.0.1:11434/api/tags``); or
+    * a single whitespace-token body — the body split on whitespace yields
+      exactly one token (e.g. ``score/rank``, a slash-joined command
+      stub, or a bare word).  This is deliberately *one* token, not "two
+      short words": ``score/rank`` is one atom with zero spaces, while real
+      prose like ``remember this`` is two separate words and must still
+      inline (AC3 example + AC4 pinned ``remember this`` together pin the
+      threshold to a single token).
+
+    Everything else — real prose, markdown with YAML frontmatter, long
+    multi-field skill content — falls through and is left to the existing
+    #207 locator/preview threshold logic, which decides whether it inlines
+    or prepends a locator pointer.
+
+    Never raises: any unexpected state degrades to ``False`` so an unknown
+    body type can never be silently swallowed; the body still injects via
+    the normal path.
+    """
+    if body is None:
+        return False
+    if not isinstance(body, str):
+        return False
+    b = body.strip()
+    if not b:
+        # Pure whitespace / empty — already handled upstream (the early
+        # return in `_build_context_entries` replaces None/`""` with the
+        # fallback text or an empty string); not the low-signal case.
+        return False
+    # (a) JSON tool-output envelope — a parseable dict that is a multi-field
+    #     tool-response dump (2+ keys, e.g. ``skill_view()`` / `kanban_show()`
+    #     result), OR a dict/list carrying a recognized nested-payload key
+    #     (``content``/``text``/``output``/``data``/``result``/``body``)
+    #     with a non-empty value, OR a JSON list of 2+ items (tool array
+    #     dump).  Deliberate exclusion: a *single* arbitrary key that is not
+    #     in the recognized-set — e.g. ``{"payload": [1, 2, 3]}`` is a
+    #     meaningful single record whose content is meaningful JSON; it inlines.
+    if b[0] in "{[":
+        try:
+            parsed = json.loads(b)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict) and parsed:
+            _PAYLOAD_KEYS = ("content", "text", "output", "data", "result", "body")
+            # #207 wrapper shape ({"content": ..., "locator": ...}) is a
+            # stored-content record whose body may be short real prose that
+            # the #207 length logic decides to inline.  Rule (a1) below
+            # over-fired on it as a "2-key tool envelope" (#217 AC6 regression
+            # — test_short_body_not_collapsed).  A dict carrying a ``locator``
+            # key is NOT a raw tool-response dump; leave it to the #207 path.
+            if "locator" in parsed:
+                return False
+            # (a1) multi-field envelope (2+ top-level keys = tool response)
+            if len(parsed) >= 2:
+                return True
+            # (a2) single-key dict carrying a recognized nested-payload key
+            #     with a non-empty value (the #217 double-serialised
+            #     content/output pattern).  .get() is falsy when the key is
+            #     absent or its value is empty, truthy when present-non-empty.
+            if any(parsed.get(pk) for pk in _PAYLOAD_KEYS):
+                return True
+        elif isinstance(parsed, list) and len(parsed) >= 2:
+            return True
+    # (b) Bare URL.
+    if _BARE_URL_RE.match(b):
+        return True
+    # (c) Single-token command stub joined by a separator — e.g. "score/rank".
+    # One whitespace-token AND at least one non-alphanumeric separator char
+    # (slash / dot / colon / underscore / hyphen).  AC3's canonical example is
+    # ``score/rank``: one token, non-space separator, no signal.  This must NOT
+    # fire on a plain single word ("low", "high", "tiny", "x") — those are
+    # ordinary bodies that real tests (char-cap, suppression, line-boundary,
+    # #207 tiny-body) rely on being inlined in full, and AC6 pins plain short
+    # strings as inline.  A slash-joined stub is a *command/identifier* artifact
+    # from a tool call, not a note.
+    if len(b.split()) == 1 and any(not c.isalnum() for c in b):
+        return True
+    return False
+
+
 def _render_project_record_block(project_name: str, record: Any) -> str:
     """Render a §3.3 project record (``location``/``standard``/``reconciled``) into a
     compact, top-level pointer block for session-start injection (IMPL #163.2, spec §2.4).
@@ -1577,7 +1686,16 @@ def _build_context_entries(
     max_chars = max(200, int(max_chars))
     seen_keys: set = set()
     # 5-tuple: (line, score, key, content_hash, mode)
-    #   mode ∈ {"inline", "locator_preview", "suppressed", "dropped-marker"}
+    #   mode ∈ {"inline", "locator_preview",
+    #           "suppressed", "dropped-marker"}
+    #   "locator_preview" (#207 + #217): the body was collapsed to a
+    #     one-line "read it: retrieve(key=…)" pointer (either a long body
+    #     via the #207 threshold, or a zero-signal JSON-blob / bare-URL /
+    #     slash-joined stub via the #217 signal gate).  Both collapse
+    #     classes share the mode because both are pointer-first,
+    #     body-on-demand entries — so the documented mode set stays the
+    #     stable 3-value contract {inline, locator_preview, suppressed}
+    #     that the doctor and --json pin.
     # Tagged per entry so the doctor / a --json consumer can report the
     # "N of M entries injected inline, K as key+preview" line from #207
     # without re-parsing the rendered text.
@@ -1620,6 +1738,42 @@ def _build_context_entries(
         content_raw = _unwrap_content_field(content_raw)
         raw_content = content_raw.rstrip()
 
+        # --- Issue #217: low-signal body gate --------------------------------
+        # When the body is a stringified JSON blob (a ``skill_view()`` /
+        # ``kanban_show()`` tool-output dump), a bare URL, or a slash-joined
+        # command stub (e.g. ``score/rank``), collapsing it to a one-line
+        # retrieve(key) gist is more honest than inlining the raw body.  The
+        # body stays fully reachable via :func:`retrieve(key)` — no
+        # information is lost.  The gate fires BEFORE the #207
+        # locator/preview threshold logic because it is a separate,
+        # independent "is this body worth injecting verbatim?" decision: the
+        # #207 logic is about *length* + *stored locator*, this gate is about
+        # *signal*.
+        #
+        # (#217 AC1) The collapsed entry reuses the EXISTING ``locator_preview``
+        # render mode — both are "pointer-first, body-on-demand" entries, so we
+        # do not introduce a new mode tag (which would widen the documented
+        # mode set and break the doctor / --json schema contract that pins
+        # ``{"inline", "locator_preview", "suppressed"}`).
+        #
+        # When the gate fires, the #207 path must not re-assign ``mode`` (it
+        # would flip ``locator_preview`` → ``inline``) or re-collapse an
+        # already-collapsed one-line gist.  When the gate does NOT fire, the
+        # #207 path runs untouched (real prose, skill markdown, and other long
+        # bodies are NOT collapsed here — AC6 of #217).
+        _low_signal = _should_collapse_low_signal(raw_content)
+        if _low_signal:
+            _src = item.get("source") or item.get("source_name") or "memory"
+            # One-line gist (source + key + pointer), per #217 AC1–AC3.  No
+            # body snippet: for a JSON blob the raw snippet is exactly the
+            # noise we are collapsing; the full body stays one retrieve() away.
+            raw_content = (
+                f"source={_src}\u2014 read it: retrieve(key='{key}')"
+            )
+            mode = "locator_preview"
+        else:
+            mode = "inline"
+
         # --- Issue #140 + #207: locator-first injection -----------------------
         # When a locator was stored alongside the body and the body is long,
         # replace the blob with the compact "go-read-it" locator line
@@ -1638,68 +1792,71 @@ def _build_context_entries(
         #                          to locator line + capped opening preview.
         # The mode tag ("inline" vs "locator_preview") is recorded on the
         # entry so the doctor can report the inline/preview split (#207 AC4).
-        mode = "inline"
-        _inline_threshold = _resolve_inline_threshold()
-        try:
-            from memchorus import locator as _locator_mod
-            loc = _locator_mod.has_locator(item)
-            if loc is None:
-                pass
-            elif _inline_threshold is None:
-                # Legacy: keep pre-#207 gate (LOCATOR_INJECT_THRESHOLD = 240),
-                # byte-identical rendered line, no preview appended.
-                if _locator_mod.should_inject_locator(raw_content, loc):
-                    _src = item.get("source") or item.get("source_name") or ""
-                    raw_content = _locator_mod.format_locator(loc, source_name=_src, key=key)
-                    mode = "locator_preview"
-            else:
-                if len(raw_content or "") <= int(_inline_threshold):
-                    pass  # body fits — inject inline in full, locator stays on demand
+        # (#217) The whole #207 collapse is skipped for a low-signal item
+        # (its body is already the one-line gist); ``mode`` stays
+        # "locator_preview" set above by the #217 gate.
+        if not _low_signal:
+            _inline_threshold = _resolve_inline_threshold()
+            try:
+                from memchorus import locator as _locator_mod
+                loc = _locator_mod.has_locator(item)
+                if loc is None:
+                    pass
+                elif _inline_threshold is None:
+                    # Legacy: keep pre-#207 gate (LOCATOR_INJECT_THRESHOLD = 240),
+                    # byte-identical rendered line, no preview appended.
+                    if _locator_mod.should_inject_locator(raw_content, loc):
+                        _src = item.get("source") or item.get("source_name") or ""
+                        raw_content = _locator_mod.format_locator(loc, source_name=_src, key=key)
+                        mode = "locator_preview"
                 else:
-                    # Collapse to locator line + capped opening-lines preview.
-                    # (AC4: rendered text shows "key — locator — read it" AND a
-                    # preview of the opening body lines.  make_preview returns
-                    # an opening-lines slice; when the body fits the cap it
-                    # is unchanged, in which case we still emit the locator
-                    # line and the preview as the first preview-cap-worth of
-                    # the body so the "read it:" hint is always paired with
-                    # a content peek.)
-                    _preview_cap = 300  # matches locator.PREVIEW_MAX_CHARS default
-                    _src = item.get("source") or item.get("source_name") or ""
-                    _loc_line = _locator_mod.format_locator(loc, source_name=_src, key=key)
-                    _preview = _locator_mod.make_preview(raw_content)
-                    if _preview and _preview != raw_content:
-                        raw_content = _loc_line + "\n" + _preview
-                    elif len(raw_content or "") > _preview_cap:
-                        # make_preview returned the body unchanged (fits the
-                        # cap) but the body still exceeds the preview budget —
-                        # use the first _preview_cap chars as the preview, on
-                        # a line boundary, so the "read it:" line is always
-                        # paired with a content peek per #207 AC4.
-                        _plines = raw_content.split("\n")
-                        _preview_lines: List[str] = []
-                        _running = 0
-                        for _pl in _plines:
-                            if _running + len(_pl) + 1 > _preview_cap:
-                                break
-                            _preview_lines.append(_pl)
-                            _running += len(_pl) + 1
-                        if _preview_lines:
-                            _preview = "\n".join(_preview_lines)
-                            raw_content = _loc_line + "\n" + _preview
-                        else:
-                            raw_content = _loc_line
+                    if len(raw_content or "") <= int(_inline_threshold):
+                        pass  # body fits — inject inline in full, locator stays on demand
                     else:
-                        # Body small enough that make_preview returned it
-                        # unchanged AND it fits within the preview cap —
-                        # keep it inline (the threshold branch above would
-                        # have caught it, but if the threshold was set
-                        # lower than the body length we still need a
-                        # collapsed form, so emit locator line + body).
-                        raw_content = _loc_line + "\n" + raw_content
-                    mode = "locator_preview"
-        except Exception:  # pragma: no cover - locator path must never break recall
-            mode = "inline"
+                        # Collapse to locator line + capped opening-lines preview.
+                        # (AC4: rendered text shows "key — locator — read it" AND a
+                        # preview of the opening body lines.  make_preview returns
+                        # an opening-lines slice; when the body fits the cap it
+                        # is unchanged, in which case we still emit the locator
+                        # line and the preview as the first preview-cap-worth of
+                        # the body so the "read it:" hint is always paired with
+                        # a content peek.)
+                        _preview_cap = 300  # matches locator.PREVIEW_MAX_CHARS default
+                        _src = item.get("source") or item.get("source_name") or ""
+                        _loc_line = _locator_mod.format_locator(loc, source_name=_src, key=key)
+                        _preview = _locator_mod.make_preview(raw_content)
+                        if _preview and _preview != raw_content:
+                            raw_content = _loc_line + "\n" + _preview
+                        elif len(raw_content or "") > _preview_cap:
+                            # make_preview returned the body unchanged (fits the
+                            # cap) but the body still exceeds the preview budget —
+                            # use the first _preview_cap chars as the preview, on
+                            # a line boundary, so the "read it:" line is always
+                            # paired with a content peek per #207 AC4.
+                            _plines = raw_content.split("\n")
+                            _preview_lines: List[str] = []
+                            _running = 0
+                            for _pl in _plines:
+                                if _running + len(_pl) + 1 > _preview_cap:
+                                    break
+                                _preview_lines.append(_pl)
+                                _running += len(_pl) + 1
+                            if _preview_lines:
+                                _preview = "\n".join(_preview_lines)
+                                raw_content = _loc_line + "\n" + _preview
+                            else:
+                                raw_content = _loc_line
+                        else:
+                            # Body small enough that make_preview returned it
+                            # unchanged AND it fits within the preview cap —
+                            # keep it inline (the threshold branch above would
+                            # have caught it, but if the threshold was set
+                            # lower than the body length we still need a
+                            # collapsed form, so emit locator line + body).
+                            raw_content = _loc_line + "\n" + raw_content
+                        mode = "locator_preview"
+            except Exception:  # pragma: no cover - locator path must never break recall
+                mode = "inline"
 
         # --- Cross-turn suppression (GH-141): if this exact key+content was
         # already rendered recently (per profile), collapse to a marker line
@@ -1878,7 +2035,9 @@ def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
         return {
             "rendered": "", "injected": [], "dropped": [],
             "full_body_mark": [], "degraded": False,
-            "mode_split": {"inline": 0, "locator_preview": 0, "suppressed": 0},
+            "mode_split": {
+                "inline": 0, "locator_preview": 0, "suppressed": 0,
+            },
         }
     max_chars = _resolve_char_limit()
     window = _get_suppression_window()
