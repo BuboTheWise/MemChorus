@@ -1528,6 +1528,14 @@ def _should_collapse_low_signal(body: str) -> bool:
             parsed = None
         if isinstance(parsed, dict) and parsed:
             _PAYLOAD_KEYS = ("content", "text", "output", "data", "result", "body")
+            # #207 wrapper shape ({"content": ..., "locator": ...}) is a
+            # stored-content record whose body may be short real prose that
+            # the #207 length logic decides to inline.  Rule (a1) below
+            # over-fired on it as a "2-key tool envelope" (#217 AC6 regression
+            # — test_short_body_not_collapsed).  A dict carrying a ``locator``
+            # key is NOT a raw tool-response dump; leave it to the #207 path.
+            if "locator" in parsed:
+                return False
             # (a1) multi-field envelope (2+ top-level keys = tool response)
             if len(parsed) >= 2:
                 return True
