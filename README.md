@@ -212,6 +212,36 @@ prohibitions:
     - "no_force_pip"                   # example: allow pip --force-reinstall
 ```
 
+## The Three Memory Surfaces & Pointer Model
+
+MemChorus sits on **three distinct memory surfaces**, each holding a
+different *shape* of fact. The surface is a per-fact decision made at write
+time — not interchangeable, and not a storage layout.
+
+| Surface | Holds | You see |
+|---|---|---|
+| **MEMORY** — the host agent's `MEMORY.md`/`USER.md` | standing preferences / rules-of-conduct (short, timeless, always injected) | an ambient fact the agent always has — never a recall hit |
+| **DRAWER** — MemPalace drawer layer (the default sink) | verbatim artefacts: tool output, benchmark runs, decisions, long prose | a body in a recall block — inlined if short/relevant, else collapsed to a `retrieve(key=…)` pointer |
+| **KG** — MemPalace knowledge graph | rules of state (version pins, conventions, "current X") that change over time | a current value you can query with `as-of` scope and a timeline |
+
+The pointer model: **a collapsed body is a pointer, not a promise.** Recall
+returns a compact locator or a `retrieve(key=…)` pointer rather than inlining
+whole bodies, so the full content stays reachable on demand and the token
+block stays bounded. A pointer is only safe because the recovery path is
+guaranteed — `retrieve(key, fallback="live")` — and a dangling pointer (hard
+`None` on a cold-cache miss) is the class of bug the pointer-integrity triad
+tracks (#217/#219/#220/#221).
+
+This is the **orientation contract**, not the full spec. The write-time
+routing classifier (how a fact is routed to the right surface) and the
+recall-loop temporal / task-aware / tunnels/diary/events contracts each live
+in their own spec; the pointer-model doc states each contract *once* and links
+out. **No contract is written in two places.**
+
+- **Full pointer model + surfaces + extension guide:** [`docs/pointer-model.md`](docs/pointer-model.md)
+- **Write-time routing spec** (surface classifier, `routing_kind`, conservative default): [Issue #226](https://github.com/BuboTheWise/MemChorus/issues/226) (board card `t_db50c29c`)
+- **Recall-loop north-star spec** (task-aware selection, temporal validity, tunnels/diary/events): [Issues #223 / #224 / #225](https://github.com/BuboTheWise/MemChorus/issues/225) (board card `t_09abc148`)
+
 ## Behavioral Enforcement Pipeline
 
 The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
@@ -252,6 +282,7 @@ MemChorus's engineering documents live in [`docs/`](docs/). The forward-looking 
 | Document | Purpose |
 |---|---|
 | [North Star](docs/north-star.md) | Design philosophy and the principles every change must respect |
+| [Three Surfaces & Pointer Model](docs/pointer-model.md) | The three memory surfaces (MEMORY / DRAWER / KG), the pointer model, and the routing / validity / temporal contracts — with `See:` links to the specs that own each rule |
 | [Requirements](docs/REQUIREMENTS.md) | Forward-looking functional & non-functional requirements |
 | [Specification](docs/SPEC.md) | Behavioral spec: contracts, data flow, lifecycle semantics |
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, deployment map, process topology, fault modes |
