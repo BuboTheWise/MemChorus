@@ -47,7 +47,13 @@ class TestGAP023DeleteFacade:
     def test_delete_after_save_retrieves_none(self, orchestrator):
         test_key = "gap023_del_then_retrieve"
         assert orchestrator.save(test_key, "temp_value")
-        assert orchestrator.retrieve(test_key) == "temp_value"
+        # #226: the stored value is the body wrapped under `_content` with the
+        # routing envelope attached (spec §4.2/§7.3 — routing_kind rides on the
+        # payload).  The original body is fully recoverable from that field.
+        stored = orchestrator.retrieve(test_key)
+        assert stored is not None
+        assert isinstance(stored, dict)
+        assert stored["_content"] == "temp_value"
         orchestrator.delete(test_key)
         assert orchestrator.retrieve(test_key) is None
 

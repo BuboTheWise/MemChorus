@@ -408,7 +408,13 @@ class TestBackwardCompatibility(unittest.TestCase):
         result = orch.save("explicit", {"k": "v"}, source_name="hermes_default")
         assert result is True
         val = orch.retrieve("explicit")
-        assert val == {"k": "v"}
+        # #226: the payload is enriched with routing metadata (spec §4.2/§7.3)
+        # — routing_kind rides on the persisted value so any backend stores it.
+        # The original body is preserved subset-wise, and the envelope fields
+        # are present (they are the #226 decision record).
+        assert val["k"] == "v"
+        assert val["routing_kind"] in {"MEMORY", "DRAWER", "KG"}
+        assert "emission_kind" in val
 
 
 if __name__ == "__main__":

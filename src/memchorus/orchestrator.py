@@ -35,6 +35,16 @@ from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWei
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
 from memchorus.lifecycle_merge import create_merge_engine, MergeEngine
+from memchorus.surface_routing import (
+    FactKind,
+    RouteContext,
+    emission_kind as surface_emission_kind,
+    routing_decision,
+    SURFACE_DRAWER,
+    SURFACE_KG,
+    SURFACE_MEMORY,
+    _is_structural_relationship,
+)
 from memchorus.auto_storage_engine import ALL_CATEGORIES
 
 # Auto-tuning: lazy imports to avoid hard dependency when modules are unavailable
@@ -951,6 +961,13 @@ class MemoryOrchestrator:
 
         # --- structural hints ---------------------------------------
         if isinstance(value, dict):
+            # #226 — a typed relationship (subject → predicate → object) is the
+            # canonical RELATIONSHIP_GRAPH shape (spec §4: _infer_profile is the
+            # source of is_relationship_shape).  Check this FIRST so a typed
+            # triple is not swallowed by the generic "dict → preference" default
+            # below (which would mis-route it to MEMORY instead of KG / R2).
+            if all(k in value for k in ("subject", "predicate", "object")):
+                return MemoryProfile.RELATIONSHIP_GRAPH
             # Detect relationship-graph signatures in dicts (keys or values that hint at relations)
             _graph_keywords = {"relation", "relates_to", "connected", "friend", "entity",
                               "edge", "link", "associate", "network"}
@@ -958,6 +975,25 @@ class MemoryOrchestrator:
                   + " ".join(str(v).lower() for v in value.values())
             if any(kw in text for kw in _graph_keywords):
                 return MemoryProfile.RELATIONSHIP_GRAPH
+            # #226 — a text/prose body that ALSO carries a temporal window
+            # (valid_from / valid_to / superseded_by) is a *rule-of-state*
+            # (spec §6.2 / §6.3: a note that scopes itself in time is a
+            # state fact, not a standing preference).  Route it to KG via
+            # R2's temporal branch.
+            if any(k in value for k in ("valid_from", "valid_to", "superseded_by")):
+                return MemoryProfile.LONG_LIVED_KNOWLEDGE
+            # #226 — a plain text/prose wrapper ({"text": ...} / {"body": ...} /
+            # {"content": ...}) with NO temporal window is a *verbatim note*
+            # (spec AC-5, §6.3) — NOT a standing preference.  The generic
+            # "dict → preference" default below would mis-route it to MEMORY;
+            # classify it as a verbatim artefact so R3 sends it to DRAWER.
+            _wrapper_key = next(
+                (k for k in ("text", "_content", "body", "content", "value", "str")
+                 if k in value and isinstance(value[k], str)),
+                None,
+            )
+            if _wrapper_key is not None:
+                return MemoryProfile.EPHEMERAL
             return MemoryProfile.USER_PREFERENCE
         if isinstance(value, list):
             # Detect relationship-graph signatures (tuples/2-element lists representing edges)
@@ -970,6 +1006,110 @@ class MemoryOrchestrator:
                 return MemoryProfile.RELATIONSHIP_GRAPH
 
         return MemoryProfile.EPHEMERAL
+
+    # ---------------------------------------------------------------------------
+    # #226 — write-time surface routing (spec: specs/MemChorus-Surface-Routing-Spec.md)
+    # ---------------------------------------------------------------------------
+
+    # Mapping from the coarse MemoryProfile onto the classifier's FactKind
+    # (spec §4: FactKind := STANDING_PREFERENCE ← USER_PREFERENCE/CONTEXT_SENSITIVE_PREF;
+    #  LONG_LIVED_KNOWLEDGE ← LONG_LIVED_KNOWLEDGE, (AUTO when dict + graph-keyword);
+    #  RELATIONSHIP_SHAPE ← RELATIONSHIP_GRAPH;  VERBATIM_ARTIFACT ← EPHEMERAL/LARGE_DATA_BLOCK).
+    #
+    # The classifier interprets the existing _infer_profile heuristic; it never
+    # re-invents structural detection.  Typed-relationship facts (AC-2/AC-7)
+    # reach KG via R2's ``is_relationship_shape`` OR-branch, which is set
+    # independently in _derive_surface — so RELATIONSHIP_SHAPE here does not
+    # block the KG route (R2's shape branch does not consult fact_kind).
+    _PROFILE_TO_FACT_KIND: Dict[MemoryProfile, FactKind] = {
+        MemoryProfile.USER_PREFERENCE:      FactKind.STANDING_PREFERENCE,
+        MemoryProfile.CONTEXT_SENSITIVE_PREF: FactKind.STANDING_PREFERENCE,
+        MemoryProfile.LONG_LIVED_KNOWLEDGE: FactKind.LONG_LIVED_KNOWLEDGE,
+        MemoryProfile.RELATIONSHIP_GRAPH:   FactKind.RELATIONSHIP_SHAPE,
+        MemoryProfile.EPHEMERAL:            FactKind.VERBATIM_ARTIFACT,
+        MemoryProfile.LARGE_DATA_BLOCK:     FactKind.VERBATIM_ARTIFACT,
+        MemoryProfile.AUTO:                 FactKind.LONG_LIVED_KNOWLEDGE,
+    }
+
+    @staticmethod
+    def _attach_routing_metadata(
+        value: Any,
+        routing_kind: str,
+        emission: str,
+        surface_rule: Optional[str] = None,
+        surface_reason: Optional[str] = None,
+    ) -> Any:
+        """Attach the three routing fields to *value* (spec §4.2 / §5.3).
+
+        * ``routing_kind``  — which surface (``MEMORY``/``DRAWER``/``KG``);
+        * ``emission_kind`` — how the body is encoded (``json``/``str``);
+        * ``surface_rule``  — which decision rule fired (observability).
+
+        Preserves existing body/locator/metadata; for non-dict payloads it wraps
+        them under ``_content`` so the body stays fully recoverable. No-op when
+        *value* is neither a dict nor a string/int/float/bool (already a plain
+        scalar) — in that case the scalar is returned unchanged (a scalar body
+        cannot carry a routing field).
+        """
+        if value is None:
+            return value
+        if isinstance(value, dict):
+            payload = dict(value)
+        else:
+            payload = {"_content": value}
+        payload["routing_kind"] = routing_kind
+        payload["emission_kind"] = emission
+        if surface_rule:
+            payload["surface_rule"] = surface_rule
+        if surface_reason:
+            payload["surface_reason"] = surface_reason
+        return payload
+
+    def _derive_surface(
+        self,
+        key: str,
+        stored_value: Any,
+        effective_profile: MemoryProfile,
+        as_of: Optional[datetime] = None,
+    ) -> RouteContext:
+        """Run the #226 surface-classifier for a save (spec §4 / §7.3).
+
+        Pure — returns a populated :class:`RouteContext` whose ``surface``,
+        ``rule`` and ``reason`` fields carry the decision. Never writes.
+
+        ``as_of`` is the write-time reference moment used by the R4 veto (an
+        already-expired or not-yet-valid rule-of-state → DRAWER, spec §4.1 R4 /
+        AC-6).  Defaults to the current UTC time — a *live* write is, by
+        definition, "now" — and may be pinned by a caller (e.g. a test) for
+        deterministic R4 behaviour.  When ``as_of`` is None at call time the
+        default is applied here, never by the pure classifier.
+        """
+        fact_kind = self._PROFILE_TO_FACT_KIND.get(
+            effective_profile, FactKind.LONG_LIVED_KNOWLEDGE
+        )
+        if as_of is None:
+            as_of = datetime.now(timezone.utc)
+        ctx = RouteContext(
+            caller_explicit=None,
+            fact_kind=fact_kind,
+            # is_standing_preference is carried by the profile signal (a
+            # preference with valid_from is still a preference — R1 over R2, §6.3).
+            is_standing_preference=(
+                effective_profile in (
+                    MemoryProfile.USER_PREFERENCE,
+                    MemoryProfile.CONTEXT_SENSITIVE_PREF,
+                )
+            ),
+            # is_relationship_shape: the classifier trusts the typed
+            # subject/predicate/object structure (AC-7); the profile signal is
+            # only a fallback when content is not a structural triple.
+            is_relationship_shape=_is_structural_relationship(
+                stored_value
+            ) or (effective_profile == MemoryProfile.RELATIONSHIP_GRAPH),
+            as_of=as_of,
+        )
+        return routing_decision(stored_value, ctx)
+
 
     # ---------------------------------------------------------------------------
     # Category validation — enforces whitelist so unknown categories cannot
@@ -1355,6 +1495,38 @@ class MemoryOrchestrator:
             effective_profile = profile
         else:
             effective_profile = self._infer_profile(stored_value)
+
+        # #226 — write-time surface routing (spec §4/§5/§7.3).
+        #
+        # The classifier is PURE (see memchorus.surface_routing): it returns a
+        # decision, it never writes.  We attach the decision's three routing
+        # fields onto the payload so whatever backend persists it stores them,
+        # then (in §7.3) emit the structured decision log.  This runs for BOTH
+        # the explicit-source branch and the profile-hint branch below, and
+        # BEFORE the merge engine's pre_save_check so a rejected/merged payload
+        # still carries the routing fields.
+        routing_ctx = None
+        try:
+            routing_ctx = self._derive_surface(key, stored_value, effective_profile)
+            _rk = routing_ctx.surface or SURFACE_DRAWER
+            _ek = surface_emission_kind(value)
+            if stored_value is not None:
+                stored_value = self._attach_routing_metadata(
+                    stored_value, _rk, _ek,
+                    surface_rule=routing_ctx.rule,
+                    surface_reason=routing_ctx.reason,
+                )
+            # #226 §7.3 — structured decision log.  Machine-parseable single line
+            # (surface, rule, reason, emission) so observability / audit can trace
+            # *why* a save landed on a surface without re-running the classifier.
+            # Emitted at INFO (DEBUG would be invisible in the default prod level).
+            logger.info(
+                "route key=%r surface=%s rule=%s reason=%r emission=%s",
+                key, _rk, getattr(routing_ctx, "rule", None),
+                getattr(routing_ctx, "reason", None), _ek,
+            )
+        except Exception as exc:  # noqa: BLE001 - routing metadata must never fail a save
+            logger.debug("surface routing derivation skipped for key=%r: %s", key, exc)
 
         saved = False
 
