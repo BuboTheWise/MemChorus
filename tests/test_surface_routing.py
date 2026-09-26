@@ -842,4 +842,179 @@ def test_ac_table_summary_all_green(tmp_path):
         assert payload["surface_rule"] == exp_rule, f"{key}: {payload}"
 
 
+# =========================================================================== #
+# Property-based fuzz (task req #4): ANY random fact → one of three valid
+# surfaces, never panics, never returns Null.
+# --------------------------------------------------------------------------- #
+# Two layers:
+#   (a) hypothesis-driven — randomized *valid* RouteContext values +
+#       structured content shapes.  200 examples, no failures expected.
+#   (b) seed-fixed random fuzz — generates structurally *arbitrary* content
+#       (nested dicts, mixed-type values, invalid dates, empty collections,
+#       Unicode strings) to prove routing_decision() falls through to
+#       DRAWER (R3 or R4) gracefully, never raises.
+# =========================================================================== #
+
+import random as _random
+import string as _string
+
+try:
+    from hypothesis import given, settings as _h_settings
+    from hypothesis import strategies as st
+    _HYPOTHESIS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _HYPOTHESIS_AVAILABLE = False
+
+
+# Fixed anchor points for as_of (avoids unbounded datetime generation)
+_ASAOFS = [
+    _NOW,                                        # 2026-09-26  (present)
+    datetime(2025, 1, 1, tzinfo=timezone.utc),   # long past
+    datetime(2027, 6, 1, tzinfo=timezone.utc),   # future
+    datetime(2026, 8, 15, tzinfo=timezone.utc),  # just before AC-6 valid_to
+]
+
+_CONTENT_SHAPE_STRATEGIES = [
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-100, max_value=100),
+    st.floats(allow_nan=False),
+    st.text(max_size=20),
+    st.lists(st.text(max_size=5), max_size=3),
+    st.fixed_dictionaries({
+        "subject":   st.text(max_size=10),
+        "predicate": st.text(max_size=10),
+        "object":    st.text(max_size=10),
+    }),
+    st.fixed_dictionaries({
+        "subject":     st.text(max_size=10),
+        "predicate":   st.text(max_size=10),
+        "object":      st.text(max_size=10),
+        "valid_from":  st.sampled_from([None, "2026-09-20", "2026-08-01", "2026-08-15"]),
+        "valid_to":    st.sampled_from([None, "2026-08-15", "2026-12-31"]),
+        "superseded_by": st.sampled_from([None, "kg-xyz"]),
+    }),
+    st.fixed_dictionaries({
+        "text": st.text(max_size=20),
+        "valid_from": st.sampled_from([None, "2026-09-20"]),
+    }),
+]
+
+_ROUTE_CONTEXT_STRATEGY = st.fixed_dictionaries({
+    "caller_explicit":       st.sampled_from([None, SURFACE_MEMORY, SURFACE_DRAWER, SURFACE_KG]),
+    "fact_kind":             st.sampled_from([f.value for f in FactKind]),
+    "has_validity_window":   st.booleans(),
+    "is_standing_preference": st.booleans(),
+    "is_relationship_shape":  st.booleans(),
+    "as_of":                 st.sampled_from(_ASAOFS),
+})
+
+
+@pytest.mark.skipif(not _HYPOTHESIS_AVAILABLE, reason="hypothesis not installed")
+@_h_settings(max_examples=200, deadline=None, database=None)
+@given(content_shape=_CONTENT_SHAPE_STRATEGIES[0] | _CONTENT_SHAPE_STRATEGIES[6],
+       context_kw=_ROUTE_CONTEXT_STRATEGY)
+def test_fuzz_router_returns_valid_surface_hypothesis(content_shape, context_kw):
+    """hypothesis layer: for any valid RouteContext + structured content,
+    route() returns exactly one of MEMORY / DRAWER / KG.
+
+    This is the invariant contract for the write-side classifier (spec §4.2):
+    the classifier must be total over its input domain — it must NEVER
+    raise, return None, or return a surface outside the three-surface set.
+    """
+    result = route(content_shape, RouteContext(**context_kw))
+    assert result in SURFACES, (
+        f"route() returned {result!r} — expected one of {SURFACES}. "
+        f"context_kw={context_kw}"
+    )
+
+
+@_h_settings(max_examples=100, deadline=None, database=None)
+@given(context_kw=_ROUTE_CONTEXT_STRATEGY)
+def test_fuzz_router_rule_and_reason_always_set(context_kw):
+    """Every routing_decision() call must populate .rule and .reason.
+
+    The structured logging contract (spec §7.3) requires that whichever rule
+    fires — R0 through R4 — the caller can read which rule fired and why.
+    """
+    ctx = RouteContext(**context_kw)
+    result = routing_decision("fuzz-content", ctx)
+    assert result.rule is not None
+    assert result.reason is not None
+    assert result.rule in ("R0", "R1", "R2", "R3", "R4"), f"unexpected rule: {result.rule}"
+
+
+def test_fuzz_arbitrary_payloads_never_raise():
+    """Plain-random fuzz: 500 structurally-arbitrary payloads — routing_decision()
+    must complete for every payload, always return a valid surface, and set
+    rule + reason.  This is the stronger "never panics" guarantee that
+    covers content shapes hypothesis's strategies don't explicitly model
+    (nested dicts, mixed-type scalars, empty collections, Unicode).
+    """
+    rng = _random.Random(226)   # #226 = spec number (deterministic seed)
+    _ALPHABET = _string.ascii_letters + _string.digits + "_-. @/{}"
+
+    def _arbitrary_depth(d: int):
+        if d <= 0:
+            # leaf values only — no further nesting
+            return rng.choice([
+                None,
+                True,
+                False,
+                0,
+                1.5,
+                "",
+                "".join(rng.choices(_ALPHABET, k=rng.randint(0, 12))),
+            ])
+        choices = {
+            "none":    None,
+            "bool":    rng.choice([True, False]),
+            "int":     rng.randint(-1000, 1000),
+            "float":   rng.choice([float('nan'), float('inf'), 0.0, 1.5, -3.14]),
+            "str":     "".join(rng.choices(_ALPHABET, k=rng.randint(0, 30))),
+            "list":    [_arbitrary_depth(d - 1) for _ in range(rng.randint(0, 3))],
+            "dict":    {"".join(rng.choices(_ALPHABET, k=rng.randint(1, 8))): _arbitrary_depth(d - 1)
+                       for _ in range(rng.randint(0, 4))},
+        }
+        key = rng.choice(list(choices))
+        val = choices[key]
+        if isinstance(val, list) and all(isinstance(x, float) for x in val):
+            pass  # fine
+        if isinstance(val, dict):
+            # Inject valid-date strings sometimes so R2/R4 branches are exercised
+            if rng.random() < 0.4:
+                val["valid_from"] = rng.choice([
+                    None, "2026-09-20", "2026-08-01", "2026-08-15",
+                    "not-a-date", "9999-01-01",
+                ])
+            if rng.random() < 0.3:
+                val["valid_to"] = rng.choice([
+                    None, "2026-08-15", "2026-12-31", "bogus",
+                ])
+            if rng.random() < 0.2:
+                val["superseded_by"] = rng.choice([None, "kg-test", "abc"])
+        if isinstance(val, dict) and rng.random() < 0.3:
+            val["subject"]   = rng.choice(["A", "B", "s"])
+            val["predicate"] = rng.choice(["p", "rel", "owns"])
+            val["object"]    = rng.choice(["C", "o", "obj"])
+        return val
+
+    for i in range(500):
+        payload = _arbitrary_depth(3)
+        ctx = RouteContext()   # default context — no caller hints
+        try:
+            result = routing_decision(payload, ctx)
+        except Exception as exc:
+            pytest.fail(
+                f"routing_decision() raised {type(exc).__name__}: {exc} "
+                f"on fuzz payload #{i}: {payload!r}"
+            )
+        assert result.surface in (SURFACE_MEMORY, SURFACE_DRAWER, SURFACE_KG), (
+            f"fuzz #{i}: routing_decision() returned {result!r}, "
+            f"expected one of {SURFACES}; payload={payload!r}"
+        )
+        assert result.rule in ("R0", "R1", "R2", "R3", "R4")
+        assert result.reason is not None
+
+
 __all__ = ["AC_ROWS"]
