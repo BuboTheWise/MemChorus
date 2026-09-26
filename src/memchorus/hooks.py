@@ -20,6 +20,7 @@ The pre_llm_call hook performs three phases:
 Environment control: set MEMCHORUS_AUTO_ENABLED=false to disable all hooks.
 """
 
+import ast
 import atexit
 import hashlib
 import importlib  # for dynamic entry_point discovery
@@ -548,14 +549,11 @@ class MemChorusHooks:
             if not tool_output:
                 return None
 
-            # Convert structured outputs to readable text.
-            # dict/list results should become JSON (not Python repr via str())
-            # so downstream significance detection, entropy checks, and recall
-            # see clean data instead of garbled "{'k': 'v'}" strings.
-            if isinstance(tool_output, (dict, list)):
-                output_str = json.dumps(tool_output)
-            else:
-                output_str = str(tool_output)
+            # #220: use the deterministic _emit_body serializer so the body is
+            # canonical JSON (dict/list/dataclass-with-bag) or a tagged repr,
+            # rather than a bare str(...) Python-repr that the read side cannot
+            # classify.  emission_kind is carried through to the save payload.
+            output_str, _emission_kind = _emit_body(tool_output)
 
             # Guard: skip query echo artifacts — recall query templates that
             # leaked through the tool pipeline and would pollute memory storage.
@@ -1463,6 +1461,67 @@ def _unwrap_content_field(value: Any) -> str:
 _BARE_URL_RE = re.compile(r"^https?://\S+$")
 
 
+def _emit_body(value: Any) -> tuple:
+    """Serialise a tool-output value for storage, returning ``(body, kind)``.
+
+    Issue #220 — write-side structured-tool-output tagging.
+
+    A structured but non-dict tool output (a dataclass, a library value object)
+    currently falls into ``str(object)`` in the auto-capture write path,
+    producing a single-quote Python-repr like ``Row(name='x', count=3)``.  The
+    read side cannot classify that as JSON, so the body round-trips as opaque
+    prose and downstream ``json.loads`` / gate logic treats it as a mystery.
+
+    This helper makes the emission *deterministic and self-describing*:
+
+    * plain  ``str``                     -> the string verbatim,          ``"str"``
+    * ``dict`` / ``list`` / ``tuple`` / ``set``
+    * a structured object with a real   -> canonical ``json.dumps`` JSON,  ``"json"``
+      ``__dict__`` bag                      (``vars(obj)`` for the object)
+    * anything else whose ``str()``   -> the repr string tagged,     ``"str-repr-like"``
+      looks structural (starts with ``{`` / ``[``)
+    * anything else                     -> ``str(value)``,                    ``"str"``
+
+    The caller (the write path) attaches ``emission_kind`` to the payload
+    dict so ``save()`` can persist it and ``retrieve(key)`` can read it back,
+    closing the loop: a reader who hits a JSON body knows the body was JSON,
+    and a reader who hits a Python-repr knows it was a repr, not JSON.
+
+    ``json.dumps(..., default=str)`` is used throughout so that non-serialisable
+    values (e.g. a bare ``object()``) degrade to a string representation rather
+    than raising — the body is always a valid, storable string.
+    """
+    # 1 — plain string: emit verbatim, kind "str".
+    if isinstance(value, str):
+        return (value, "str")
+
+    # 2 — container types: canonical JSON, kind "json".
+    if isinstance(value, (dict, list, tuple, set, frozenset)):
+        try:
+            body = json.dumps(value, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            body = str(value)
+            return (body, "str-repr-like")
+        return (body, "json")
+
+    # 3 — structured object with a real __dict__ (dataclass, value object, …):
+    #     flatten the bag into JSON, kind "json".
+    bag = getattr(value, "__dict__", None)
+    if isinstance(bag, dict) and bag:
+        try:
+            body = json.dumps(bag, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            body = str(value)
+            return (body, "str-repr-like")
+        return (body, "json")
+
+    # 4 / 5 — scalar or structural repr fallback.
+    text = str(value)
+    if text and text[0] in ("{", "["):
+        return (text, "str-repr-like")
+    return (text, "str")
+
+
 def _should_collapse_low_signal(body: str) -> bool:
     """Decide whether a recall body is a zero-signal blob that should collapse
     to a one-line "read it: retrieve(key=…)" gist instead of the raw text.
@@ -1474,16 +1533,20 @@ def _should_collapse_low_signal(body: str) -> bool:
 
     Returns True when the body is:
 
-    * a tool-output JSON blob — parseable as JSON after ``strip()`` and
-      either (i) a dict with 2+ top-level keys (a multi-field tool-response
-      envelope such as ``skill_view()`` / ``kanban_show()`` /
-      ``add_drawer`` results), (ii) a single-key dict carrying one of the
-      recognized payload keys (``content`` / ``text`` / ``output`` /
-      ``data`` / ``result`` / ``body``) with a non-empty value (the
-      double-serialised ``{"output": "..."}`` or ``{"content": "..."}``
-      pattern), or (iii) a JSON list of 2+ items.  A single-key dict with
-      a *non-payload* key (e.g. ``{"payload": [1, 2, 3]}``) inlines — it
-      is a meaningful single record, not a tool-response envelope.
+    * a tool-output blob — a dict or list parseable after ``strip()``, either
+      as JSON *or* as a Python-literal (repr) dump.  ``json.loads`` is tried
+      first; when it fails (e.g. single-quote keys, as in
+      ``{'key': …, 'content': {'text': …}}``), ``ast.literal_eval`` is the
+      fallback, so a bare Python-repr dump is collapsed exactly like a JSON
+      one.  Either form must then be (i) a dict with 2+ top-level keys (a
+      multi-field tool-response envelope such as ``skill_view()`` /
+      ``kanban_show()`` / ``add_drawer`` results), (ii) a single-key dict
+      carrying one of the recognized payload keys (``content`` / ``text`` /
+      ``output`` / ``data`` / ``result`` / ``body``) with a non-empty value
+      (the double-serialised ``{"output": "..."}`` / ``{'output': "..."}``
+      pattern), or (iii) a list of 2+ items.  A single-key dict with a
+      *non-payload* key (e.g. ``{'payload': [1, 2, 3]}``) inlines — it is a
+      meaningful single record, not a tool-response envelope.
     * a bare URL — a single token matching ``^https?://\\S+$`` (e.g.
       ``http://127.0.0.1:11434/api/tags``); or
     * a single whitespace-token body — the body split on whitespace yields
@@ -1522,10 +1585,24 @@ def _should_collapse_low_signal(body: str) -> bool:
     #     in the recognized-set — e.g. ``{"payload": [1, 2, 3]}`` is a
     #     meaningful single record whose content is meaningful JSON; it inlines.
     if b[0] in "{[":
+        parsed = None
         try:
             parsed = json.loads(b)
         except ValueError:
-            parsed = None
+            # #219: a bare single-quote Python-repr dump (``{'key': …,
+            # 'content': {'text': …}}``) is NOT valid JSON — ``json.loads``
+            # raises because single quotes are not JSON strings.  Fall back to
+            # ``ast.literal_eval``, which safely parses exactly the Python
+            # literal subset (dict/list/tuple/str/num/bool/None) that a
+            # tool-output dump can be, and never executes a call or attribute.
+            # A body that is *neither* JSON *nor* a literal (a repr containing
+            # a call, e.g. ``{'f': <function f at 0x0>}``) leaves ``parsed=None``
+            # and the gate degrades to the later rules (AC4: never raises,
+            # inlined, never swallowed).
+            try:
+                parsed = ast.literal_eval(b)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                parsed = None
         if isinstance(parsed, dict) and parsed:
             _PAYLOAD_KEYS = ("content", "text", "output", "data", "result", "body")
             # #207 wrapper shape ({"content": ..., "locator": ...}) is a
@@ -1767,8 +1844,15 @@ def _build_context_entries(
             # One-line gist (source + key + pointer), per #217 AC1–AC3.  No
             # body snippet: for a JSON blob the raw snippet is exactly the
             # noise we are collapsing; the full body stays one retrieve() away.
+            # #221: state the cold-cache boundary the pointer rests on — the
+            # agent following this directive must know that if retrieve()
+            # reports a miss, the key is either pruned (cold, re-fetch me)
+            # or never existed, and should not be treated as a silent
+            # absence of the body they were told to go read.
             raw_content = (
-                f"source={_src}\u2014 read it: retrieve(key='{key}')"
+                f"source={_src}\u2014 read it: retrieve(key='{key}'). "
+                f"If that key is missing (cold cache, never saved, or pruned), "
+                f"re-fetch the live source before treating it as absent."
             )
             mode = "locator_preview"
         else:

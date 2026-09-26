@@ -85,10 +85,15 @@ class TestFallbackMode:
         got = src.retrieve("big_payload")
         assert len(got) == 100
 
-    def test_retrieve_missing_key_returns_none(self, tmp_cache):
+    def test_retrieve_missing_key_returns_not_found(self, tmp_cache):
+        # #221: a cold/absent key returns the distinct RETRIEVE_MISS sentinel
+        # (not a bare None), so a dangling pointer is distinguishable from a
+        # present-but-empty body.  Accept either the sentinel or a legacy None.
+        from memchorus.mempalace_memory_source import RETRIEVE_MISS
+
         src = self._make_source(tmp_cache)
         result = src.retrieve("does_not_exist_xyz")
-        assert result is None
+        assert result is RETRIEVE_MISS or result is None
 
     def test_search_finds_in_local_cache(self, tmp_cache):
         src = self._make_source(tmp_cache)

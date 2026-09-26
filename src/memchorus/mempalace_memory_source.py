@@ -29,6 +29,31 @@ from memchorus.mempalace_persistent_session import summarize_exception_group
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Issue #221 — distinguish a cold/absent key from a present-but-empty body.
+# ---------------------------------------------------------------------------
+class _RetrieveMiss:
+    """Sentinel: the key is not present in the local cache at all.
+
+    A source may legitimately store an *empty* body (``""`` or ``{}``) — that is
+    a real value, not an absence.  A bare ``None`` cannot tell them apart, which
+    made the low-signal-gate pointer ``read it: retrieve(key='…')`` dangle
+    silently (stale pointer, no diagnostic, no way to know whether the key is
+    cold or never existed).  A single well-known sentinel makes the miss
+    distinguishable via ``is`` / ``isinstance`` for callers that need to tell
+    the two apart (the read-contract test in #221, and the orchestrator's
+    cold-cache fold-back at the API boundary).
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic aid only
+        return "<MemChorus retrieve MISS: key not found in local cache>"
+
+
+RETRIEVE_MISS = _RetrieveMiss()
+
 # --- Wing / room routing defaults (§1 + §3 of spec) ----------------------------
 _DEFAULT_WING_MAP: Dict[str, str] = {
     "DECISION": "memchorus_decisions",
@@ -1415,8 +1440,9 @@ class MemPalaceMemorySource(MemorySource):
         # MCP unavailable or call failed -> local cache only.
         return bool(self._cache_locally(key, value, project=active_slug))
 
-    def retrieve(self, key: str) -> Optional[Any]:
-        """Look up the memory.  Returns cached value when available; None otherwise.
+    def retrieve(self, key: str, fallback: str = "none") -> Optional[Any]:
+        """Look up the memory in the local cache.  Returns the cached value,
+        or the :data:`RETRIEVE_MISS` sentinel if the key is not present.
 
         GAP044 fix: The local JSON cache is authoritative — it stores the exact
         value that ``save()`` received via ``self._cache_locally(key, value)``.
@@ -1429,25 +1455,69 @@ class MemPalaceMemorySource(MemorySource):
         - **Type corruption (dict→string):** MCP ``_from_str`` on non-JSON content
           producing a raw string instead of the original dict type.
 
-        The only path to None is when the key was never saved through this source
-        (no cache file). This preserves graceful degradation while guaranteeing
-        type and content fidelity on every successful round-trip.
+        #221 three-outcome read contract:
+
+        * key present, body non-empty → the body (unchanged)
+        * key present, body empty     → the empty value (``""`` / ``{}``) — NOT the
+          sentinel; an empty stored body is a legitimate value, not an absence
+        * key NOT in the local cache  → :data:`RETRIEVE_MISS`, a distinguishable
+          sentinel (not a bare ``None``), so callers can tell "cold — re-fetch me"
+          from "never existed"
+
+        ``fallback``:
+
+        * ``"none"`` (default)   — local cache only; on a miss return
+          :data:`RETRIEVE_MISS`.
+        * ``"live"``             — on a local-cache miss, call the per-source
+          override ``_refetch_live(key)`` (or :meth:`_refetch_live`) and return
+          its result when non-empty; otherwise still return
+          :data:`RETRIEVE_MISS`.  A warm hit always wins and bypasses the live
+          path, so round-trip tests asserting ``result == payload`` stay green.
+          Never raises — any error in the refetch path degrades to
+          :data:`RETRIEVE_MISS`.
         """
         filepath = self._cache_dir / f"{key}.json"
-        if not filepath.exists():
-            return None
+        if filepath.exists():
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                # A3/A4: if this was written under an active project, the payload
+                # carries the ``_memchorus_project_mark`` wrapper — unwrap to the
+                # inner value so the round-trip test (save→retrieve) sees the
+                # original object, not the wrapper.  Bare files (no marker) are
+                # returned as-is, preserving every pre-project-mark layout.
+                value = self._unwrap_local_payload(data)
+                if value is not None:
+                    # Any non-null stored value is a HIT — including the
+                    # legitimate empties ("" / {} / []), which are real values,
+                    # not absences (#221 three-outcome contract).
+                    return value
+                # Cached file holds JSON ``null`` — nothing was stored for this
+                # key, so treat as a cold miss (checked below for fallback).
+            except Exception:
+                # Corrupt cache file — treat as cold.
+                pass
+        # Cold: the key is not present in the local cache (or is unreadable).
+        if fallback == "live":
+            try:
+                live = self._refetch_live(key)
+                if live is not None and live != "" and live != {}:
+                    return live
+            except Exception as e:
+                logger.debug("mempalace: fallback live refetch failed for %r: %s", key, e)
+        return RETRIEVE_MISS
 
-        try:
-            with open(filepath) as f:
-                data = json.load(f)
-            # A3/A4: if this was written under an active project, the payload
-            # carries the ``_memchorus_project_mark`` wrapper — unwrap to the
-            # inner value so the round-trip test (save→retrieve) sees the
-            # original object, not the wrapper.  Bare files (no marker) are
-            # returned as-is, preserving every pre-project-mark layout.
-            return self._unwrap_local_payload(data)
-        except Exception:
-            return None
+    def _refetch_live(self, key: str) -> Any:
+        """Per-key live re-fetch hook used by ``retrieve(..., fallback="live")``.
+
+        The default implementation returns ``None`` (no live source) so the
+        caller falls back to :data:`RETRIEVE_MISS`.  Subclasses or a test harness
+        can override this (or monkey-patch an instance attribute) to point at a
+        live MCP call, an HTTP fetch, or any other "is the still-alive source
+        behind this pointer still holding it?" source.
+        """
+        return None
+
 
     def search(
         self,

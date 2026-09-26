@@ -212,6 +212,36 @@ prohibitions:
     - "no_force_pip"                   # example: allow pip --force-reinstall
 ```
 
+## The Three Memory Surfaces & Pointer Model
+
+MemChorus sits on **three distinct memory surfaces**, each holding a
+different *shape* of fact. The surface is a per-fact decision made at write
+time — not interchangeable, and not a storage layout.
+
+| Surface | Holds | You see |
+|---|---|---|
+| **MEMORY** — the host agent's `MEMORY.md`/`USER.md` | standing preferences / rules-of-conduct (short, timeless, always injected) | an ambient fact the agent always has — never a recall hit |
+| **DRAWER** — MemPalace drawer layer (the default sink) | verbatim artefacts: tool output, benchmark runs, decisions, long prose | a body in a recall block — inlined if short/relevant, else collapsed to a `retrieve(key=…)` pointer |
+| **KG** — MemPalace knowledge graph | rules of state (version pins, conventions, "current X") that change over time | a current value you can query with `as-of` scope and a timeline |
+
+The pointer model: **a collapsed body is a pointer, not a promise.** Recall
+returns a compact locator or a `retrieve(key=…)` pointer rather than inlining
+whole bodies, so the full content stays reachable on demand and the token
+block stays bounded. A pointer is only safe because the recovery path is
+guaranteed — `retrieve(key, fallback="live")` — and a dangling pointer (hard
+`None` on a cold-cache miss) is the class of bug the pointer-integrity triad
+tracks (#217/#219/#220/#221).
+
+This is the **orientation contract**, not the full spec. The write-time
+routing classifier (how a fact is routed to the right surface) and the
+recall-loop temporal / task-aware / tunnels/diary/events contracts each live
+in their own spec; the pointer-model doc states each contract *once* and links
+out. **No contract is written in two places.**
+
+- **Full pointer model + surfaces + extension guide:** [`docs/pointer-model.md`](docs/pointer-model.md)
+- **Write-time routing spec** (surface classifier, `routing_kind`, conservative default): [Issue #226](https://github.com/BuboTheWise/MemChorus/issues/226) (board card `t_db50c29c`)
+- **Recall-loop north-star spec** (task-aware selection, temporal validity, tunnels/diary/events): [Issues #223 / #224 / #225](https://github.com/BuboTheWise/MemChorus/issues/225) (board card `t_09abc148`)
+
 ## Behavioral Enforcement Pipeline
 
 The **BehavioralEnforcementManager** is the runtime glue that turns passive memory lookups into proactive behavior:
@@ -252,6 +282,7 @@ MemChorus's engineering documents live in [`docs/`](docs/). The forward-looking 
 | Document | Purpose |
 |---|---|
 | [North Star](docs/north-star.md) | Design philosophy and the principles every change must respect |
+| [Three Surfaces & Pointer Model](docs/pointer-model.md) | The three memory surfaces (MEMORY / DRAWER / KG), the pointer model, and the routing / validity / temporal contracts — with `See:` links to the specs that own each rule |
 | [Requirements](docs/REQUIREMENTS.md) | Forward-looking functional & non-functional requirements |
 | [Specification](docs/SPEC.md) | Behavioral spec: contracts, data flow, lifecycle semantics |
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, deployment map, process topology, fault modes |
@@ -630,7 +661,12 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 
 ## Status
 
-### v2.0.59 (current — 2026-09-21)
+
+
+### v2.0.60 (current — 2026-09-26)
+- **MemPalace pointer-integrity hardening (Issues #219, #220, #221):** three fixes close the "stored/returned pointer is a garbled Python-repr or a hard miss that dangles the caller" hole, each in its own contract boundary so a future regression surfaces at the right seam. (#219) The low-signal gate `_should_collapse_low_signal` in `hooks.py` gains an `ast.literal_eval` fallback after `json.loads` fails, so a *bare single-quote Python-repr dump* (e.g. a dumped `{'key': …}` dict-repr or `{'a': 1}`) is recognised as a structured blob and collapsed to a `read it: retrieve(key=…)` gist line — rather than leaking raw as body content — closing the last shape the #217 gate did not catch. (#220) The auto-capture *write* path in `hooks.py` now routes structured tool output through a new deterministic `_emit_body` serializer (canonical JSON for dict/list/tuple/set and objects with a real `__dict__` bag; a tagged `str-repr-like` kind otherwise) and attaches `emission_kind` to the save payload, so a `str(dict)` / `str(<lib object>)` no longer round-trips as an opaque single-quote repr that downstream recall cannot classify. (#221) `mempalace_memory_source.retrieve` implements a three-outcome read contract: a warm cache hit returns the body, an absent key returns the new module-level `RETRIEVE_MISS` sentinel (distinguishable from a present-but-empty body), and an optional `_refetch_live(key)` hook lets a subclass backfill a live value before falling through to the sentinel; the orchestrator folds the sentinel back to `None` at its three three-outcome call sites. New tests: `tests/test_mempalace_robustness_fixes.py::TestPythonReprGate` (#219, single-quote dump now collapses), `tests/test_write_side_tagging.py` (#220, `_emit_body` determinism + `emission_kind` tagging), and `tests/test_retrieve_pointer_contract.py` (#221, three-outcome contract + `_refetch_live`). Two legacy assertions that asserted a bare `None` from `retrieve()` on a cold key — `test_gap_features.py` and `test_mempalace_mcp_integration.py` — were updated to accept sentinel-or-`None` as "not found". Full suite green (2160 passed), target tests RED at clean HEAD; OPSEC clean. Bumps `__version__` 2.0.59 → 2.0.60 (bug-fix / contract hardening; dual-digit patch per convention; version-sync and OPSEC gates both pass).
+### v2.0.59 (2026-09-21)
+
 
 - **Working-state write path — the active project's session state now lands in the corpus (Issue #209, a1):** #206/#209 shipped the *read* side of project-scoped memory (the `(a2)` `closet_bound_result` rank predicate and the `(b)` corpus-balance diagnostic), but the corpus they ranked and counted was effectively empty of per-project state — `mempalace_status` showed ~156 drawers all in one learning wing and `closet_boost` read `0.0000` on every result because there was nothing project-bound to boost. This release lands the missing `(a1)` *write* half. New `memchorus.working_state_seeder` module (`WorkingStateSeeder` + `compose_snapshot`, `resolve_slug`, `state_hash`, and an in-process `SESSION_SEED_CACHE` idempotency gate) composes a bounded, deterministic working-state snapshot (goal / in-flight / open kanban / blockers / next-3 actions) and routes it through the MemPalace source to exactly one drawer per active project, always upserted (a changed state-hash produces a new `PROJECT_<slug>_<hash>` cache key, so one drawer per project is preserved). `hooks.on_session_start` calls `_seed_working_state(seed=True)` (idempotent, before the orientation search runs) and `hooks.on_session_end` calls it with `seed=False` (upsert, persisting the final state) so the `(a2)` ranking surface has fresh project state at both ends of a session. The MemPalace source admits the `WORKING_STATE` category into its wing/room maps, resolves the active project once via the shared `orientation._resolve_project` resolver, stamps `project=<slug>` on the drawer at write time (A3 project-stamp), and `search()` re-emits `project` + `wing` on each result item (Q1/Q2 emission, AC-W5) so the `(a2)` binding predicate's primary signal (`result["project"] == active_project`) fires for freshly-written drawers — the exact "`closet_boost` never fires" complaint of #209 is structurally closed. `orientation._resolve_project` gains a CWD-exists + home-dir heuristic (A2 guard) and rejects raw-hex kanban task IDs (AC-W2). **AC-W5 load-bearing bridge, proven with real terminal output:** a real `WorkingStateSeeder` writes a working-state drawer to a real in-process `MempalaceMemorySource`; that source's `search()` returns a hit carrying both `project` and `wing`; the already-merged `(a2)` `closet_bound_result` classifies it **bound=True**; and under a real `RelevanceScorer.score_and_rank` the bound drawer earns `closet_boost=0.3500` while the unbound one stays at `0.0000`. No double-scope (AC-W9): touches neither `relevance_engine.py` nor `corpus_balancer.py`; all changes are confined to the seeder + hooks + wing/room routing + resolver guard + 3 test files. New tests: `tests/test_working_state_seeder.py` (AC-W1..W4, W7), `tests/test_hooks_session_start_seeds.py` (AC-W3 idempotency / wiring / never-raises), `tests/test_active_project_detection.py` (AC-W2 resolver, AC-W5 search+rank bridge, AC-W6 non-regression). OPSEC clean (`opsec_sweep.py --verbose` exit 0; no operator paths, agent names, or mail domains in the diff or commit). Bumps `__version__` 2.0.58 → 2.0.59 (new feature; dual-digit patch per convention; 4-source sync verified via `scripts/check_version_sync.py`).
 

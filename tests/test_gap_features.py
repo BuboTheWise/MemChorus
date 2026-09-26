@@ -87,8 +87,11 @@ class TestGAP010_SourceEnableDisable(unittest.TestCase):
         h_val = self.orch.memory_sources["hermes_default"].retrieve("skip_test_key")
         mp_val = self.orch.memory_sources["mempalace"].retrieve("skip_test_key")
         assert h_val is not None, "hermes should have received the save"
-        # mempalace was disabled so its *save* wasn't called — it won't have the key
-        self.assertIsNone(mp_val)
+        # mempalace was disabled so its *save* wasn't called — it won't have the key.
+        # #221: a cold/absent key returns the distinct RETRIEVE_MISS sentinel (not
+        # a bare None); accept either "not found" form.
+        from memchorus.mempalace_memory_source import RETRIEVE_MISS
+        assert mp_val is None or mp_val is RETRIEVE_MISS
 
     # -- 4. search skips disabled sources ------------------------------------
     def test_search_skip_disabled_sources(self):
