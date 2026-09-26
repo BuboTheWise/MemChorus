@@ -523,3 +523,77 @@ class TestProvenanceHumanRender:
         _render_provenance_human(report)
         out = capsys.readouterr().out
         assert "Proposed backfill policy" not in out
+
+
+# =========================================================================== #
+#  SECTION 8 — #219: the gate must ALSO collapse a bare single-quote          #
+#  Python-repr dump (the `{'key': …, 'content': {'text': …}}` shape)           #
+#  =========================================================================== #
+class TestPythonReprGate:
+    """#219 — the low-signal gate's rule (a) must recognise a bare Python
+    repr of a dict (single-quote keys), not only a ``json.loads``-able one.
+
+    The AC is asserted directly against the PURE gate function
+    ``_should_collapse_low_signal`` so the read-side contract is tested
+    independently of the render path.  At the base commit the bare-repr
+    cases FAIL RED (the single-quote body is neither JSON nor a recognised
+    shape), then GREEN once ``ast.literal_eval`` is wired in as a fallback.
+    """
+
+    def test_bare_python_repr_nested_collapsed(self):
+        # A bare single-quote Python-repr of a 2-field nested dict (#219
+        # Shape B).  At HEAD json.loads() fails, so this is inlined (False) —
+        # after the fix it must collapse (True).
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        body = str({"key": "x", "content": {"text": "line1\nline2"}})
+        assert body.startswith("{'key':")
+        assert gate(body) is True
+
+    def test_bare_python_repr_single_payload_key_collapsed(self):
+        # A single-key bare repr whose value is non-empty and a recognized
+        # payload key ("output") — must collapse, mirroring rule (a2).
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        body = str({"output": "dump text"})
+        assert body.startswith("{'output':")
+        assert gate(body) is True
+
+    def test_meaningful_single_record_still_inlines(self):
+        # Deliberate exclusion — a single NON-recognized key holding a list is
+        # a meaningful single record and must INLINE (False).  ast.literal_eval
+        # parses this fine, but the "2+ keys / recognized payload key" guard
+        # keeps it out — this pins the guard against over-firing.
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        body = str({"payload": [1, 2, 3]})
+        assert body.startswith("{'payload':")
+        assert gate(body) is False
+
+    def test_non_literal_repr_degrades_to_false(self):
+        # AC4: a body that starts with '{' but is NEITHER JSON NOR a Python
+        # literal (e.g. contains a call / attribute) must degrade to False —
+        # inlined, never swallowed — the gate "never raises".
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        # dict comprehension / call -> ast.literal_eval raises, json fails too.
+        body = str({k: v for k, v in {"a": 1}.items()}) if False else "{'a': foo(), 'b': bar()}"
+        assert gate(body) is False
+        # Also a real repr of a set-derived mapping with non-literal values:
+        assert gate("{'f': <function f at 0x0>}") is False
+
+    def test_existing_ac3_ac6_prose_still_false(self):
+        # Re-pin the existing prose / single-word negatives so the repr branch
+        # does not over-fire on ordinary text.
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        assert gate("low") is False
+        assert gate("trust execution: drop tasks into triage and expect autonomous completion") is False
+        assert gate("This is real prose that is longer than a token and has several words.") is False
+
+    def test_json_and_url_still_collapse(self):
+        # Existing AC1/AC2 still hold — a valid JSON blob and a bare URL.
+        from memchorus.hooks import _should_collapse_low_signal as gate
+
+        assert gate('{"success": true, "name": "x", "desc": "y"}') is True
+        assert gate("http://127.0.0.1:11434/api/tags") is True

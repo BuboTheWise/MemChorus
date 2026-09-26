@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from memchorus.memory_source import MemorySource
 from memchorus.hermes_memory_source import HermesDefaultMemorySource
 from memchorus.mempalace_memory_source import MemPalaceMemorySource
+from memchorus.mempalace_memory_source import RETRIEVE_MISS
 from memchorus.relevance_engine import RelevanceScorer, RankedResult, ContextWeight
 from memchorus.enforcement_manager import BehavioralEnforcementManager
 from memchorus.recursion_guard import RecursionGuard
@@ -1134,7 +1135,10 @@ class MemoryOrchestrator:
                 continue
             try:
                 result = source.retrieve(key)
-                if result is not None:
+                # #221: fold the cold-miss sentinel back to None at the
+                # orchestrator boundary so existing `result is None` callers
+                # (and the 5 integration tests) are unaffected.
+                if result is not None and result is not RETRIEVE_MISS:
                     duplicates.append(name)
             except Exception:
                 pass
@@ -1646,7 +1650,10 @@ class MemoryOrchestrator:
             source = self.memory_sources.get(src_name)
             if source and _check_source_available(source) and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
-                if result is not None:
+                # #221: fold the cold-miss sentinel back to None at the
+                # orchestrator boundary so existing `result is None` callers
+                # (and the 5 integration tests) are unaffected.
+                if result is not None and result is not RETRIEVE_MISS:
                     self._retrieve_cache[key] = (result, time.monotonic())
                     self._evict_oldest_if_needed()
                     return result
@@ -1691,7 +1698,10 @@ class MemoryOrchestrator:
             source = self.memory_sources.get(src_name)
             if _check_source_available(source) and self.is_source_enabled(src_name):
                 result = source.retrieve(key)
-                if result is not None:
+                # #221: fold the cold-miss sentinel back to None at the
+                # orchestrator boundary so existing `result is None` callers
+                # (and the 5 integration tests) are unaffected.
+                if result is not None and result is not RETRIEVE_MISS:
                     hit = {
                         "key": key,
                         "content": result,
