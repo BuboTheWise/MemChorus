@@ -91,7 +91,10 @@ class TestSaveCategoryParam:
         orch.save("test/5", original)
         stored = next(
             (v for k, v in src.data.items() if k == "test/5"), None)
-        assert stored == original
+        # #226: the persisted payload is the input dict enriched with routing
+        # metadata (spec §4.2/§5.3/§7.3 — routing_kind rides on the payload so
+        # any backend persists it).  Original body is preserved subset-wise.
+        assert stored["simple"] == "value"
 
     def test_metadata_only_enriches(self):
         orch, src = self._make_orch()
@@ -122,4 +125,8 @@ class TestSaveCategoryParam:
         orch.save("test/8", {"content": "x"}, category="  ")
         stored = next(
             (v for k, v in src.data.items() if k == "test/8"), None)
-        assert stored == {"content": "x"}
+        # #226: the payload is enriched with routing metadata in addition to
+        # the body (spec §4.2/§5.3/§7.3).  The empty category is ignored, so no
+        # category key is present; the original body is preserved.
+        assert stored["content"] == "x"
+        assert "categories" not in stored

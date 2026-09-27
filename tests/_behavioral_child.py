@@ -148,10 +148,20 @@ if mode == "store":
         content = item["content"]
         saved = orch.save(key, content)
         retrieved = _original_retrieve(key)  # bypass counter for store verification
+        # #226: the persistence layer enriches the stored value with routing
+        # metadata (spec §4.2/§5.3).  The original body is preserved under
+        # `_content` for non-dict bodies, or as the dict itself for dict bodies.
+        if isinstance(retrieved, dict):
+            body_ok = (
+                retrieved.get("_content") == content
+                or content in retrieved.values()
+            )
+        else:
+            body_ok = (retrieved == content)
         results.append({
             "key": key,
             "content": content,
-            "saved_ok": bool(retrieved == content),
+            "saved_ok": bool(body_ok),
         })
 
     print(json.dumps({
