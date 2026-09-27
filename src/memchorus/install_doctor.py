@@ -341,6 +341,105 @@ def check_test_suite() -> CheckResult:
         )
 
 
+def check_version_alignment(
+    installed_version: Optional[str] = None,
+) -> CheckResult:
+    """#222 -- installed (disk / pip show) version vs in-process version.
+
+    A long-lived host process (the daemon that injects the recall block, a
+    running ``memchorus-recall`` worker, an old ``pytest`` subprocess) keeps
+    the OLD in-memory copy of ``memchorus`` until it restarts, even after a
+    ``pip install --force-reinstall git+…@SHA`` has dropped the new code onto
+    disk. Every other doctor check reads *installed-package* properties only,
+    so they all pass even while the running host is still executing the stale
+    copy. This check is the restart-coupling bridge: it compares the two
+    version strings and flags the discrepancy.
+
+    - When the two strings differ -> ``FAIL`` + an explicit "restart host"
+      message (the running host is using the old copy and needs a restart).
+    - When the installed version cannot be determined (e.g. a standalone
+      developer tree with no pip record, or a live host without a
+      comparable version on disk) -> ``WARN`` saying so explicitly rather
+      than silently passing.
+    - When the two strings are identical -> ``PASS``.
+    """
+    # --- in-process version (what *this* interpreter is running) ---------
+    try:
+        import memchorus
+        in_proc_version = getattr(memchorus, "__version__", None)
+    except Exception:  # noqa: BLE001 -- doctor reports, does not crash
+        in_proc_version = None
+
+    # --- installed version (disk / pip show) ------------------------------
+    if installed_version is None:
+        try:
+            installed_version = imp_meta.version("memchorus")
+        except Exception:  # noqa: BLE001
+            installed_version = None
+
+    if installed_version is None:
+        return CheckResult(
+            name="version_alignment",
+            status=WARN,
+            message=(
+                "Installed (pip show) version not determinable — "
+                "standalone developer tree or no pip record for memchorus. "
+                "This check was skipped rather than silently passing."
+            ),
+            hint=(
+                "Run 'pip install --force-reinstall git+https://github.com/"
+                "BuboTheWise/MemChorus.git@main' to get a pip-tracked "
+                "version, then re-run the doctor."
+            ),
+        )
+
+    if in_proc_version is None:
+        return CheckResult(
+            name="version_alignment",
+            status=WARN,
+            message=(
+                f"Installed version={installed_version} but the in-process "
+                "memchorus.__version__ could not be queried. A live host "
+                "without a comparable version on disk cannot be verified "
+                "against the installed copy."
+            ),
+            hint=(
+                "Restart the host process (daemon / worker / pytest) so it "
+                "re-imports memchorus, then re-run the doctor."
+            ),
+        )
+
+    if in_proc_version != installed_version:
+        return CheckResult(
+            name="version_alignment",
+            status=FAIL,
+            message=(
+                f"MISMATCH: installed version={installed_version} but "
+                f"in-process version={in_proc_version}. The long-lived host "
+                "process is still running the old copy of memchorus; every "
+                "other check in this report reads only the disk / installed "
+                "state, so they can all be green even while the host is "
+                "stale. This is the restart-coupling blind spot."
+            ),
+            hint=(
+                "RESTART THE HOST PROCESS — the daemon that injects the "
+                "recall block, any running memchorus-recall worker, or the "
+                "long-lived pytest/interpreter session — so it re-imports "
+                "memchorus from the new wheel. After the restart, "
+                f"memchorus.__version__ should read {installed_version!r}."
+            ),
+        )
+
+    return CheckResult(
+        name="version_alignment",
+        status=PASS,
+        message=(
+            f"Installed version={installed_version} matches in-process "
+            f"version={in_proc_version}; the host process is running the "
+            "current copy of memchorus."
+        ),
+    )
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry dependency coherence  (--deps-check)
 #
@@ -1448,6 +1547,7 @@ def run_checks() -> List[CheckResult]:
         check_data_directory,
         check_project_record_resolution,
         check_test_suite,
+        check_version_alignment,
     ]
     return [fn() for fn in checks]
 
