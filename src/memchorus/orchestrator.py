@@ -397,10 +397,13 @@ def _extract_scratch_paths(text: Any) -> List[str]:
 def _search_source_text(result: Any) -> str:
     """Flatten a search-result dict (or raw value) into a comparable text blob.
 
-    The scratch-distractor in the spec (§5.1) is stored as a plain string value;
-    other sources return structured dicts with the readable content under
-    ``content``/``text``/``value``.  We gather every string field so
-    ``_extract_scratch_paths`` can operate on a single string.
+    Pre-#226 the scratch-distractor (spec §5.1) was stored as a plain string
+    value.  Under #226, ``save()`` wraps non-dict bodies in the annotated
+    envelope ``{"_content": <body>, routing_kind: …, …}`` so search/inspection
+    can see the routing decision.  Both shapes must keep working — we gather
+    every string field, recovering the ``_content`` body when it is the
+    annotated storage form, so ``_extract_scratch_paths`` and other path
+    scanners keep seeing the note text.
     """
     if result is None:
         return ""
@@ -408,10 +411,15 @@ def _search_source_text(result: Any) -> str:
         return result
     if isinstance(result, dict):
         parts: List[str] = []
-        for fk in ("content", "text", "value", "body", "snippet", "note"):
+        for fk in ("content", "text", "value", "body", "snippet", "note",
+                   "_content"):
             v = result.get(fk)
             if isinstance(v, str) and v.strip():
                 parts.append(v)
+            elif isinstance(v, dict) and isinstance(v.get("_content"), str) \
+                    and v["_content"].strip():
+                # #226 wrapped envelope: recover the body.
+                parts.append(v["_content"])
         return " \n ".join(parts) if parts else ""
     try:
         return str(result)
@@ -1064,6 +1072,47 @@ class MemoryOrchestrator:
         if surface_reason:
             payload["surface_reason"] = surface_reason
         return payload
+
+    # Routing metadata keys that a reader should strip when consuming the
+    # payload as if it were the original body.  ``routing_kind`` is the
+    # discriminator: a dict carrying it was written by ``save()`` after the
+    # #226 classifier ran.  A dict without it is pre-#226 or from a non-
+    # orchestrator writer and we must return it untouched.
+    ROUTING_METADATA_KEYS = ("routing_kind", "emission_kind",
+                             "surface_rule", "surface_reason")
+
+    @classmethod
+    def _unwrap_routing_payload(cls, payload: Any) -> Any:
+        """Reverse :meth:`_attach_routing_metadata` for backward-compatible reads.
+
+        Existing callers that predate the annotation — round-trip equality
+        asserts, path scanners in :meth:`resolve_project_record`, and
+        :meth:`reconcile_project_locations` — must continue to see their
+        original payload.  :meth:`save()` is a write-side enrichment (spec
+        §7.3: "persistence is the caller's job — unchanged"); this shim is the
+        symmetric read-side unwrap.
+
+        Behaviour:
+
+        * Not a dict → returned unchanged.
+        * Dict without ``routing_kind`` → returned unchanged (pre-#226).
+        * Dict with exactly one non-routing key — ``_content`` — the body is
+          returned as-is (the transparent envelope created for str/int/
+          float/bool bodies by :meth:`_attach_routing_metadata`).
+        * Dict with other fields (``text`` / ``body`` / ``location`` / …) and
+          routing keys → the routing keys are stripped and the remaining
+          dict (including any ``_content`` field) is returned, preserving
+          the shape for downstream scanners.
+        """
+        if not isinstance(payload, dict):
+            return payload
+        if "routing_kind" not in payload:
+            return payload
+        stripped = set(cls.ROUTING_METADATA_KEYS)
+        rest_keys = [k for k in payload if k not in stripped]
+        if rest_keys == ["_content"]:
+            return payload["_content"]
+        return {k: v for k, v in payload.items() if k not in stripped}
 
     def _derive_surface(
         self,
@@ -1826,6 +1875,11 @@ class MemoryOrchestrator:
                 # orchestrator boundary so existing `result is None` callers
                 # (and the 5 integration tests) are unaffected.
                 if result is not None and result is not RETRIEVE_MISS:
+                    # #226: reverse the write-time routing annotation so existing
+                    # callers (round-trip equality, path scanners, …) see their
+                    # original payload.  New readers that want routing_kind use
+                    # the raw source (or read the stored payload directly).
+                    result = self._unwrap_routing_payload(result)
                     self._retrieve_cache[key] = (result, time.monotonic())
                     self._evict_oldest_if_needed()
                     return result
@@ -1874,6 +1928,9 @@ class MemoryOrchestrator:
                 # orchestrator boundary so existing `result is None` callers
                 # (and the 5 integration tests) are unaffected.
                 if result is not None and result is not RETRIEVE_MISS:
+                    # #226: reverse the write-time routing annotation on the
+                    # content side.  ``source_name`` is preserved verbatim.
+                    result = self._unwrap_routing_payload(result)
                     hit = {
                         "key": key,
                         "content": result,

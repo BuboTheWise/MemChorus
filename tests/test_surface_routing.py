@@ -706,6 +706,57 @@ def test_save_wiring_supersession_pointer_to_kg(tmp_path):
     assert payload.get("superseded_by") == "kg-abc123"
 
 
+def test_save_wiring_backwards_compatible_round_trip(tmp_path):
+    """REVIEW t_465781fc — the *existing* invariant must be preserved.
+
+    Spec §7.3 non-goals: "persistence is the caller's job — unchanged".
+    Existing callers that predate #226 — orchestrator.retrieve(),
+    resolve_project_record(), and the round-trip equality asserts in
+    ``test_project_record_schema`` / ``test_profile_isolation`` /
+    ``test_recall_locationstandard`` — must continue to see their original
+    payload, not the annotated envelope.  New routing readers that want
+    ``routing_kind`` read the *raw source* (``src.retrieve``), which returns
+    the payload as persisted.
+
+    This test locks both views in one place — the orchestrator unwraps to
+    the body and the raw source exposes the annotation.
+    """
+    orch, src, _ = _make_orchestrator(str(tmp_path))
+
+    # 1.  Plain dict body: round-trips unchanged via the orchestrator,
+    #     but the raw stored payload carries the routing annotation.
+    plain = {"data": "x"}
+    assert orch.save("plain-dict", plain)
+    assert orch.retrieve("plain-dict") == plain, (
+        "orchestrator-level round-trip must preserve the dict exactly."
+    )
+    raw = src.retrieve("plain-dict")
+    assert raw["routing_kind"] in SURFACES, (
+        "routing_kind must be on the persisted payload (spec §5.3)."
+    )
+    assert raw["data"] == "x", "body field must survive the annotation."
+
+    # 2.  Plain string body: round-trips as the original string via the
+    #     orchestrator, not as the ``{"_content": …}`` envelope.  The raw
+    #     stored payload is the envelope — that is the *storage* shape that
+    #     the source backend needs for indexing/search.
+    note = "Working copy reminder: use ~/mempalace for this project"
+    assert orch.save("scratch-note", note)
+    assert orch.retrieve("scratch-note") == note, (
+        "string bodies must round-trip unchanged for readers that predate "
+        "#226 (path-scan invariants)."
+    )
+    raw_note = src.retrieve("scratch-note")
+    # save() wraps non-dict bodies under _content + routing annotations.
+    assert isinstance(raw_note, dict) and raw_note.get("_content") == note, (
+        "string body must be stored as the _content envelope."
+    )
+    assert raw_note["routing_kind"] in SURFACES, (
+        "string body must carry a routing_kind on the stored payload."
+    )
+
+
+
 def test_save_wiring_routing_never_fails_a_save(tmp_path):
     """If _derive_surface raises, save() must still succeed (spec §7.3)."""
     orch, src, _ = _make_orchestrator(str(tmp_path))

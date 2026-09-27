@@ -407,14 +407,24 @@ class TestBackwardCompatibility(unittest.TestCase):
         orch = _make_orch(self.hermes_dir)
         result = orch.save("explicit", {"k": "v"}, source_name="hermes_default")
         assert result is True
+        # #226: the orchestrator.retrieve() façade unwraps the routing
+        # envelope to preserve legacy round-trip invariants — the original
+        # body is returned subset-wise.  New routing readers access the
+        # raw source (memory_sources) to inspect the annotation, which is
+        # where routing_kind / emission_kind / surface_rule ride (spec §5.3 /
+        # §7.3).
         val = orch.retrieve("explicit")
-        # #226: the payload is enriched with routing metadata (spec §4.2/§7.3)
-        # — routing_kind rides on the persisted value so any backend stores it.
-        # The original body is preserved subset-wise, and the envelope fields
-        # are present (they are the #226 decision record).
-        assert val["k"] == "v"
-        assert val["routing_kind"] in {"MEMORY", "DRAWER", "KG"}
-        assert "emission_kind" in val
+        assert val == {"k": "v"} or (
+            isinstance(val, dict) and val.get("k") == "v"
+        ), "body must be recoverable from the orchestrator façade."
+        raw_src = orch.memory_sources.get("hermes_default")
+        assert raw_src is not None, "hermes_default source must be registered"
+        stored = raw_src.retrieve("explicit")
+        assert isinstance(stored, dict), (
+            "payload stored on the raw source must be the annotated envelope."
+        )
+        assert stored["routing_kind"] in {"MEMORY", "DRAWER", "KG"}
+        assert stored.get("emission_kind") in {"json", "str"}
 
 
 if __name__ == "__main__":
