@@ -28,9 +28,19 @@ from enum import Enum, auto
 from typing import Any, Dict, List, Optional
 
 from memchorus.behavioral_trigger import DecisionPoint, DetectedPoint  # type: ignore[import-not-found]
+from memchorus.recall_config import RECALL_CONFIG  # type: ignore[import-not-found]
 
 
 logger = logging.getLogger(__name__)
+
+# Item budget K for *implied* (decision-point / auto) recall — read from the
+# single named config root (spec §4.3).  Decision-point recall is by
+# definition "implied", so its hard cap is ``k_implied`` (default 3).  This is
+# the ONE place the implied item budget is named in this module; the literal
+# ``3`` that used to be scattered through the limit logic below now derives
+# from here, so drift is caught at a single site (see
+# ``tests/test_recall_config_root.py``).
+_IMPLIED_ITEM_BUDGET: int = RECALL_CONFIG.k_implied
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +93,7 @@ _QUERY_MAP: Dict[DecisionPoint, Optional[str]] = {
 # Cache entry for early-termination caching
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _CacheEntry:
     result: List[Dict[str, Any]]
@@ -106,9 +117,9 @@ class AutoRecallEngine:
 
     def __init__(
         self,
-        orchestrator: Any,          # MemoryOrchestrator (no type-signal needed)
-        trigger: Any,               # BehavioralTrigger
-        cache_ttl: float = 5.0,     # seconds before cache expires per DP type
+        orchestrator: Any,  # MemoryOrchestrator (no type-signal needed)
+        trigger: Any,  # BehavioralTrigger
+        cache_ttl: float = 5.0,  # seconds before cache expires per DP type
     ) -> None:
         self._orchestrator = orchestrator
         self._trigger = trigger
@@ -131,7 +142,8 @@ class AutoRecallEngine:
             decision_point: A DetectedPoint emitted by BehavioralTrigger.
 
         Returns:
-            Up to 3 highest-relevance search results, or ``[]`` on degradation.
+            Up to the implied item budget (K = ``RECALL_CONFIG.k_implied``,
+            default 3) highest-relevance search results, or ``[]`` on degradation.
         """
         global _REC_GUARD
 
@@ -159,15 +171,17 @@ class AutoRecallEngine:
             # orchestrator's ``resolve_project_record(name)`` API so the ranked
             # search path is never consulted with the ``None`` sentinel (the
             # bug this branch prevents: ``_do_search(None)`` falling through
-            # to ``orchestrator.search(None, limit=3)``).
+            # to ``orchestrator.search(None, limit=_IMPLIED_ITEM_BUDGET)``).
             if dp_type is DecisionPoint.PROJECT_START:
                 results = self._do_resolve_project_record(decision_point)
             else:
                 query = self._extract_query(dp_type)
                 results = self._do_search(query)
 
-            # Harden: enforce hard limit of 3 regardless of orchestrator output
-            results = results[:3]
+            # Harden: enforce the implied item budget (K) regardless of
+            # orchestrator output.  K for implied recall is the named config
+            # key (spec §4.3), not a scattered literal.
+            results = results[:_IMPLIED_ITEM_BUDGET]
 
             # Stash in cache
             self._cache[dp_type.value] = _CacheEntry(
@@ -210,14 +224,17 @@ class AutoRecallEngine:
     def _do_search(self, query: str) -> List[Dict[str, Any]]:
         """Call orchestrator.search() with graceful degradation."""
         if query == "":
-            logger.warning("AutoRecallEngine: no query defined for this decision point type")
+            logger.warning(
+                "AutoRecallEngine: no query defined for this decision point type"
+            )
             return []
 
         try:
-            results = self._orchestrator.search(query, limit=3)
+            results = self._orchestrator.search(query, limit=_IMPLIED_ITEM_BUDGET)
         except Exception as exc:
             logger.warning(
-                "AutoRecallEngine: orchestrator search failed — returning empty list. %s", exc
+                "AutoRecallEngine: orchestrator search failed — returning empty list. %s",
+                exc,
             )
             return []
 
@@ -233,9 +250,10 @@ class AutoRecallEngine:
         """Resolve the *keyed* project record for a PROJECT_START decision point.
 
         Returns the §3.3 record contract as a **1-element list** so the caller's
-        ``List[Dict]`` shape and ``[:3]`` hard-limit are preserved.  Graceful
-        degradation: a missing/blank project name, a missing orchestrator API,
-        or any exception all return ``[]`` — never an escape (spec §4.2/§4.5).
+        ``List[Dict]`` shape and the ``[:_IMPLIED_ITEM_BUDGET]`` hard-limit are
+        preserved.  Graceful degradation: a missing/blank project name, a missing
+        orchestrator API, or any exception all return ``[]`` — never an escape
+        (spec §4.2/§4.5).
         """
         name = getattr(point, "project_name", None)
         if not name:
@@ -268,13 +286,16 @@ class AutoRecallEngine:
         except Exception as exc:
             logger.warning(
                 "AutoRecallEngine: resolve_project_record failed for '%s' — "
-                "returning empty list. %s", name, exc
+                "returning empty list. %s",
+                name,
+                exc,
             )
             return []
         if not isinstance(record, dict):
             logger.warning(
                 "AutoRecallEngine: resolve_project_record returned %s (expected dict) — "
-                "degrading to empty list", type(record).__name__
+                "degrading to empty list",
+                type(record).__name__,
             )
             return []
         return [record]
