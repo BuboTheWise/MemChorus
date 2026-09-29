@@ -141,6 +141,145 @@ def closet_bound_result(result: Dict[str, Any], active_project: Optional[str]) -
 
 
 # ---------------------------------------------------------------------------
+# (#224 / Pillar 2) Temporal validity — pure state machine + pre-score gate
+#
+# Spec: MemChorus-Recall-Loop-NorthStar-Spec.md §5.1 (state definitions) and
+# §5.2 (hard-gate / soft-demote).  Three mutually-exclusive states per fact at a
+# reference ``as_of``:
+#
+#   CURRENT     — ``valid_to is None`` or ``valid_to >= as_of`` (inclusive) and
+#                 no ``valid_from > as_of`` and no ``superseded_by``.  Ranks
+#                 normally.
+#   SUPERSEDED  — ``superseded_by`` is set AND the fact still has a valid window
+#                 at ``as_of`` (i.e. not EXPIRED).  Scored, then soft-demoted at
+#                 stage 4 by ``RECALL_CONFIG.supersession_attenuation``.
+#   EXPIRED     — ``valid_to < as_of`` (strict) OR ``valid_from > as_of``.  Hard-
+#                 excluded at stage 2, pre-score: never scored, never in any
+#                 ``score_breakdown``.
+#
+# Boundary + precedence (spec §5.1 "Grace / boundary cases"):
+#   * ``valid_to == as_of`` is **valid** (strict ``<`` — "expires *before*
+#     as_of" is the exclusion trigger; the instant it equals is the last legal
+#     point).
+#   * ``valid_from > as_of`` (not yet in force) → EXPIRED *for this as_of*.
+#   * A candidate that is both EXPIRED and SUPERSEDED is **EXPIRED** — expiry is
+#     the decisive state and hard-excludes, it is not merely attenuated.
+#
+# Determinism: this core reads ONLY the fact's own fields + the injected ``as_of``.
+# It never touches wall-clock, RNG, or a mutable store — so the same (fact,
+# as_of) always yields the same state (spec §6.5 "Determinism: ...no time ... in
+# the pure selection core").  ``as_of=None`` means "do no temporal evaluation",
+# and an unparseable boundary degrades to "no boundary" (a conservative
+# CURRENT/SUPERSEDED, never a silent exclusion) — mirroring the write-time
+# ``surface_routing`` R4 conventions so a writer who forgot a valid date still
+# gets a sane recall decision.
+# ---------------------------------------------------------------------------
+
+
+def _get_temporal_value(value: Any, *keys: str) -> Any:
+    """First non-None of *keys* in a fact dict (or its dict under ``fact``)."""
+    if isinstance(value, dict):
+        for k in keys:
+            if value.get(k) is not None:
+                return value[k]
+        inner = value.get("fact")
+        if isinstance(inner, dict):
+            for k in keys:
+                if inner.get(k) is not None:
+                    return inner[k]
+    return None
+
+
+def _parse_temporal_boundary(value: Any) -> Optional[datetime]:
+    """Best-effort parse of ``valid_from`` / ``valid_to`` / ``as_of``.
+
+    Accepts aware/naive :class:`datetime`, :class:`date`, or ISO-8601 strings
+    (``2024-01-01``, ``2024-01-01T00:00:00``, ``...Z``).  Returns a **naive UTC**
+    datetime for stable comparisons, or ``None`` on any failure — an unparseable
+    boundary is treated as "no boundary" (a conservative passthrough, never a
+    silent exclusion).  This mirrors :func:`memchorus.surface_routing._parse_dt`
+    so the write-time and recall-time decisions agree at the boundary.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return (
+            value
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc).replace(tzinfo=None)
+        )
+    if isinstance(value, str):
+        v = value.strip()
+        if not v:
+            return None
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def classify_temporal_state(
+    fact: Dict[str, Any], as_of: Optional[datetime] = None
+) -> str:
+    """Pure, deterministic state machine (spec §5.1).  No I/O, no wall-clock.
+
+    Returns one of ``"EXPIRED"`` / ``"SUPERSEDED"`` / ``"CURRENT"``.
+
+    * ``EXPIRED``     — ``valid_to`` set and ``< as_of`` (strict), or
+                        ``valid_from`` set and ``> as_of`` (not yet in force).
+                        Hard-excluded at stage 2 (pre-score).
+    * ``SUPERSEDED``  — ``superseded_by`` set and NOT expired.  Soft-demoted at
+                        stage 4 (post-score) by the config attenuation factor.
+    * ``CURRENT``     — otherwise (valid window at ``as_of``, no successor).
+
+    With ``as_of=None`` the temporal window cannot be evaluated, so an
+    unannotated fact is CURRENT and a ``superseded_by`` fact is SUPERSEDED.
+    An unparseable ``valid_to``/``valid_from`` falls back to "no boundary"
+    (CURRENT/SUPERSEDED, never EXPIRED), never silently excluding a fact.
+    """
+    superseded_by = _get_temporal_value(fact, "superseded_by")
+    valid_from_raw = _get_temporal_value(fact, "valid_from")
+    valid_to_raw = _get_temporal_value(fact, "valid_to")
+
+    valid_from = _parse_temporal_boundary(valid_from_raw)
+    valid_to = _parse_temporal_boundary(valid_to_raw)
+    boundary = _parse_temporal_boundary(as_of)
+
+    # (a) EXPIRED — a hard-exclusion, and it *precedes* supersession: a fact that
+    #     is both expired and superseded is EXPIRED (spec §5.1 boundary case).
+    #     Requires a parseable as_of; without it the window cannot be assessed.
+    if boundary is not None:
+        if valid_to is not None and valid_to < boundary:
+            return "EXPIRED"
+        if valid_from is not None and valid_from > boundary:
+            return "EXPIRED"
+
+    # (b) SUPERSEDED — has a successor AND is still temporally valid at as_of.
+    if superseded_by is not None:
+        return "SUPERSEDED"
+
+    # (c) CURRENT — default: valid window, no successor.
+    return "CURRENT"
+
+
+def _supersession_attenuation() -> float:
+    """The supersession demotion factor, read from the config *root* at call
+    time (spec §5.2: "score(F) *= SUPERSESSION_ATTENUATION (default 0.50, a named
+    config key)").  We consume the merged constant rather than re-inventing the
+    literal, so a test / deployment can swap it and the engine follows.
+
+    Imported inside the function body (deferred) to avoid a module-load cycle:
+    ``memchorus/__init__`` bootstraps the orchestrator, which imports this
+    module, so a top-level ``from memchorus import recall_config`` would resolve
+    against a partially-initialised package.  Deferring to call time sidesteps
+    it without changing semantics — the value is still read fresh each call."""
+    from memchorus import recall_config  # deferred to break the bootstrap cycle
+
+    return float(recall_config.RECALL_CONFIG.supersession_attenuation)
+
+
+# ---------------------------------------------------------------------------
 # (#206 R4/R6) Tier-0 working-state sub-signal classification + weights
 #
 # Among results that are ALREADY partitioned to the active project (Tier 0),
@@ -475,6 +614,17 @@ class ContextWeight:
     source_type_weight: float = 0.25
     active_project: Optional[str] = None
     closet_boost_factor: float = 0.35
+    #: (#224 / Pillar 2) The temporal evaluation anchor (spec §5.1 item 3:
+    #: "always injectable").  ``None`` means "no temporal evaluation" — the
+    #: expiry hard-gate and the not-yet-valid veto are inert, and every fact is
+    #: treated as its own present moment.  When set (aware or naive datetime,
+    #: or an ISO string), it drives stage-2 temporal classification: facts whose
+    #: ``valid_to < as_of`` (expired) or ``valid_from > as_of`` (not yet in
+    #: force) are hard-excluded, and ``valid_to == as_of`` (exact boundary)
+    #: remains **valid** (strict ``<``).  The pure selection core reads only
+    #: this field — never wall-clock — so ranking is deterministic at a given
+    #: ``as_of``.
+    as_of: Optional["datetime"] = None
 
 
 @dataclass
@@ -1188,22 +1338,52 @@ class RelevanceScorer:
 
         Returns ``list[RankedResult]`` guaranteed sorted by score (highest first).
         Duplicate keys are removed -- the highest-scoring instance wins.
+
+        (#224 / Pillar 2) Temporal validity is applied *inside* this pipeline:
+        stage 2 (PRE-SCORE) hard-excludes EXPIRED / not-yet-valid candidates —
+        they are never scored and never appear in any ``score_breakdown`` — and
+        stage 4 (POST-SCORE) soft-demotes SUPERSEDED-but-valid candidates on the
+        ranked score, per ``RECALL_CONFIG.supersession_attenuation``.  The stored
+        ``score_breakdown.final`` retains the *unattenuated* value for the
+        §5.2-AC2 assertion.
         """
         if context is None:
             context = ContextWeight()
 
         scored: Dict[str, RankedResult] = {}
         active_project = getattr(context, "active_project", None)  # (#206)
+        as_of = getattr(context, "as_of", None)  # (#224 / Pillar 2)
         # (#209) Bump the per-query counters once per score pass, not per
         # result — so the "L of Q queries" diagnostic is meaningful.  The L
         # counter only counts a result that *won* its key slot and is bound,
         # i.e. a bound item actually surfaced in the ranked output.
         record_closet_query(has_active_project=bool(active_project))
         for r in results:
+            # (#224 / Pillar 2, stage 2 — PRE-SCORE hard gate).  Classify
+            # each candidate before scoring: EXPIRED / not-yet-valid facts
+            # never enter the ``scored`` dict and no breakdown is computed
+            # for them (spec §5.2-AC1, §5.2-AC4: "never scored, never in
+            # any score_breakdown").  SUPERSEDED and CURRENT proceed to
+            # scoring; the demotion is applied post-score below.
+            state = classify_temporal_state(r, as_of)
+            if state == "EXPIRED":
+                continue  # hard-excluded: not scored, not ranked, no breakdown
+
             # Compute once via the authoritative breakdown so the score and the
             # per-component explanation stay in lockstep (IMPL #173).
             breakdown = self.score_breakdown(r, query, context)
             s = breakdown["final"]
+            # (#224 / Pillar 2, stage 4 — POST-SCORE soft demote).  A SUPERSEDED
+            # but still-valid fact is scored *normally* (the breakdown above is
+            # its UNATTENUATED value — retained in ``meta["score_breakdown"]`` for
+            # the §5.2-AC2 assertion), then demoted here on the *ranked* score
+            # only, by the config-root attenuation factor (default 0.50).  It is
+            # thereby ranked strictly below its successor.  CURRENT facts are
+            # untouched; EXPIRED never reached this line (hard-excluded stage 2).
+            supersession_factor = 1.0
+            if state == "SUPERSEDED":
+                supersession_factor = _supersession_attenuation()
+                s = float(min(max(s * supersession_factor, 0.0), self._score_max))
             key = r.get("key", str(r))
             closet_boost = float(breakdown.get("closet_boost", 0.0) or 0.0)  # (#206)
             meta = {
@@ -1218,6 +1398,13 @@ class RelevanceScorer:
             # (#206) Surface the cloak value on the result itself so agents can
             # branch on it (e.g. "show me what the cloak boosted").
             meta["closet_boost"] = closet_boost
+
+            # (#224 / Pillar 2) Surface *why* a demotion was applied so agents
+            # can distinguish "attenuated because superseded" from a normally-
+            # ranked fact.  CURRENT facts carry ``demoted_by=None``; the exact
+            # factor is not repeated here (it is a config-root constant), but the
+            # unattenuated score IS retained in ``meta["score_breakdown"]["final"]``.
+            meta["demoted_by"] = "superseded" if state == "SUPERSEDED" else None
 
             # De-duplicate: per key, the highest-scoring candidate wins (this was
             # pre-#206 semantics — the dict is the source of truth, and "replace
