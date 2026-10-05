@@ -138,10 +138,17 @@ class AutoRecallEngine:
         orchestrator: Any,  # MemoryOrchestrator (no type-signal needed)
         trigger: Any,  # BehavioralTrigger
         cache_ttl: float = 5.0,  # seconds before cache expires per DP type
+        aug_fetcher: Optional[Any] = None,
+        aug_config: Optional[Any] = None,
     ) -> None:
         self._orchestrator = orchestrator
         self._trigger = trigger
         self._cache_ttl = cache_ttl
+        # Pillar 3 (issue #225, spec §6) — optional augmentation fetcher.
+        # Injected by the caller (usually the MCP transport bridge); when None
+        # the augmentation path degrades to an empty reserved list.
+        self._aug_fetcher = aug_fetcher
+        self._aug_config = aug_config
 
         # Per-type cache: maps DecisionPoint value (int) -> _CacheEntry
         self._cache: Dict[int, _CacheEntry] = {}
@@ -211,6 +218,73 @@ class AutoRecallEngine:
             # Always deactivate guard, even on exception
             _REC_GUARD = False
             self._in_enforcement_recall = False
+
+    def reserved_slots_headroom(self, *, explicit: bool = False) -> int:
+        """Pillar 3 (spec §6.2) — reserved-slot headroom for this recall mode.
+
+        Returns the number of K-budget slots that the pillar-3 augmentation
+        channel may claim, drawn from the shared K (implied/selected) budget:
+
+          implied  →  ``RECALL_CONFIG.reserved_slots_implied``  (1)
+          explicit →  ``RECALL_CONFIG.reserved_slots_explicit`` (2)
+
+        The pillar-1 select() path passes this value in as ``reserved_slots``
+        so the main ranking path holds that headroom for pillar 3 (additive,
+        spec §6.4: reserved slots reduce the slots available to main ranked
+        items, never displacing them by out-scoring).  Deterministic — reads
+        only from the named config root, no defaults duplicated here.
+        """
+        from memchorus.augmentation import reserved_budget
+
+        return reserved_budget(
+            explicit=explicit,
+            config=self._aug_config or None,
+        )
+
+    def augment(
+        self,
+        task: Dict[str, Any],
+        *,
+        fetcher: Optional[Any] = None,
+        explicit: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Execute pillar-3 (spec §6) reserved augmentation for *task*.
+
+        Returns a budget-capped list of reserved-item dicts (each stamped
+        ``source``/``provenance``/``section``/``reserved=True``).  Graceful
+        degradation per spec §6.7: a missing fetcher, a missing orchestrator,
+        or a per-source fetch failure all contribute an empty list for that
+        source — never an exception propagating to the caller.
+
+        Args:
+            task:      task-signal dict (``kind`` / ``domain`` / ``text`` /
+                       ``explicit``).  The same dict a recall pipeline would
+                       build for pillar 1/2; pillar 3 consumes it read-only.
+            fetcher:   override for the injected ``aug_fetcher`` (test hook).
+            explicit:  True for explicit-recall budget (2), False for implied (1).
+        """
+        from memchorus.augmentation import augment as _augment
+
+        eff_fetcher = fetcher if fetcher is not None else self._aug_fetcher
+        if isinstance(task, dict) and "explicit" in task:
+            explicit_eff = bool(task["explicit"])
+        else:
+            explicit_eff = explicit
+        try:
+            items = _augment(
+                task=task,
+                fetcher=eff_fetcher,
+                explicit=explicit_eff,
+                config=self._aug_config or None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "AutoRecallEngine.augment: pillar-3 pipeline raised — "
+                "returning empty list. %s",
+                exc,
+            )
+            return []
+        return [it.to_dict() for it in items]
 
     def fire_for_text(self, text: str) -> Dict[str, List[Dict[str, Any]]]:
         """Convenience wrapper: call BehavioralTrigger on *text*, then retrieve
