@@ -273,8 +273,26 @@ def check_auto_tune_pipeline() -> CheckResult:
 
 
 def check_data_directory() -> CheckResult:
-    """Default data directory is readable and writable."""
-    data_dir = Path.home() / ".mempalace"
+    """Data directory (as resolved by ``palace_data_dir``) is readable/writable.
+
+    The doctor must inspect the *same* directory the reader and writer use, so
+    this check reuses the module's own root-resolution (:func:`_palace_layout_root`)
+    and then funnels it through the single-source resolver
+    :func:`memchorus.palace_path.palace_data_dir`.  Precedence is the resolver's:
+
+        explicit ``--palace-root``  >  ``$PALACE_ROOT`` / ``$MEMPALACE_PALACE_PATH``
+        >  ``~/.mempalace`` (global default — unchanged for non-profile installs).
+
+    Because ``palace_data_dir`` also honours the Aug-20 split (data present at
+    ``<root>/palace``), a profile whose real store sits under a profile-scoped
+    root is reported correctly instead of false-FAILing against a stray global
+    shell.  This closes the #172 gap where this one check bypassed the resolver.
+    """
+    root = _palace_layout_root(None)
+    try:
+        data_dir = Path(palace_path_mod.palace_data_dir(root))
+    except Exception:
+        data_dir = root  # fallback: fresh install / resolver unavailable
 
     if not data_dir.exists():
         return CheckResult(
@@ -1309,7 +1327,14 @@ def _palace_layout_root(explicit: Optional[str]) -> Path:
     env = os.environ.get("PALACE_ROOT") or os.environ.get("MEMPALACE_PALACE_PATH")
     if env:
         return Path(env)
-    return Path(os.path.expanduser("~")) / ".mempalace"
+    # ``Path.home()`` (not ``os.path.expanduser("~")``) is this codebase's
+    # canonical global-home call — the pre-resolver ``check_data_directory``
+    # body was literally ``Path.home() / ".mempalace"``.  Using the same call
+    # here keeps the default inspectable/patchable by tests that stub
+    # ``Path.home`` (e.g. tests/test_install_doctor.py's data-dir class) and
+    # means a global install is reported against the home of the running
+    # user, not a raw env-var expansion.
+    return Path.home() / ".mempalace"
 
 
 def palace_layout_report(strict: bool = False,
