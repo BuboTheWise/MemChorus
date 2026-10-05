@@ -274,7 +274,7 @@ class TestAdditiveSemantics:
         assert it.get("reserved") is True
 
     def test_additive_combine_preserves_main_prefix(self) -> None:
-        from memchorus.augmentation import combine, augment
+        from memchorus.augmentation import augment, combine
 
         reserved = augment(task=_TASK, fetcher=_fk(events=[_EVENT_ROW]), explicit=False)
         main = ["item-A", "item-B"]  # stand-in for select()'s chosen list
