@@ -1510,12 +1510,32 @@ class MemPalaceMemorySource(MemorySource):
     def _refetch_live(self, key: str) -> Any:
         """Per-key live re-fetch hook used by ``retrieve(..., fallback="live")``.
 
-        The default implementation returns ``None`` (no live source) so the
-        caller falls back to :data:`RETRIEVE_MISS`.  Subclasses or a test harness
-        can override this (or monkey-patch an instance attribute) to point at a
-        live MCP call, an HTTP fetch, or any other "is the still-alive source
-        behind this pointer still holding it?" source.
+        Default implementation asks the live ``search`` surface for ``key`` and
+        returns the body of the first usable hit, so a valid-but-cold pointer can
+        be re-landed from the live source behind it — implementing the recall
+        directive "re-fetch the live source before treating it as absent" that
+        was previously unreachable because this hook returned ``None``.
+
+        Returns ``None`` (so the caller falls back to :data:`RETRIEVE_MISS`)
+        when the live surface has nothing for the key.  Never raises — any
+        error degrades to ``None`` so ``retrieve()``'s three-outcome contract
+        holds.
+
+        Subclasses or a test harness may override this (or monkey-patch an
+        instance attribute) to point at a different live source; ``retrieve()``
+        only requires a non-empty value to be returned for the hit to win.
         """
+        try:
+            hits = self.search(key, limit=5)
+        except Exception as e:  # noqa: BLE001 - refetch must never raise
+            logger.debug("mempalace: _refetch_live search(%r) failed: %s", key, e)
+            return None
+        if not hits:
+            return None
+        for hit in hits:
+            body = hit.get("content") if isinstance(hit, dict) else hit
+            if body not in (None, "", {}):
+                return body
         return None
 
 
