@@ -1870,7 +1870,19 @@ class MemoryOrchestrator:
         for src_name in candidate_sources:
             source = self.memory_sources.get(src_name)
             if source and _check_source_available(source) and self.is_source_enabled(src_name):
-                result = source.retrieve(key)
+                # #238: pass fallback="live" when the source has a usable
+                # _refetch_live seam (MemPalaceMemorySource does) so a cold
+                # pointer can be re-landed from the live search surface.
+                # Warm hits always win and bypass the fallback; this only
+                # affects the cold-miss path.  Sources without a seam
+                # (e.g. HermesMemorySource) fall back to a plain retrieve().
+                if getattr(source, "_refetch_live", None) is not None:
+                    try:
+                        result = source.retrieve(key, fallback="live")
+                    except TypeError:
+                        result = source.retrieve(key)
+                else:
+                    result = source.retrieve(key)
                 # #221: fold the cold-miss sentinel back to None at the
                 # orchestrator boundary so existing `result is None` callers
                 # (and the 5 integration tests) are unaffected.
