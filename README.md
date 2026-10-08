@@ -662,7 +662,10 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 ## Status
 
 
-### v2.0.66 (current — 2026-10-05)
+### v2.0.67 (current — 2026-10-08)
+- **Live-refetch wiring (Issue #238, PR #241):** the recall directive in `hooks.py` has told the agent "re-fetch the live source before treating it as absent" since v2.0.60, but `MemPalaceMemorySource._refetch_live()` was a no-op (returned `None`) and no production caller passed `fallback="live"` — the directive was unreachable dead code. This release gives `_refetch_live` a working default (calls `self.search(key, limit=1)` and returns the first hit's body, or the miss-sentinel when the live search is exhausted) and wires the orchestrator's `retrieve()` / `retrieve_with_source()` to pass `fallback="live"` when the source exposes the seam. Two new tests in `tests/test_retrieve_pointer_contract.py` (cold-cache→live-hit returns body; cold-cache→live-exhausted returns sentinel) pin the fix against the real implementation, not the monkeypatched seam. The two test files that disagreed on the stub seam are now aligned. Bumps `__version__` 2.0.66 → 2.0.67 (bug-fix; dual-digit patch; version-sync gate passes).
+
+### v2.0.66 (2026-10-05)
 - **install_doctor: data-directory check now resolves through the palace layout resolver (Issue #235, PR #237):** `check_data_directory` no longer hard-codes `~/.mempalace` — it delegates to `palace_data_dir` so profile-scoped installs report on the data directory actually in use instead of a canonical global path that false-FAILs in profile installs. The global (non-profile) fallback is preserved, and the check's missing-directory hint is rooted at the profile store. A new regression test real-cross-checks the delegation (RED 6f/1p → GREEN 7p at the same head, independently reconfirmed by VERIFY t_a5d603f7). All six CI checks pass; OPSEC clean. Bumps `__version__` 2.0.65 → 2.0.66 (bug-fix; dual-digit patch per X.Y.ZZ convention; version-sync gate passes).
 
 ### v2.0.65 (2026-10-05)
