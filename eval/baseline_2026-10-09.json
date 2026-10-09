@@ -1,13 +1,13 @@
 {
   "schema": "recall-gate/2026-10-08",
   "task": "t_292f8cd2 \u2014 rerank-recall-eval-gate (v1.1.0) on #238 seam",
-  "timestamp": "2026-10-09T00:03:38.878589+00:00",
+  "timestamp": "2026-10-09T00:53:49.412921+00:00",
   "live_ok": true,
   "seam": {
     "status": "ok",
     "detail": {
       "mcp_alive": true,
-      "probe_key": "eval/recall-gate-4605f9785364440d864fbbbf3511b4fe",
+      "probe_key": "eval/recall-gate-2160619bf57a416bb4ee5d8dd21115c1",
       "retrieve_none_is_sentinel": true,
       "retrieve_live_returned": "_RetrieveMiss",
       "retrieve_live_is_sentinel": true,
@@ -31,6 +31,9 @@
     "5": 0.666667,
     "10": 0.666667
   },
+  "false_positive_count": 0,
+  "false_positive_rate_neg": 0.0,
+  "false_positive_rule": "a negative-control query is a false positive iff it returned ANY raw hit at the headline k (corpus should not fabricate drawers for out-of-domain queries)",
   "mean_distance": 0.549388,
   "mean_distance_provenance": "max per-hit relevance across all top-k returns; relevance is the live surface's own [0,1] score.",
   "k_list": [
@@ -235,7 +238,7 @@
   ],
   "gate": "REGRESSION",
   "baseline_compare": {
-    "source": "synthetic-strict (high: zero_hit=0.0, mean_distance=1.0)",
+    "source": "synthetic-strict (high: zero_hit=0.0, mean_distance=1.0, fp=0)",
     "zero_hit": {
       "baseline": 0.0,
       "current": 0.222222,
@@ -247,8 +250,14 @@
       "current": 0.549388,
       "delta": -0.450612,
       "tolerance": 0.01,
+      "pass": false
+    },
+    "false_positives": {
+      "baseline": 0,
+      "current": 0,
+      "delta": 0,
       "pass": true
     }
   },
-  "gate_rule": "PASS iff zero_hit_cur <= base AND mean_dist_cur <= base*(1+tol); else REGRESSION. Negative control `--baseline high` forces zero_hit=0, mean_dist=1.0 so any imperfect run fails."
+  "gate_rule": "PASS iff zero_hit_cur <= base AND mean_dist_cur >= base*(1-tol) AND fp_cur <= base_fp; else REGRESSION. mean_distance is a similarity (higher = better). Negative control `--baseline high` forces zero_hit=0, mean_dist=1.0, fp=0 \u2014 the strictest possible bar so any imperfect run fails."
 }

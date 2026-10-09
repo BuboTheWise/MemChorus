@@ -102,12 +102,15 @@ def _load_queries() -> List[Dict[str, Any]]:
 
 
 def _relevance(hit: Any) -> float:
-    """Pull a relevance score from a search hit. MemPalace exposes this as
-    [0,1] (higher = closer). If absent, we return 0.0 so the value still
-    participates in the mean (a hit that carries no relevance signal is
-    honestly treated as an unweighted hit, not as the maximum score)."""
+    """Pull a score from a search hit. In the live MCP path the ``score`` field
+    is a cosine similarity in [0, 1] — HIGHER = MORE RELEVANT (tighter match
+    to the query). Out-of-domain queries return 0 hits, which is the live
+    surface's own discrimination.
+
+    Returns 0.0 if the field is absent (no signal, conservatively scored low).
+    """
     if isinstance(hit, dict):
-        for key in ("score", "relevance", "similarity"):
+        for key in ("score", "similarity", "relevance"):
             v = hit.get(key)
             if isinstance(v, (int, float)) and not math.isnan(v):
                 return float(v)
@@ -274,6 +277,13 @@ def run(k_list: List[int], baseline: str,
         zero_at_topk[k] = (zero_n, round(zero_n / max(n_pos, 1), 6))
         hr_at_topk[k] = round(hr_n / max(n_pos, 1), 6)
 
+    # False-positive metric (negative controls): a neg row has a false positive
+    # iff ANY expected phrase (from a positive control) matches its top-k.
+    # Simpler: a neg row has n_hits > 0 (it fabricated drawers for an out-of-
+    # domain query). For our corpus the neg queries should produce ZERO raw hits.
+    fp_count = sum(1 for r in neg_rows if r["k"][max(k_list)]["n_hits"] > 0)
+    fp_rate = round(fp_count / max(n_neg, 1), 6)
+
     # Headline metrics use @max(k) -- @10 if 10 in k_list, otherwise highest.
     headline_k = max(k_list)
     zero_hit = zero_at_topk[headline_k][1]
@@ -293,6 +303,9 @@ def run(k_list: List[int], baseline: str,
         "zero_hit_at_topk": {str(k): v[1] for k, v in zero_at_topk.items()},
         "zero_hit_count_at_topk": {str(k): v[0] for k, v in zero_at_topk.items()},
         "hit_rate": {str(k): v for k, v in hr_at_topk.items()},
+        "false_positive_count": fp_count,
+        "false_positive_rate_neg": fp_rate,
+        "false_positive_rule": "a negative-control query is a false positive iff it returned ANY raw hit at the headline k (corpus should not fabricate drawers for out-of-domain queries)",
         "mean_distance": mean_dist,
         "mean_distance_provenance": "max per-hit relevance across all top-k returns; "
                                    "relevance is the live surface's own [0,1] score.",
@@ -306,21 +319,25 @@ def run(k_list: List[int], baseline: str,
     if baseline == "high":
         base_zero = 0.0
         base_mean = 1.0
-        source_desc = "synthetic-strict (high: zero_hit=0.0, mean_distance=1.0)"
+        base_fp = 0
+        source_desc = "synthetic-strict (high: zero_hit=0.0, mean_distance=1.0, fp=0)"
     elif baseline_file is not None and baseline_file.exists():
         base = json.loads(baseline_file.read_text())
         base_zero = float(base.get("zero_hit", 1.0))
         base_mean = float(base.get("mean_distance", 1.0))
+        base_fp = int(base.get("false_positive_count", 0))
         source_desc = f"file: {baseline_file}"
     else:
         # First run: the run IS the baseline.
         base_zero = zero_hit
         base_mean = mean_dist
+        base_fp = fp_count
         source_desc = "none (first run — this output IS the new baseline)"
 
     z_pass = zero_hit <= base_zero
-    m_pass = mean_dist <= base_mean * (1.0 + _TOL_DEFAULT)
-    gate = "PASS" if (z_pass and m_pass) else "REGRESSION"
+    m_pass = mean_dist >= base_mean * (1.0 - _TOL_DEFAULT)  # higher similarity = better
+    fp_pass = fp_count <= base_fp
+    gate = "PASS" if (z_pass and m_pass and fp_pass) else "REGRESSION"
     out["gate"] = gate
     out["baseline_compare"] = {
         "source": source_desc,
@@ -329,11 +346,15 @@ def run(k_list: List[int], baseline: str,
         "mean_distance": {"baseline": base_mean, "current": mean_dist,
                           "delta": round(mean_dist - base_mean, 6),
                           "tolerance": _TOL_DEFAULT, "pass": m_pass},
+        "false_positives": {"baseline": base_fp, "current": fp_count,
+                            "delta": fp_count - base_fp, "pass": fp_pass},
     }
-    out["gate_rule"] = ("PASS iff zero_hit_cur <= base AND mean_dist_cur <= "
-                        "base*(1+tol); else REGRESSION. Negative control "
-                        "`--baseline high` forces zero_hit=0, mean_dist=1.0 "
-                        "so any imperfect run fails.")
+    out["gate_rule"] = ("PASS iff zero_hit_cur <= base AND mean_dist_cur >= "
+                        "base*(1-tol) AND fp_cur <= base_fp; else REGRESSION. "
+                        "mean_distance is a similarity (higher = better). "
+                        "Negative control `--baseline high` forces zero_hit=0, "
+                        "mean_dist=1.0, fp=0 — the strictest possible bar so "
+                        "any imperfect run fails.")
 
     # Always write the baseline file so the reviewer has a stable reference.
     bf = baseline_file if (baseline_file is not None and baseline_file.exists()) else _BASELINE_FILE
