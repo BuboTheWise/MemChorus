@@ -1,0 +1,263 @@
+{
+  "schema": "recall-gate/2026-10-08",
+  "task": "t_292f8cd2 \u2014 rerank-recall-eval-gate (v1.1.0) on #238 seam",
+  "timestamp": "2026-10-09T00:53:49.412921+00:00",
+  "live_ok": true,
+  "seam": {
+    "status": "ok",
+    "detail": {
+      "mcp_alive": true,
+      "probe_key": "eval/recall-gate-2160619bf57a416bb4ee5d8dd21115c1",
+      "retrieve_none_is_sentinel": true,
+      "retrieve_live_returned": "_RetrieveMiss",
+      "retrieve_live_is_sentinel": true,
+      "corpus_probe_query": "cthuaga kanban protocol finalization closeout before exiting",
+      "corpus_probe_n_hits": 5
+    }
+  },
+  "queries": 12,
+  "positive_queries": 9,
+  "negative_queries": 3,
+  "zero_hit": 0.222222,
+  "zero_hit_at_topk": {
+    "5": 0.222222,
+    "10": 0.222222
+  },
+  "zero_hit_count_at_topk": {
+    "5": 2,
+    "10": 2
+  },
+  "hit_rate": {
+    "5": 0.666667,
+    "10": 0.666667
+  },
+  "false_positive_count": 0,
+  "false_positive_rate_neg": 0.0,
+  "false_positive_rule": "a negative-control query is a false positive iff it returned ANY raw hit at the headline k (corpus should not fabricate drawers for out-of-domain queries)",
+  "mean_distance": 0.549388,
+  "mean_distance_provenance": "max per-hit relevance across all top-k returns; relevance is the live surface's own [0,1] score.",
+  "k_list": [
+    5,
+    10
+  ],
+  "headline_k": 10,
+  "errors": "",
+  "per_query": [
+    {
+      "query": "cthuaga kanban protocol finalization closeout before exiting",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 5,
+          "phrase_hit": true,
+          "top_relevance": 0.51
+        },
+        "10": {
+          "n_hits": 5,
+          "phrase_hit": true,
+          "top_relevance": 0.51
+        }
+      }
+    },
+    {
+      "query": "natural language integration test prompts memchorus",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 5,
+          "phrase_hit": true,
+          "top_relevance": 0.642
+        },
+        "10": {
+          "n_hits": 8,
+          "phrase_hit": true,
+          "top_relevance": 0.642
+        }
+      }
+    },
+    {
+      "query": "minimum verification depth baseline merged 2026",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        },
+        "10": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        }
+      }
+    },
+    {
+      "query": "hermes kanban workflow skill",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 5,
+          "phrase_hit": false,
+          "top_relevance": 0.592
+        },
+        "10": {
+          "n_hits": 5,
+          "phrase_hit": false,
+          "top_relevance": 0.592
+        }
+      }
+    },
+    {
+      "query": "corrections git diff skill name",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        },
+        "10": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        }
+      }
+    },
+    {
+      "query": "isolated palace proof per profile db",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 2,
+          "phrase_hit": true,
+          "top_relevance": 0.624
+        },
+        "10": {
+          "n_hits": 2,
+          "phrase_hit": true,
+          "top_relevance": 0.624
+        }
+      }
+    },
+    {
+      "query": "self assessment cycle tasks produced win",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 1,
+          "phrase_hit": true,
+          "top_relevance": 0.518
+        },
+        "10": {
+          "n_hits": 1,
+          "phrase_hit": true,
+          "top_relevance": 0.518
+        }
+      }
+    },
+    {
+      "query": "mempalace embedding set embedder model minilm",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 1,
+          "phrase_hit": true,
+          "top_relevance": 0.53
+        },
+        "10": {
+          "n_hits": 1,
+          "phrase_hit": true,
+          "top_relevance": 0.53
+        }
+      }
+    },
+    {
+      "query": "python environment setup venv hermes interpreter",
+      "is_negative": false,
+      "k": {
+        "5": {
+          "n_hits": 4,
+          "phrase_hit": true,
+          "top_relevance": 0.59
+        },
+        "10": {
+          "n_hits": 4,
+          "phrase_hit": true,
+          "top_relevance": 0.59
+        }
+      }
+    },
+    {
+      "query": "quantum computing qubit decoherence error correction",
+      "is_negative": true,
+      "k": {
+        "5": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        },
+        "10": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        }
+      }
+    },
+    {
+      "query": "sourdough bread fermentation starter temperature",
+      "is_negative": true,
+      "k": {
+        "5": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        },
+        "10": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        }
+      }
+    },
+    {
+      "query": "Mordor goblin army battle strategy",
+      "is_negative": true,
+      "k": {
+        "5": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        },
+        "10": {
+          "n_hits": 0,
+          "phrase_hit": false,
+          "top_relevance": null
+        }
+      }
+    }
+  ],
+  "gate": "REGRESSION",
+  "baseline_compare": {
+    "source": "synthetic-strict (high: zero_hit=0.0, mean_distance=1.0, fp=0)",
+    "zero_hit": {
+      "baseline": 0.0,
+      "current": 0.222222,
+      "delta": 0.222222,
+      "pass": false
+    },
+    "mean_distance": {
+      "baseline": 1.0,
+      "current": 0.549388,
+      "delta": -0.450612,
+      "tolerance": 0.01,
+      "pass": false
+    },
+    "false_positives": {
+      "baseline": 0,
+      "current": 0,
+      "delta": 0,
+      "pass": true
+    }
+  },
+  "gate_rule": "PASS iff zero_hit_cur <= base AND mean_dist_cur >= base*(1-tol) AND fp_cur <= base_fp; else REGRESSION. mean_distance is a similarity (higher = better). Negative control `--baseline high` forces zero_hit=0, mean_dist=1.0, fp=0 \u2014 the strictest possible bar so any imperfect run fails."
+}
