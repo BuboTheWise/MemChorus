@@ -58,7 +58,7 @@ def pytest_collection_modifyitems(config, items):
     # contributes zero reports -> "not selected" -> gate-exempt (the same
     # sanctioned mechanism used for the #168 battery and #197 e2e above).
     # On POSIX the reap module is collected and executed normally.
-    win32 = os.name == "nt"  # == sys.platform == "win32"
+    win32 = sys.platform == "win32"
 
     select = []
     for item in items:
