@@ -662,7 +662,10 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 ## Status
 
 
-### v2.0.69 (current — 2026-10-11)
+### v2.0.70 (current — 2026-10-11)
+- **Windows CI fix for the #239 reap test (Issue #239, PR #244):**
+
+### v2.0.69 (2026-10-11)
 - **MCP coprocess orphan reap (Issue #239, PR #243):** the stderr-filter wrapper built by `MempalaceMemorySource._filter_command` spawns `mempalace.mcp_server` as a child and blocks on its stderr; when the Hermes host SIGTERMs the *wrapper* (session end, unhandled exception, or process-group teardown) the wrapper used to die before its child and orphan the `mcp_server` coprocess. The orphan keeps holding file descriptors on `~/.mempalace/palace/chroma.sqlite3`, and because the wrapper is re-spawned for every MemPalace session the orphans accumulated (issue #239 captured 324 open FDs). The fix now starts the child with `start_new_session=True` (process-group isolation) and registers SIGTERM / SIGINT handlers plus an `atexit` hook that reap the group in order — `terminate()` → wait 5 s → `os.killpg(SIGTERM)` → `os.killpg(SIGKILL)` → wait — so a host-side SIGTERM against the wrapper can no longer leave a live `mcp_server` behind. The `killpg` call is guarded with `hasattr(os, 'killpg')` so the wrapper degrades gracefully on platforms without POSIX process groups. New inter-process regression test `tests/test_mcp_coprocess_reap_on_sigterm.py` (real `SIGTERM`, not mock-based) proves the pair: the child survives at the pre-fix base (RED) and is reaped within the grace window at this head (GREEN), re-confirmed independently at exact SHA by VERIFY t_a30433b5. Full suite green on all Linux CI legs (only pre-existing live-LLM flake); OPSEC clean. Bumps `__version__` 2.0.68 → 2.0.69 (bug-fix; dual-digit patch per X.Y.ZZ convention; version-sync gate passes).
 
 ### v2.0.68 (2026-10-10)

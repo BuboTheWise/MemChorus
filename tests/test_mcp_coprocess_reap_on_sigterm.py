@@ -33,6 +33,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 # Make the checkout under test win over any installed copy (editable-stale trap).
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = _REPO_ROOT / "src"
@@ -58,6 +60,26 @@ _CHILD_CODE = (
 
 _GRACE_S = 2.0  # AC1: assert after wrapper exit + 2s grace
 _WRAPPER_WAIT_S = 8.0  # allow the wrapper's 5s terminate-window + overhead
+
+# POSIX-only: this module drives a REAL process-group signal (os.kill /
+# signal.signal / os.killpg / start_new_session=None) at a spawned
+# subprocess pair. None of those primitives exist on win32, so the body is
+# not expressible there. The skipif makes the intent self-documenting on
+# any runner (the skip reason is what pytest reports on Windows); the
+# corresponding platform *deselect* in tests/conftest.py (win32) ensures
+# the module contributes zero reports so the #183 all-skipped gate treats
+# it as "not selected" (exempt) instead of an offender. On POSIX hosts
+# the skipif does not fire and the test runs + gates normally.
+pytestmark = [
+    pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "POSIX process-group reap — requires os.kill / "
+            "signal.signal / os.killpg / start_new_session (unavailable "
+            "on win32); see issue #239"
+        ),
+    ),
+]
 
 
 def _pid_alive(pid: int) -> bool:
