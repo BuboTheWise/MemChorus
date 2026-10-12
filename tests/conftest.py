@@ -50,6 +50,16 @@ def pytest_collection_modifyitems(config, items):
     battery = config.getoption("--recall-battery", default=False)
     live_ready = _live_e2e_ready() if not battery else True
 
+    # #239 MCP coprocess-reap regression is POSIX-only (drives a REAL
+    # os.killpg / start_new_session / signal.signal at a spawned pair). On
+    # win32 the module's @pytest.mark.skipif would make every test skip,
+    # which the #183 all-skipped gate flags as an offender (collected +
+    # all-skipped). Deselect at collection on win32 instead so the module
+    # contributes zero reports -> "not selected" -> gate-exempt (the same
+    # sanctioned mechanism used for the #168 battery and #197 e2e above).
+    # On POSIX the reap module is collected and executed normally.
+    win32 = sys.platform == "win32"
+
     select = []
     for item in items:
         # (a) IMPL #168 recall battery: opt-in, deselect by default.
@@ -60,6 +70,11 @@ def pytest_collection_modifyitems(config, items):
         module_base = item.nodeid.split("::", 1)[0].rsplit("/", 1)[-1]
         if module_base == "test_natural_live_e2e.py" and not live_ready:
             continue  # deselected: no hermes CLI / local LLM in this environment
+        # (c) #239 POSIX-only coprocess-reap: deselect on win32 so the #183
+        #     all-skipped gate treats it as "not selected" (exempt), while on
+        #     POSIX it stays collected and runs + gates normally.
+        if module_base == "test_mcp_coprocess_reap_on_sigterm.py" and win32:
+            continue  # deselected: POSIX process-group reap, not expressible on win32
         select.append(item)
     items[:] = select
 
