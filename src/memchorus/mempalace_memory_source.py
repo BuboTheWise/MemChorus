@@ -622,6 +622,13 @@ class _McpClient:
 
         If ``child_cmd`` is None, defaults to [python, "-m", "mempalace.mcp_server"].
         Pass a custom list when a config override (Shape B) specifies different args/env.
+
+        Lifetime (issue #239): the child runs in its own process group
+        (``start_new_session=True``) and the wrapper installs a SIGTERM/SIGINT
+        handler plus an ``atexit`` hook that reap that group (terminate ->
+        wait up to 5s -> SIGKILL -> wait). Without this, a host SIGTERM on the
+        wrapper orphans ``mcp_server`` and it accumulates, contending on
+        ``chroma.sqlite3``. The stderr-filter behaviour is unchanged.
         """
         effective_cmd = (
             child_cmd if child_cmd else [python, "-m", "mempalace.mcp_server"]
@@ -630,13 +637,38 @@ class _McpClient:
         filtered_patterns = [repr(p) for p in cls._NOISE_PATTERNS]
         patterns_str = ", ".join(filtered_patterns)
         script_lines = [
-            "import subprocess, sys;",
-            "p=subprocess.Popen(" + repr(effective_cmd) + ", stderr=subprocess.PIPE);",
+            "import subprocess, sys, os, signal, atexit;",
+            "p = subprocess.Popen("
+            + repr(effective_cmd)
+            + ", stderr=subprocess.PIPE, start_new_session=True);",
+            "_reaped = [False];",
+            "def _reap():",
+            "    if _reaped[0]:",
+            "        return",
+            "    _reaped[0] = True",
+            "    if hasattr(os, 'killpg'):",
+            "        try: os.killpg(p.pid, signal.SIGTERM)",
+            "        except Exception:",
+            "            try: p.terminate()",
+            "            except Exception: pass",
+            "    else:",
+            "        try: p.terminate()",
+            "        except Exception: pass",
+            "    try: p.wait(timeout=5)",
+            "    except Exception:",
+            "        if hasattr(os, 'killpg'):",
+            "            try: os.killpg(p.pid, signal.SIGKILL)",
+            "            except Exception: pass",
+            "        try: p.wait(timeout=2)",
+            "        except Exception: pass",
+            "signal.signal(signal.SIGTERM, lambda s, f: (_reap(), sys.exit(128 + int(s))));",
+            "signal.signal(signal.SIGINT, lambda s, f: (_reap(), sys.exit(128 + int(s))));",
+            "atexit.register(_reap);",
             "for line in p.stderr:",
-            "  s=line.decode('utf-8','replace').strip();",
+            "  s = line.decode('utf-8','replace').strip();",
             f"  if not any(pat in s for pat in [{patterns_str}]):",
             "    print(s, file=sys.stderr);",
-            "rc=p.wait(); sys.exit(rc)",
+            "rc = p.wait(); sys.exit(rc)",
         ]
         wrapper = "\n".join(script_lines)
         return (python, ["-c", wrapper])
@@ -1504,20 +1536,41 @@ class MemPalaceMemorySource(MemorySource):
                 if live is not None and live != "" and live != {}:
                     return live
             except Exception as e:
-                logger.debug("mempalace: fallback live refetch failed for %r: %s", key, e)
+                logger.debug(
+                    "mempalace: fallback live refetch failed for %r: %s", key, e
+                )
         return RETRIEVE_MISS
 
     def _refetch_live(self, key: str) -> Any:
         """Per-key live re-fetch hook used by ``retrieve(..., fallback="live")``.
 
-        The default implementation returns ``None`` (no live source) so the
-        caller falls back to :data:`RETRIEVE_MISS`.  Subclasses or a test harness
-        can override this (or monkey-patch an instance attribute) to point at a
-        live MCP call, an HTTP fetch, or any other "is the still-alive source
-        behind this pointer still holding it?" source.
-        """
-        return None
+        Default implementation asks the live ``search`` surface for ``key`` and
+        returns the body of the first usable hit, so a valid-but-cold pointer can
+        be re-landed from the live source behind it — implementing the recall
+        directive "re-fetch the live source before treating it as absent" that
+        was previously unreachable because this hook returned ``None``.
 
+        Returns ``None`` (so the caller falls back to :data:`RETRIEVE_MISS`)
+        when the live surface has nothing for the key.  Never raises — any
+        error degrades to ``None`` so ``retrieve()``'s three-outcome contract
+        holds.
+
+        Subclasses or a test harness may override this (or monkey-patch an
+        instance attribute) to point at a different live source; ``retrieve()``
+        only requires a non-empty value to be returned for the hit to win.
+        """
+        try:
+            hits = self.search(key, limit=5)
+        except Exception as e:  # noqa: BLE001 - refetch must never raise
+            logger.debug("mempalace: _refetch_live search(%r) failed: %s", key, e)
+            return None
+        if not hits:
+            return None
+        for hit in hits:
+            body = hit.get("content") if isinstance(hit, dict) else hit
+            if body not in (None, "", {}):
+                return body
+        return None
 
     def search(
         self,
