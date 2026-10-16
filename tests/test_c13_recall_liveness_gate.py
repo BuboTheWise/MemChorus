@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import sys
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -101,7 +100,6 @@ def _mk_orch(sources: List[_FakeSource]) -> MemoryOrchestrator:
     This is the same seam the hook uses, so the test exercises the real code
     path — not a re-implementation of it.
     """
-    import time
     from collections import OrderedDict
 
     orch: Any = MemoryOrchestrator.__new__(MemoryOrchestrator)
@@ -440,8 +438,6 @@ class TestHookNeverFails(_C13GateTestBase):
         # This test drives the hook's on_pre_llm_call method end-to-end — it
         # patches a minimal orchestrator that raises from apply_recall_liveness
         # and verifies the recall block is still produced.
-        from memchorus import hooks as memchorus_hooks
-
         items = [_pointed_at("any-key")]
 
         exploding_orch: Any = SimpleNamespace()
