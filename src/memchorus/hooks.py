@@ -347,6 +347,67 @@ class MemChorusHooks:
             # only does exact-key lookup and doesn't accept a limit param.
             context_items = orchestrator.search(enriched_terms, limit=search_limit)
 
+            # ---- C13 recall-injection liveness gate ------------------------
+            # Before the items enter the [MemChorus Memory Recall] block, probe
+            # every pointer key against the live source.  DEAD keys are dropped
+            # from the block entirely; COLD keys are annotated; RESOLVED and
+            # UNKNOWN pass through.  Never-fail: any exception degrades that
+            # single key to UNKNOWN, and a gate-level failure leaves
+            # ``context_items`` unchanged (we keep a local reference to
+            # restore on exception).
+            #
+            # Placement note — this is SEAM-ONLY: it sits between
+            # ``orchestrator.search()`` and ``_format_context_block``, the
+            # render core is untouched (no changes to ``_build_context_entries``,
+            # ``_format_context_block``, or the suppression window below).
+            #
+            # The hook never fails (``on_pre_llm_call`` returns None on any
+            # exception, but we want a *partial* degrade: keep rendering with
+            # the ungated items rather than losing the whole recall block).
+            #
+            # Shape safety: the gate's contract is to return a
+            # ``List[Dict[str, Any]]`` — the same shape ``orchestrator.search``
+            # produces.  We validate that shape here (not just truthiness or
+            # non-None) so that a partial or third-party orchestrator whose
+            # ``apply_recall_liveness`` returns something unexpected (a dict,
+            # a string, a MagicMock, …) degrades the same way as an exception:
+            # silently restore the ungated items and let the block render.
+            _pre_gate_items = context_items
+            if context_items and hasattr(orchestrator, "apply_recall_liveness"):
+                try:
+                    _gated = orchestrator.apply_recall_liveness(context_items)
+                    if (
+                        isinstance(_gated, list)
+                        and all(isinstance(item, dict) for item in _gated)
+                    ):
+                        context_items = _gated
+                    else:
+                        logger.debug(
+                            "C13 gate returned unexpected shape %s — using ungated list",
+                            type(_gated).__name__,
+                        )
+                except Exception as exc:  # never-fail: restore and keep going
+                    logger.debug(
+                        "C13 gate failed on %d items — using ungated list: %s",
+                        len(_pre_gate_items) if _pre_gate_items else 0,
+                        exc,
+                    )
+
+            _c13_diagnostics: List[str] = []
+            if hasattr(orchestrator, "get_c13_diagnostics"):
+                _raw_diags: object = None
+                try:
+                    _raw_diags = orchestrator.get_c13_diagnostics()
+                except Exception:
+                    _raw_diags = None
+                # Only accept an iterable of strings — a MagicMock or a
+                # non-iterable return type would break the downstream join.
+                if (
+                    isinstance(_raw_diags, (list, tuple))
+                    and all(isinstance(d, str) for d in _raw_diags)
+                ):
+                    _c13_diagnostics = list(_raw_diags)
+
             injected_blocks: List[str] = []
 
             # Guards go first so they appear before soft recall / feedback blocks
@@ -366,6 +427,19 @@ class MemChorusHooks:
                 recall_parts.append(balance_line)
             if context_items:
                 recall_parts.append(_format_context_block(context_items))
+            # C13 AC2: surface the DEAD-key diagnostics alongside the recall
+            # block so the agent knows exactly which pointers were dropped
+            # before injection (and why).  Only emitted when at least one key
+            # was dropped — otherwise the block stays byte-identical to the
+            # pre-C13 shape.
+            if _c13_diagnostics:
+                recall_parts.append(
+                    "(Note: the following recall pointers were dropped by the "
+                    "liveness gate because their keys resolve to no live drawer "
+                    "in any enabled source — do NOT attempt retrieve() on them, "
+                    "the body is genuinely absent upstream.)\n"
+                    + "\n".join("  - " + d for d in _c13_diagnostics)
+                )
             if recall_parts:
                 injected_blocks.append(
                     "[MemChorus Memory Recall]\n"

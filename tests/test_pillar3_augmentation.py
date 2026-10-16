@@ -274,7 +274,7 @@ class TestAdditiveSemantics:
         assert it.get("reserved") is True
 
     def test_additive_combine_preserves_main_prefix(self) -> None:
-        from memchorus.augmentation import combine, augment
+        from memchorus.augmentation import augment, combine
 
         reserved = augment(task=_TASK, fetcher=_fk(events=[_EVENT_ROW]), explicit=False)
         main = ["item-A", "item-B"]  # stand-in for select()'s chosen list
@@ -425,6 +425,7 @@ class TestPipelineIntegration:
         Skipped (not failed) if select is not importable in master yet.
         """
         import memchorus.auto_recall_engine as are
+        from memchorus.auto_recall_engine import TaskContext
 
         if not hasattr(are, "select"):
             pytest.skip(
@@ -432,20 +433,22 @@ class TestPipelineIntegration:
                 "integration verified in VERIFY/REVIEW task"
             )
 
-        class _T:
-            query = "recall"
-            base_weights = None
-
+        # Build the task from the canonical TaskContext dataclass so the
+        # stub always satisfies the full pillar-1 select() contract
+        # (base_weights / active_project / as_of / domain / recency_tau_days),
+        # regardless of when the two pillars were merged.
         pool = [
             ({"key": f"k{i}", "content": f"content {i} " + "x" * 40, "timestamp": 0})
             for i in range(6)
         ]
-        task = _T()
+        task = TaskContext(query="recall")
         full = are.select(task, pool, K=4, B_tokens=100000, reserved_slots=None)
         reserved = are.select(task, pool, K=4, B_tokens=100000, reserved_slots=1)
         assert len(reserved.chosen) <= 3, (
             f"reserved_slots=1 must cap chosen at K-1=3, got {len(reserved.chosen)}"
         )
-        full_keys = [c.get("key") for c in full.chosen]
-        reserved_keys = [c.get("key") for c in reserved.chosen]
+        # ``chosen`` items are SelectedCandidate wrappers carrying the raw
+        # candidate dict as ``.result`` — read the key from there.
+        full_keys = [c.result.get("key") for c in full.chosen]
+        reserved_keys = [c.result.get("key") for c in reserved.chosen]
         assert all(k in full_keys for k in reserved_keys)

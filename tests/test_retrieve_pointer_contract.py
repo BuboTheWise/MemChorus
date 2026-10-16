@@ -124,6 +124,43 @@ class TestFallbackLive:
         out = src.retrieve("warm", fallback="live")
         assert out == {"text": "here"}
 
+    # ---- #238: default (non-stubbed) _refetch_live, live-hit -> body -------- #
+    def test_default_refetch_live_hit_rescues_cold_miss(self, tmp_path):
+        """#238: with NO `_refetch_live` monkey-patched, the default implementation
+        must ask the live `search` surface for the key and, on a hit, return the
+        body — so a valid-but-cold pointer is re-landed, not dangling."""
+        src = _src(tmp_path)
+        # A key that is NOT in the local cache…
+        calls = []
+
+        def _fake_search(query, limit=10, *, wing=None, room=None):
+            calls.append(query)
+            assert query == "COLD_KEY"
+            return [{"key": "LIVE/1", "content": "the re-landed body", "source": "mcp_live"}]
+
+        src.search = _fake_search
+        out = src.retrieve("COLD_KEY", fallback="live")
+        assert calls, "default _refetch_live must attempt a live search on a miss"
+        assert out is not None
+        assert isinstance(out, str) and out == "the re-landed body"
+
+    # ---- #238: default (non-stubbed) _refetch_live, live-empty -> sentinel -- #
+    def test_default_refetch_live_exhausted_returns_sentinel(self, tmp_path):
+        """#238: with NO `_refetch_live` monkey-patched, when the live `search`
+        surface has nothing for the key, the default must degrade to the
+        distinguishable sentinel (not a bare None, not a crash)."""
+        src = _src(tmp_path)
+        assert _HAS_MISS
+
+        def _empty_live(query, limit=10, *, wing=None, room=None):
+            return []  # live surface is also cold
+
+        src.search = _empty_live
+        out = src.retrieve("COLD_KEY", fallback="live")
+        assert isinstance(out, _MISS_TYPE), (
+            "live-exhausted cold miss must be the distinguishable sentinel, got %r" % (out,)
+        )
+
 
 # =========================================================================== #
 #  SECTION 3 — the collapsed directive states the cold-cache boundary         #
