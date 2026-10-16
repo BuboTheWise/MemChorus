@@ -1969,10 +1969,282 @@ class MemoryOrchestrator:
             "source_name": "<cached>",
         }
 
+    # ------------------------------------------------------------------ C13
+    # Recall-injection liveness gate (Self-Improvement C13, 2026-10-14).
+    #
+    # A recall item can be an *unresolved pointer* — the body is a one-line
+    # ``source=<X>— read it: retrieve(key='…')`` gist telling the agent "go
+    # fetch the real body."  Injecting a pointer whose key no longer resolves
+    # is the failure class this gate targets: it hands the agent a memory
+    # that doesn't exist.
+    #
+    # Probe contract (mirrors the #238 / #221 cold-cache refetch seam — additive
+    # over ``retrieve`` / ``retrieve_with_source``, not a replacement of it):
+    #
+    #   RESOLVED   the key is present in the orchestrator LRU cache, or an
+    #              enabled source holds it directly (local .json / in-memory).
+    #   COLD       the key is not in the LRU cache, but a live source can still
+    #              re-fetch its body on demand (MCP search hit / live .json).
+    #   DEAD       neither the local cache nor any enabled source holds the
+    #              key — the pointer is stale and should not be injected.
+    #   UNKNOWN    the probe itself failed or no live source was available —
+    #              treat as COLD-equivalent (keep the pointer, never fail).
+    #
+    # AC: never fail — any exception on a single key degrades that key to
+    # UNKNOWN, never aborts a whole injection.
+    # ------------------------------------------------------------------ C13
+
+    def probe_recall_key_liveness(self, key: str) -> str:
+        """Classify a recall key as RESOLVED / COLD / DEAD / UNKNOWN.
+
+        See the C13 docstring above for the full contract.
+        """
+        key = key if isinstance(key, str) else ""
+        if not key:
+            return "UNKNOWN"
+
+        # 1) Is the key already live in the orchestrator LRU cache?  A cache
+        #    hit is the strongest signal: the body was resolved recently and
+        #    sits in local memory.  (We read the cache, not the source, here —
+        #    so nothing is mutated yet.)
+        cached_content = self._c13_cache_content(key)
+        if cached_content is not None:
+            return "RESOLVED"
+
+        # 2) Cache missed (evicted, or never cached).  Walk the enabled
+        #    sources and ask each: do you still hold the body for this key?
+        #    A source that returns a non-null body means the key is alive
+        #    upstream but was NOT in our local cache — by definition that is
+        #    the COLD case (the #238 cold-cache refetch: re-fetch on demand).
+        try:
+            if self._priority_order:
+                candidate_sources = list(self._priority_order)
+            else:
+                candidate_sources = self._scorer.rank_sources(
+                    list(self.memory_sources.keys()),
+                )
+        except Exception as exc:
+            logger.debug("C13 probe: source ranking failed for %r: %s", key, exc)
+            return "UNKNOWN"
+
+        tried_any_source = False
+        saw_clean_miss_from_some_source = False
+        for src_name in candidate_sources:
+            source = self.memory_sources.get(src_name)
+            try:
+                if not (
+                    _check_source_available(source)
+                    and self.is_source_enabled(src_name)
+                ):
+                    continue
+            except Exception as exc:
+                logger.debug(
+                    "C13 probe: availability check failed for %r: %s",
+                    src_name, exc,
+                )
+                continue
+            if source is None or not hasattr(source, "retrieve"):
+                continue
+
+            tried_any_source = True
+            local = None
+            local_raised = False
+            try:
+                try:
+                    local = source.retrieve(key, fallback="none")
+                except TypeError:
+                    local = source.retrieve(key)
+            except Exception as exc:
+                local_raised = True
+                logger.debug(
+                    "C13 probe: local retrieve raised for %r on %s: %s",
+                    key, src_name, exc,
+                )
+            if not local_raised and local is not None and local is not RETRIEVE_MISS:
+                # Local cache holds the body.
+                return "RESOLVED"
+
+            live = local
+            live_raised = False
+            try:
+                if local_raised:
+                    continue
+                try:
+                    live = source.retrieve(key, fallback="live")
+                except TypeError:
+                    live = local
+            except Exception as exc:
+                live_raised = True
+                logger.debug(
+                    "C13 probe: live retrieve raised for %r on %s: %s",
+                    key, src_name, exc,
+                )
+            if not live_raised and live is not None and live is not RETRIEVE_MISS:
+                return "COLD"
+            # Both steps completed cleanly and both missed — this is a true
+            # "absent from this source" signal (distinct from a raise).
+            if not local_raised and not live_raised:
+                saw_clean_miss_from_some_source = True
+
+        # 3) No source could resolve the key.
+        #   - If an enabled+available source returned a *clean miss* (not a
+        #     raise) on both the local and live steps, the key is genuinely
+        #     ABSENT upstream → DEAD.
+        #   - Otherwise (every tried source raised, or no source was
+        #     available) we have no positive evidence either way → UNKNOWN
+        #     (AC4: a lookup failure must never masquerade as a clean
+        #     miss).
+        if not tried_any_source:
+            return "UNKNOWN"
+        if not saw_clean_miss_from_some_source:
+            # Every consulted source raised (transient / structural failure).
+            return "UNKNOWN"
+        return "DEAD"
+
+    def _c13_cache_content(self, key: str) -> Optional[Any]:
+        """Return the cached body for ``key``, or None if absent / evicted.
+
+        The LRU cache stores either a plain body string (from ``retrieve``)
+        or a provenance dict ``{"key","content","source_name"}`` (from
+        ``retrieve_with_source``).  Both shapes carry the body in the value —
+        a raw body, or under the ``"content"`` key for the provenance dict.
+        """
+        try:
+            if key in self._retrieve_cache:
+                cached_value, cached_ts = self._retrieve_cache[key]
+                if time.monotonic() - cached_ts < self._cache_ttl:
+                    if isinstance(cached_value, dict) and "content" in cached_value:
+                        body = cached_value["content"]
+                    else:
+                        body = cached_value
+                    if body is not None and body is not RETRIEVE_MISS:
+                        return body
+        except Exception as exc:
+            logger.debug("C13 cache-peek failed for %r: %s", key, exc)
+        return None
+
+    def apply_recall_liveness(
+        self, items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Gate a ranked recall list through the liveness probe.
+
+        For each item in ``items``:
+          * if the item is a pointer (body matches the unresolved-pointer
+            shape), probe its key:
+
+            - RESOLVED — item is passed through unchanged.
+            - COLD     — item is passed through with its content annotated
+                         as a soft-match (cache-evicted, re-fetched).
+            - DEAD     — item is DROPPED from the output entirely.
+            - UNKNOWN  — item is passed through unchanged (conservative:
+                         we couldn't verify, so we keep it).
+
+          * if the item is not a pointer, it is passed through unchanged
+            (real prose / skill bodies / structured content are out of scope
+            for this gate).
+
+        Diagnostics (one line per DEAD key) are appended to the orchestrator
+        instance and retrievable via :meth:`get_c13_diagnostics`; the hooks
+        layer surfaces them in the recall block.
+        """
+        if not items:
+            self._c13_last_diagnostics = []
+            return items  # type: ignore[return-value]
+
+        seen_keys: Set[str] = set()
+        diagnostics: List[str] = []
+        kept: List[Dict[str, Any]] = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                kept.append(item)
+                continue
+
+            body = item.get("content")
+            key = item.get("key")
+
+            is_pointer = (
+                isinstance(key, str)
+                and isinstance(body, str)
+                and bool(self._c13_is_pointer_body(body, key))
+            )
+            if not is_pointer:
+                kept.append(item)
+                continue
+
+            state = self.probe_recall_key_liveness(key)
+            if state == "DEAD":
+                diagnostic = (
+                    f"[C13 liveness gate] key={key!r} status=DEAD "
+                    f"(neither local cache nor any enabled source holds "
+                    f"this key — pointer dropped before injection)"
+                )
+                diagnostics.append(diagnostic)
+                logger.info("%s", diagnostic)
+                # Drop — the pointer is stale and would hand the agent a
+                # memory that doesn't exist.
+                continue
+
+            new_item = dict(item)
+            new_item["_c13_liveness"] = state
+            if state == "COLD":
+                # The body was evicted from the local cache and re-fetched from
+                # a live source on demand.  Record a diagnostic that the hook
+                # surfaces alongside the recall block (NOT on item content —
+                # the render core rebuilds pointer bodies into canonical
+                # gist form and would discard an inline marker).  AC: annotate
+                # COLD — i.e. tell the agent this pointer came via live refetch.
+                cold_note = (
+                    f"[C13 liveness gate] key={key!r} status=COLD "
+                    f"(local cache held no copy; body recovered "
+                    f"from a live source on demand — treat it as a "
+                    f"soft-match and verify before relying on it)"
+                )
+                diagnostics.append(cold_note)
+                logger.info("%s", cold_note)
+            kept.append(new_item)
+
+        self._c13_last_diagnostics = list(diagnostics)
+        return kept
+
+    def get_c13_diagnostics(self) -> List[str]:
+        """Return the diagnostics emitted by the most recent gate pass.
+
+        This is the AC2 "honest diagnostic for DEAD keys" surface: the hooks
+        layer pulls this after calling :meth:`apply_recall_liveness` and
+        appends it to the recall block so the agent can see exactly which
+        pointers were dropped and why.
+        """
+        d = getattr(self, "_c13_last_diagnostics", None)
+        if d is None:
+            return []
+        return list(d)
+
+    @staticmethod
+    def _c13_is_pointer_body(body: str, key: str) -> bool:
+        """Return True if ``body`` looks like an unresolved-pointer gist.
+
+        The canonical shape (see the [MemChorus Memory Recall] block) is::
+
+            **<key>** — source=<X>— read it: retrieve(key='<key>').  ...
+
+        We accept both the bold-key form and the bare ``source=…`` form, and
+        only require the key to appear verbatim in the body (so a stale
+        **other**-key pointer is not classified as a pointer for *this* item).
+        """
+        if not body or not key:
+            return False
+        if key not in body:
+            return False
+        return (
+            "**" + key + "**" in body
+            or "read it: retrieve(key='" + key + "')" in body
+            or (body.lstrip().startswith("source="))
+        )
+
     def clear_cache(self) -> None:
         """Clear the retrieval LRU cache (GAP008)."""
         self._retrieve_cache.clear()
-
     def _evict_oldest_if_needed(self) -> None:
         """Evict the least-recently-used cached entry when the cache exceeds its size limit.
 
