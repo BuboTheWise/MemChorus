@@ -499,9 +499,10 @@ class TestHookNeverFails(_C13GateTestBase):
         # (not a list[dict]), get_c13_diagnostics() -> a truthy MagicMock.
 
         memchorus_hooks._clear_suppression_windows()
-        with patch(
-            "memchorus.hooks._get_orchestrator", return_value=orch
-        ), patch("memchorus.get_orchestrator", return_value=orch):
+        with (
+            patch("memchorus.hooks._get_orchestrator", return_value=orch),
+            patch("memchorus.get_orchestrator", return_value=orch),
+        ):
             try:
                 result = MemChorusHooks().on_pre_llm_call(
                     user_message="please plan the next steps"
