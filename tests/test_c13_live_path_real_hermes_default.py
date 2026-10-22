@@ -27,7 +27,7 @@ is correct on the live path — not just against fakes that accept ``fallback=``
 
 What this file does  ----------------
 Builds a deterministic tmp-directory fixture (a few JSON files, mimicking
-the shape of the cthugha profile's real memory dir), points the REAL
+the shape of a real profile memory dir), points the REAL
 ``HermesDefaultMemorySource`` at it, builds a REAL ``MemoryOrchestrator``
 wired to that source (not a fake), and drives ``apply_recall_liveness()``
 + ``_format_context_block()`` (exactly the seam the hook calls) to prove
