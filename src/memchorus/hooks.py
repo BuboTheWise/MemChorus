@@ -1923,11 +1923,28 @@ def _build_context_entries(
             # reports a miss, the key is either pruned (cold, re-fetch me)
             # or never existed, and should not be treated as a silent
             # absence of the body they were told to go read.
-            raw_content = (
-                f"source={_src}\u2014 read it: retrieve(key='{key}'). "
-                f"If that key is missing (cold cache, never saved, or pruned), "
-                f"re-fetch the live source before treating it as absent."
-            )
+            # C13b: ID-space disambiguation — a memchorus pointer key
+            # (<category>-<hex>) is structurally different from a mempalace
+            # drawer_id (drawer_<wing>_<room>_<16-hex>), so calling
+            # mempalace_get_drawer(key=<memchorus-pointer>) will 404.  The
+            # hint tells the reader to scope a mempalace_search by the
+            # category prefix instead of relying on an exact-key lookup.
+            _m_ptr = re.match(r'^([a-z]+)-[0-9a-f]{4,}', key.lower())
+            if _m_ptr:
+                _ptr_cat = _m_ptr.group(1)
+                raw_content = (
+                    f"source={_src}\u2014 read it: retrieve(key='{key}'). "
+                    f"ID-space mismatch: pointer key, not a mempalace drawer_id — "
+                    f"get_drawer(key='{key}') will 404. "
+                    f"Scope mempalace_search category='{_ptr_cat}' first. "
+                    f"If missing (cold cache/pruned), re-fetch the live source."
+                )
+            else:
+                raw_content = (
+                    f"source={_src}\u2014 read it: retrieve(key='{key}'). "
+                    f"If that key is missing (cold cache, never saved, or pruned), "
+                    f"re-fetch the live source before treating it as absent."
+                )
             mode = "locator_preview"
         else:
             mode = "inline"
