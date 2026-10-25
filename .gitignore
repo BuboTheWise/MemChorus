@@ -31,6 +31,7 @@ dist/
 .pytest_cache/
 .coverage
 coverage.xml
+coverage_findings_mc_test_tree_*.md
 htmlcov/
 
 # Legacy test scripts at root (moved to tests/ or removed)
