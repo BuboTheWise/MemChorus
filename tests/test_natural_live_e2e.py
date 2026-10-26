@@ -994,7 +994,7 @@ def neg_agent_run(tmp_path_factory: pytest.TempPathFactory) -> _RunResult:
         pkg = root / "src" / "memchorus"
         pkg.mkdir(parents=True, exist_ok=True)
         (pkg / "__init__.py").write_text(
-            '""""Mini memchorus fixture."""\n__version__ = \'0.0.e2e\'\n',
+            '"""Mini memchorus fixture."""\n__version__ = \'0.0.e2e\'\n',
             encoding="utf-8",
         )
         (pkg / "adaptive_threshold.py").write_text(_FIXTURE_MODULE_A, encoding="utf-8")
