@@ -1,0 +1,79 @@
+diff --git a/src/memchorus/hooks.py b/src/memchorus/hooks.py
+index 13d4665..e09ff5d 100644
+--- a/src/memchorus/hooks.py
++++ b/src/memchorus/hooks.py
+@@ -29,6 +29,13 @@ import re
+ import os
+ from typing import Any, Dict, List, Optional, Tuple
+ 
++from memchorus.hooks_suppression import (
++    CrossTurnSuppressionWindow,
++    content_hash,
++    get_suppression_window_for_active_profile,
++    suppressed_marker,
++)
++
+ logger = logging.getLogger(__name__)
+ 
+ 
+@@ -347,9 +354,13 @@ class MemChorusHooks:
+             injected_blocks.extend(guard_blocks)
+ 
+             if context_items:
++                # #141 — cross-turn suppression: pass the active profile's
++                # persistent window so unchanged keys render as markers on
++                # subsequent turns instead of re-injecting full bodies.
++                _suppress_win = get_suppression_window_for_active_profile()
+                 injected_blocks.append(
+                     "[MemChorus Memory Recall]\n"
+-                    f"{_format_context_block(context_items)}\n"
++                    f"{_format_context_block(context_items, window=_suppress_win)}\n"
+                     "[/MemChorus Memory Recall]"
+                 )
+ 
+@@ -941,7 +952,10 @@ def _unwrap_content_field(value: Any) -> str:
+             return str(value)
+     return str(value)
+ 
+-def _format_context_block(items: List[Dict[str, Any]]) -> str:
++def _format_context_block(
++    items: List[Dict[str, Any]],
++    window: Optional["CrossTurnSuppressionWindow"] = None,
++) -> str:
+     """Turn orchestrator results into a Markdown-ready context block for agent consumption.
+ 
+     Enforces character budget so huge auto-tool dumps don't destroy the prompt window.
+@@ -950,6 +964,16 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
+     entries are dropped first to preserve the most relevant memories.
+     Truncation respects line boundaries — partial lines are dropped rather than cut,
+     ensuring markdown formatting stays intact.
++
++    Cross-turn injection suppression (#141): when ``window`` is supplied, any entry
++    whose key was already rendered recently *and* whose content hash has not changed
++    is emitted as a compact marker (``↩ (shown earlier) <key>``) instead of the full
++    body, saving prompt-window bytes without losing the memory's presence. Entries
++    whose content changed (new hash) or whose entry expired out of the window render
++    in full again. The pre-LLM recall hook passes the active profile's persistent
++    window via ``get_suppression_window_for_active_profile()``; omitting it
++    (default ``None``) preserves the original always-full-body behavior, which is
++    what the bare-formatter unit tests exercise.
+     """
+     if not items:
+         return ""
+@@ -974,6 +998,16 @@ def _format_context_block(items: List[Dict[str, Any]]) -> str:
+         content_raw = _unwrap_content_field(content_raw)
+         raw_content = content_raw.rstrip()
+ 
++        # --- Cross-turn suppression (#141) ----------------------------------
++        # When a persistent window is in play (pre-LLM recall path), skip re-rendering
++        # the full body for an unchanged entry and emit a one-line marker instead.
++        if window is not None:
++            h = content_hash(raw_content)
++            if window.is_suppressed(key, h):
++                lines_with_score.append((suppressed_marker(key), score))
++                continue
++            window.record(key, h)
++
+         # --- Per-entry budget enforcement (line-boundary aware) --------------
+         if len(raw_content) > _MAX_CONTENT_CHARS:
+             content_lines = raw_content.split("\n")
