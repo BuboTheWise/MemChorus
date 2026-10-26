@@ -1,0 +1,11 @@
+  base-check                                  72f07b3 test(#226): add hypothesis fuzz + RED→GREEN evidence for surface-routing
+  c13-opsec-verify                            e3c6771 opsec: scrub codename from C13 live-path test docstring
+  docs/227-pointer-model-baseline             bcea978 docs(orientation): #227 three-surface + pointer-model baseline (README delta + docs/pointer-model.md)
+  feat-203-prepush-board-card                 f7735d2 [behind 32] Merge feat-217-low-signal-gate: #217 low-signal recall-body gate (JSON-blob / bare-URL / single-token -> gist line)
+  feat-219-220-221-repr-integrity             a15ec4f [gone] fix(opsec): construct the agent-mail test literal at runtime
+  feat-223-224-225-config-keys-root           5db0cc9 [gone] feat(#223,#224,#225): single named recall-loop config root (K, B_tokens, RESERVED_SLOTS, SUPERSESSION_ATTENUATION, tau)
+* feat-223-224-225-task-temporal-graph-recall 2462d49 [ahead 1, behind 29] docs(#223,#224,#225): recall-layer gap-wave table + first-step acceptance bar
+  feat-c13-live-path-proof                    e3c6771 opsec: scrub codename from C13 live-path test docstring
++ feat/c13-recall-liveness-gate               47ac52e style(c13): ruff-format the recall-liveness gate test module (cosmetic only)
++ master                                      c518a3b Merge feat/c13-recall-liveness-gate into master (C13 liveness gate)
+  release-v2.0.68                             ff3121e release: v2.0.68 — live recall-eval gate wired to the #238 seam (PR #242)

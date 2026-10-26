@@ -1,0 +1,1470 @@
+diff --git a/src/memchorus/diary_signal.py b/src/memchorus/diary_signal.py
+new file mode 100644
+index 0000000..1029c01
+--- /dev/null
++++ b/src/memchorus/diary_signal.py
+@@ -0,0 +1,150 @@
++"""
++Diary-voice recall signal (MemChorus issue #225, sub-part 2).
++
++Wires MemPalace's per-agent diary (written in AAAK — a compressed
++narrative of what the agent worked on and why) into the auto-recall loop
++as a *distinct, labelled* agent-voice section.
++
++Design principle: **pure, testable, degradable.**  The two public
++functions here never talk to the network, never throw, and always fall
++back to ``[]`` when their inputs are missing or malformed.  That lets the
++orchestrator's recall path call them unconditionally and let the *data* —
++not the caller — decide whether diary context is available.
++
++API:
++    diary_voice(diary_entries, task_description, limit=3,
++                similarity_fn=None, min_similarity=0.2)
++
++        Given *task_description* (the current task prompt / reason for the
++        recall) and a list of *diary_entries* (each a dict with a ``text``
++        or ``content`` key — AAAK-compressed narrative), return up to
++        *limit* entries tagged with ``agent_diary=True`` and
++        ``diary_relevant_for=task_description``.
++
++        Filtering:
++          1. Drop any entry whose text (or content) is empty / non-textual.
++          2. When *similarity_fn* is provided (caller-supplied — e.g.
++             :func:`memchorus.content_similarity.jaccard_similarity`),
++             drop entries whose ``similarity_fn(task_description, entry_text)``
++             is strictly below *min_similarity*.
++          3. Limit to *limit* (first-wins — the caller supplies diary entries
++             most-recent-first, so "first" means "most-recent qualifying").
++
++        Never raises.  Returns ``[]`` on any malformed input.
++
++    diary_tag(diary_entry, task_description) -> dict
++        Return a *copy* of *entry* tagged as agent-diary-voice:
++          - ``agent_diary`` = True (the stable tag the hooks layer surfaces).
++          - ``diary_relevant_for`` = *task_description* (the task that
++            triggered this inclusion; ``None`` when the caller didn't pass one).
++        Does not mutate the input; a fresh dict is returned.
++        Non-dict entries are wrapped into ``{"agent_diary": True, "content": <entry>, ...}``.
++
++Backward compatibility: when *diary_entries* is empty / ``None`` or
++*task_description* is ``None`` or ``""``, the output is ``[]`` and the recall
++block renders *unchanged* (regression guard — the diary section is absent).
++
++This module is intentionally *small*: it is the *pure* half of the diary-voice
++signal.  The I/O half (fetching ``diary_read`` from the MemPalace MCP) lives
++in :meth:`memchorus.mempalace_memory_source.MemPalaceMemorySource.diary_read`,
++which returns ``None``-on-exception for the degradable-by-default property.
++"""
++
++from __future__ import annotations
++
++from typing import Any, Dict, List, Optional
++
++__all__ = ["diary_voice", "diary_tag"]
++
++
++def _entry_text(entry: Any) -> Optional[str]:
++    """Extract the rankable text of a diary entry (``None`` when no text)."""
++    if not isinstance(entry, dict):
++        return entry if isinstance(entry, str) else None
++    for k in ("text", "content", "body"):
++        v = entry.get(k)
++        if isinstance(v, str) and v.strip():
++            return v
++    return None
++
++
++def diary_tag(entry: Any, task_description: Optional[str] = None) -> Dict[str, Any]:
++    """Return a *copy* of *entry* tagged as agent-diary-voice.
++
++    Preserves all original keys; adds:
++      - ``agent_diary`` = True  (the stable tag the hooks layer surfaces).
++      - ``diary_relevant_for`` = *task_description* (or ``None``).
++
++    Does not mutate the input; a fresh dict is returned.  Non-dict entries
++    are wrapped into a single-field dict.
++    """
++    if isinstance(entry, dict):
++        out: Dict[str, Any] = dict(entry)
++    else:
++        out = {"content": entry if entry is not None else ""}
++    out["agent_diary"] = True
++    out.setdefault("diary_relevant_for", task_description)
++    return out
++
++
++def diary_voice(
++    diary_entries: Optional[List[Any]],
++    task_description: Optional[str],
++    limit: int = 3,
++    similarity_fn: Optional[Any] = None,
++    min_similarity: float = 0.2,
++) -> List[Dict[str, Any]]:
++    """Select diary entries relevant to *task_description*.
++
++    This is the pure selection step used by
++    :meth:`MemoryOrchestrator.search` when ``include_diary=True``.  It:
++
++    1. Drops any entry with no extractable text (empty / non-string).
++    2. If *task_description* is a non-empty string and *similarity_fn* is
++       provided, drops entries whose ``similarity_fn(task_description, text)``
++       is strictly below *min_similarity*.  When either is absent, all
++       text-bearing entries qualify (conservative default).
++    3. Limits the output to *limit* entries (first-wins order — the caller
++       typically supplies diary entries most-recent-first, so "first" means
++       "most-recent qualifying"); a duplicate text in the output is de-duped
++       (same narrative text appearing in two diary entries counts once).
++
++    Never raises.  Returns ``[]`` on any malformed input, and never returns
++    entries that carry no extractable text.
++    """
++    if not diary_entries or not isinstance(diary_entries, list):
++        return []
++    task = (task_description or "").strip() if isinstance(task_description, str) else ""
++    use_floor = (similarity_fn is not None) and bool(task)
++
++    min_s = 0.0
++    if min_similarity is not None:
++        try:
++            min_s = float(min_similarity)
++            if min_s < 0:
++                min_s = 0.0
++        except Exception:
++            min_s = 0.0
++
++    limit_i = int(limit) if limit and limit > 0 else (len(diary_entries) or 1)
++    out: List[Dict[str, Any]] = []
++    seen = set()
++    for entry in diary_entries:
++        text = _entry_text(entry)
++        if text is None or not text.strip():
++            continue
++        norm = text.strip().lower()
++        if norm in seen:
++            continue
++        if use_floor:
++            try:
++                s = float(similarity_fn(task, text))  # type: ignore[misc]
++            except Exception:
++                s = 0.0
++            if s < min_s:
++                continue
++        seen.add(norm)
++        out.append(diary_tag(entry, task_description))
++        if len(out) >= limit_i:
++            break
++    return out
+diff --git a/src/memchorus/event_provenance.py b/src/memchorus/event_provenance.py
+new file mode 100644
+index 0000000..7cb2864
+--- /dev/null
++++ b/src/memchorus/event_provenance.py
+@@ -0,0 +1,193 @@
++"""
++Event/artifact provenance annotation (MemChorus issue #225, sub-part 3).
++
++When a drawer was *stored as the outcome of a coordination event* (a
++``patch.ready``, ``task.reply``, or ``artifact_put`` in the event log that
++references this drawer's key / content), annotate the ranked entry with the
++event context — who handed what to whom, against which baseline.
++
++This module is *pure*: it never talks to the network, never throws, and
++always returns ``None`` when it cannot produce a provenance note.  The
++orchestrator's recall path calls :func:`annotate` for each ranked drawer
++against the recent event log; a drawer without a matching event leaves the
++annotation ``None`` (the hooks layer then renders nothing — unchanged).
++
++Design principle: **safe, compact, most-recent-wins.**  The annotation is a
++single short string (under 80 chars) so it does not bloat the recall block.
++When multiple events reference the same drawer, only the most recent one is
++used — not all (AC d).
++
++API:
++    annotate(drawer, event_log, max_chars=80) -> Optional[str]
++        Given a ranked drawer (dict with a ``key``) and a list of event
++        records (each a dict with ``id`` / ``created_at`` / ``metadata`` /
++        ``type`` keys), return a compact provenance note if some event in
++        *event_log* references this drawer's key (or a correlation_id that
++        matches this drawer's key), else ``None``.
++
++        Reference matching — an event "references" the drawer when ANY of:
++          * ``event["metadata"]["drawer_key"] == drawer["key"]``
++          * ``event["metadata"]["correlation_id"] == drawer["key"]``
++          * ``event["id"] == drawer["key"]``
++          * ``event["key"] == drawer["key"]``
++        (case-insensitive on both sides).
++
++        Most-recent-wins: when several match, the event with the latest
++        ``created_at`` (ISO-8601 or epoch seconds, both accepted) is the one
++        whose provenance we annotate.  Ties → the last one in list order
++        wins (deterministic, stable).
++
++        Never raises.  Returns ``None`` when no event matches, the drawer
++        has no key, the event log is empty, or the assembled note exceeds
++        *max_chars* and cannot be shortened.
++
++
++Backward compatibility: when *event_log* is empty / ``None`` / or no event
++references the drawer, the return is ``None`` and the hooks layer renders
++nothing — the recall block is byte-identical to pre-#225.
++"""
++
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from typing import Any, Dict, List, Optional
++
++__all__ = ["annotate"]
++
++# Compact prefixes per event type (kept short to stay under the 80-char budget).
++# ``task.request`` is a *delegation* (not an outcome), so we use a "delegated"
++# verb; ``task.reply`` is an outcome, "replied to"; ``patch.ready`` is a
++# completed patch, "patch"; ``artifact_put`` stores an artifact, "artifact".
++_TYPE_VERB = {
++    "task.request": "delegated",
++    "task.reply": "replied to",
++    "patch.ready": "patch",
++    "patch.submit": "patch",
++    "artifact_put": "artifact",
++    "artifact_get": "artifact",
++    "event.ack": "acked",
++}
++
++
++def _event_ts(event: Dict[str, Any]) -> Optional[float]:
++    """Best-effort epoch-seconds timestamp of *event* (``None`` when no ts)."""
++    for k in ("created_at", "timestamp", "ts"):
++        v = event.get(k)
++        if v is None:
++            continue
++        try:
++            if isinstance(v, (int, float)):
++                return float(v)
++            if isinstance(v, str):
++                s = v.strip().replace("Z", "+00:00")
++                dt = datetime.fromisoformat(s)
++                if dt.tzinfo is None:
++                    dt = dt.replace(tzinfo=timezone.utc)
++                return dt.timestamp()
++        except Exception:
++            continue
++    return None
++
++
++def _event_correlation_id(event: Dict[str, Any]) -> Optional[str]:
++    """The event's correlation id (the drawer it references)."""
++    for k in ("correlation_id", "drawer_key", "key", "event_id"):
++        v = event.get(k)
++        if isinstance(v, str) and v.strip():
++            return v.strip()
++    md = event.get("metadata")
++    if isinstance(md, dict):
++        for k in ("drawer_key", "correlation_id", "key"):
++            v = md.get(k)
++            if isinstance(v, str) and v.strip():
++                return v.strip()
++    return None
++
++
++def _event_agent_role(event: Dict[str, Any]) -> Optional[str]:
++    """The *to* agent / role of the event (the "handed to" party)."""
++    for k in ("to_agent", "agent_role", "to", "role"):
++        v = event.get(k)
++        if isinstance(v, str) and v.strip():
++            return v.strip()
++    md = event.get("metadata")
++    if isinstance(md, dict):
++        for k in ("to_agent", "agent_role"):
++            v = md.get(k)
++            if isinstance(v, str) and v.strip():
++                return v.strip()
++    return None
++
++
++def annotate(
++    drawer: Optional[Dict[str, Any]],
++    event_log: Optional[List[Dict[str, Any]]],
++    max_chars: int = 80,
++) -> Optional[str]:
++    """Return a compact provenance note for *drawer* (``None`` when no event
++    references it).
++
++    See the module docstring for matching rules, most-recent-wins semantics,
++    and the compact 80-char budget.
++    """
++    if not isinstance(drawer, dict):
++        return None
++    key = drawer.get("key")
++    if not isinstance(key, str) or not key.strip():
++        return None
++    key_l = key.strip().lower()
++
++    if not event_log or not isinstance(event_log, list):
++        return None
++
++    # Collect candidates: (ts, list_index, event) for events referencing this key.
++    matches: List[tuple] = []
++    for i, ev in enumerate(event_log):
++        if not isinstance(ev, dict):
++            continue
++        cids = []
++        cid = _event_correlation_id(ev)
++        if cid:
++            cids.append(cid)
++        # Also check any event-level ``key`` / ``id`` that the drawer may share.
++        for src_key in ("key", "id", "event_id"):
++            v = ev.get(src_key)
++            if isinstance(v, str) and v.strip():
++                cids.append(v.strip())
++        ev_type = str(ev.get("type") or "").strip().lower()
++        role = _event_agent_role(ev)
++        for cid in cids:
++            if cid.lower() == key_l:
++                ts = _event_ts(ev)
++                matches.append((ts, i, ev_type, role))
++                break
++
++    if not matches:
++        return None
++
++    # Most-recent-wins: sort by ts desc (with stable tie-breaking by list order),
++    # take the head.  ``None`` ts sorts last (no time signal → prefer timed).
++    def _sort_key(m: tuple) -> tuple:
++        ts, i, et, role = m
++        # (negated ts so desc; None → -inf; list index asc; type/role for determinism)
++        return (-(ts if ts is not None else float("-inf")), i)
++
++    matches.sort(key=_sort_key)
++    ts, _i, etype, role = matches[0]
++
++    # Compose a compact note: the verb (event type) + the key it referenced,
++    # plus the "via <role>" clause when the event named a hand-off target.
++    note = "originated as %s (key:%s)" % (etype or "event", key)
++    if role:
++        note += " via " + role
++    # Enforce the budget.  If over budget, drop the role clause first, then
++    # fall back to the type + key alone (which the 80-char budget can always
++    # accommodate for reasonable key lengths).
++    if len(note) > max_chars:
++        note = "originated as %s (key:%s)" % (etype or "event", key)
++        if len(note) > max_chars:
++            room = max(8, max_chars - len("originated as %s (key:)" % (etype or "event")))
++            note = "originated as %s (key:%s)" % (etype or "event", key[:room])
++    if len(note) > max_chars:
++        return None
++    return note.strip()
+diff --git a/src/memchorus/hooks.py b/src/memchorus/hooks.py
+index 5d38b27..b8d8331 100644
+--- a/src/memchorus/hooks.py
++++ b/src/memchorus/hooks.py
+@@ -347,6 +347,20 @@ class MemChorusHooks:
+             # only does exact-key lookup and doesn't accept a limit param.
+             context_items = orchestrator.search(enriched_terms, limit=search_limit)
+ 
++            # (task t_510abeae / issues #223/#224/#225 — temporal graph recall)
++            # Resolve every "**<key>** — source=<X>" pointer in the search
++            # results against the LIVE source BEFORE the render.  When the
++            # live source holds the key, the pointer is replaced by the
++            # resolved live content (so the model sees it without an extra
++            # round-trip); when it does not, the pointer is rendered as a
++            # *confirmed-absent* note rather than a stale "go fetch it".
++            # This is seam-only: ``_format_context_block`` /
++            # ``_build_context_entries`` are unchanged.
++            if context_items and hasattr(orchestrator, "retrieve_with_source"):
++                context_items, _resolution_report = _resolve_unresolved_pointers(
++                    context_items, orchestrator
++                )
++
+             injected_blocks: List[str] = []
+ 
+             # Guards go first so they appear before soft recall / feedback blocks
+@@ -1641,6 +1655,191 @@ def _should_collapse_low_signal(body: str) -> bool:
+     return False
+ 
+ 
++# ---------------------------------------------------------------------------
++# Unresolved-pointer resolution (task t_510abeae / MemChorus issues #223/#224/#225
++# "temporal graph recall")
++#
++# The recall block currently surfaces pointer-shaped items — e.g.
++#   **learning-0e0f6c99a4e96624** — source=hermes_default— read it:
++#       retrieve(key='learning-0e0f6c99a4e96624').  If that key is missing
++#       (cold cache, never saved, or pruned), re-fetch the live source before
++#       treating it as absent.
++# — as literal text, even when the underlying memory has already been resolved.
++# The pointer itself is a "recall pointer": the agent is handed a key and told
++# to call ``retrieve``.  When the live source actually *does* hold that key,
++# the pointer should be replaced by the resolved live content so the model
++# immediately sees the material without an extra round-trip; when the live
++# source does *not* hold the key, the pointer must be rendered as a *confirmed
++# absent* note rather than a stale "go fetch it" instruction.  Either way, the
++# key stays reachable, and the "local-fallback" path is only used when the
++# live source itself is truly unavailable.
++#
++# This is a *seam*-only change: the resolution happens between the search
++# (``orchestrator.search``) and the render (``_format_context_block``),
++# leaving ``_build_context_entries`` — the single render core — untouched.
++# ---------------------------------------------------------------------------
++
++# Matches a documented MemChorus pointer in an injected recall item body.
++# The documented form is ``**<key>** — source=<X>— read it: retrieve(key=…)`` —
++# canonical em-dash between the key and the ``source=`` label.  Both em-dash /
++# en-dash / hyphen separators and both the spaced and unspaced ``read it:``
++# variants are captured.  A plain word or prose body is NOT a pointer —
++# only bodies that (1) start with a **bold** key token, (2) carry a ``—`` (or
++# ``--``) separator, and (3) carry a ``source=<value>`` label are treated as
++# unresolved pointers.
++_POINTER_KEY_RE = re.compile(
++    r"^\s*\*\*(?P<key>[A-Za-z][A-Za-z0-9_.\-]*)\*\*\s*"
++    r"(?:[—–-]{1,2})\s*"
++    r"(?:source=(?P<source>[A-Za-z0-9_./\-:]+?)\s*(?:[—–-]{1,2})?\s*read\s+it:)?",
++    re.UNICODE,
++)
++
++# Sentinel returned by the resolver for items whose ``retrieve_with_source``
++# call raises.  The renderer must fall back to the original pointer text for
++# these — the hook MUST never crash because a single live-source lookup failed.
++_RESOLUTION_RAISED = object()
++
++
++def _is_unresolved_pointer(body: Any) -> tuple:
++    """Return ``(is_pointer, key, source)`` for a recall item body.
++
++    Only the *documented* pointer shape is recognised:
++
++    * body is a ``str`` (not None / not a raw tool envelope)
++    * the body starts with a ``**<key>**`` token (bold key)
++    * the body contains a ``—`` or ``--`` separator between the key and the
++      rest of the text
++    * either a ``source=<value>`` label OR a ``read it: retrieve(key=…)``
++      instruction is present
++
++    Returns ``(False, "", "")`` when the body is not a pointer.
++    """
++    if body is None:
++        return (False, "", "")
++    if not isinstance(body, str):
++        return (False, "", "")
++    # Quick structural pre-filter — if there is no bold token, no dash, and no
++    # retrieve/source label, this cannot be the documented pointer.
++    low = body
++    if "**" not in low:
++        return (False, "", "")
++    if ("—" not in low and "--" not in low):
++        return (False, "", "")
++    if "read it:" not in low and "source=" not in low:
++        return (False, "", "")
++    m = _POINTER_KEY_RE.match(low)
++    if m is None:
++        return (False, "", "")
++    key = (m.group("key") or "").strip()
++    if not key:
++        return (False, "", "")
++    source = (m.group("source") or "").strip()
++    return (True, key, source)
++
++
++def _resolve_unresolved_pointers(
++    items: List[Dict[str, Any]],
++    orchestrator: Any,
++) -> tuple:
++    """Resolve every ``**<key>**`` pointer in ``items`` against the live source.
++
++    For each item whose body is an unresolved pointer and whose ``key`` can
++    be resolved via ``orchestrator.retrieve_with_source(key)``:
++
++    * if the live source is found → the item is replaced by a resolved
++      entry: the pointer text is dropped, the live content is inlined, and
++      the item's ``source`` field is set to the live source name (e.g.
++      ``mempalace_mcp``), so the renderer's inline path — not the low-signal
++      gate — inlines the material and the model sees it immediately;
++    * if the live source is NOT found → the item is replaced by an
++      *absent-confirmation* entry that still carries the key (so the agent
++      can re-issue ``retrieve`` if it wants) but no longer looks like a
++      "go fetch it" instruction.
++
++    For pointer items whose lookup raises, the item is left untouched —
++    the hook MUST not crash because a single live-source lookup failed
++    (AC4: "the hook can never fail").
++
++    Returns ``(enriched_items, report)`` where ``report`` is a dict with:
++      - ``resolved``: list of ``{"key", "source_name", "content"}``
++      - ``missing``:  list of keys confirmed absent from the live source
++      - ``unresolved``: list of keys whose ``retrieve_with_source`` raised
++                        (the original pointer is preserved for these)
++
++    Never raises.  Never mutates the input ``items`` list in place — it
++    returns a new list (the caller replaces its local variable).
++    """
++    resolved: List[Dict[str, Any]] = []
++    missing: List[str] = []
++    unresolved: List[str] = []
++    enriched: List[Dict[str, Any]] = []
++
++    for item in items:
++        if not isinstance(item, dict):
++            enriched.append(item)
++            continue
++        body = item.get("content")
++        is_ptr, key, _source = _is_unresolved_pointer(body)
++        if not is_ptr:
++            enriched.append(item)
++            continue
++        # The key was detected as a pointer — attempt to resolve it against
++        # the live source.  Use retrieve_with_source() (not retrieve()) so
++        # we also learn which source actually held the value (this matters
++        # for the rendered note and for the report).
++        try:
++            hit = orchestrator.retrieve_with_source(key)
++        except Exception as exc:
++            logger.warning(
++                "recall.resolve: retrieve_with_source(%r) raised: %s",
++                key, exc,
++            )
++            unresolved.append(key)
++            enriched.append(item)  # leave the original pointer in place
++            continue
++
++        resolved_item = dict(item)  # shallow copy — do not mutate the caller's dict
++        if hit is not None:
++            live_content = hit.get("content")
++            live_source = hit.get("source_name") or "unknown"
++            resolved_item["content"] = live_content
++            resolved_item["source"] = live_source
++            resolved_item["resolved_from_pointer"] = True
++            # Clear any stale status markers left on the original pointer
++            # (e.g. "unresolved", "cold_cache", "local_fallback") — the
++            # pointer is now *confirmed resolved* against a live source.
++            for k in ("unresolved", "cold_cache", "local_fallback", "missing"):
++                resolved_item.pop(k, None)
++            resolved.append(
++                {"key": key, "source_name": live_source, "content": live_content}
++            )
++            logger.info(
++                "recall.resolve: %r resolved from live source %r (%d chars)",
++                key, live_source,
++                len(live_content) if live_content is not None else 0,
++            )
++        else:
++            # Live source does not hold this key.  Render a confirmed-absent
++            # note — the key is still present (so a re-retrieve works) but the
++            # agent is explicitly told this is NOT a "go fetch it" pointer.
++            resolved_item["content"] = (
++                "**%s** — absent from live source (cold cache or pruned; "
++                "re-issue retrieve(key='%s') only if the store is now available)"
++                % (key, key)
++            )
++            resolved_item["resolved_from_pointer"] = True
++            resolved_item["absent_from"] = "live_source"
++            for k in ("unresolved", "cold_cache", "local_fallback", "missing"):
++                resolved_item.pop(k, None)
++            resolved_item.pop("source", None)
++            missing.append(key)
++            logger.info("recall.resolve: %r confirmed absent from live source", key)
++        enriched.append(resolved_item)
++
++    report = {"resolved": resolved, "missing": missing, "unresolved": unresolved}
++    return (enriched, report)
++
++
+ def _render_project_record_block(project_name: str, record: Any) -> str:
+     """Render a §3.3 project record (``location``/``standard``/``reconciled``) into a
+     compact, top-level pointer block for session-start injection (IMPL #163.2, spec §2.4).
+@@ -2111,9 +2310,13 @@ def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+     Runs the same :func:`_build_context_entries` core the live path uses — including
+     the cross-turn suppression check against the active window — but does NOT mutate
+     the window, so calling this (e.g. from ``memchorus-doctor --recall``) never
+-    collapses a future live render.  Returns the shared report dict: ``rendered``,
+-    ``injected`` (in final order, with per-entry ``suppressed``), ``dropped``
+-    (budget drops), and ``full_body_mark`` (the render-accurate mark set).
++    collapses a future live render.  Also resolves every unresolved ``**<key>**``
++    pointer against the live source (task t_510abeae / #223-225), so the doctor
++    preview matches what the agent actually sees before the LLM call.
++
++    Returns the shared report dict: ``rendered``, ``injected`` (in final order,
++    with per-entry ``suppressed``), ``dropped`` (budget drops), and ``full_body_mark``
++    (the render-accurate mark set).
+     """
+     if not items:
+         return {
+@@ -2123,6 +2326,17 @@ def simulate_recall_render(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+                 "inline": 0, "locator_preview": 0, "suppressed": 0,
+             },
+         }
++    # (task t_510abeae / #223-#225) Resolve "**key** — source=..." pointers
++    # against the live source before render, mirroring on_pre_llm_call.  The
++    # resolver never raises — a single lookup failure leaves the pointer
++    # untouched (AC4: never fail).
++    try:
++        _orch = _get_orchestrator()
++        if _orch is not None and hasattr(_orch, "retrieve_with_source"):
++            items, _resolution_report = _resolve_unresolved_pointers(items, _orch)
++    except Exception:  # pragma: no cover — the resolver is already non-raising
++        pass  # leave the original pointers in place
++
+     max_chars = _resolve_char_limit()
+     window = _get_suppression_window()
+     return _build_context_entries(items, max_chars, window)
+diff --git a/src/memchorus/mempalace_memory_source.py b/src/memchorus/mempalace_memory_source.py
+index c15f445..b74ca96 100644
+--- a/src/memchorus/mempalace_memory_source.py
++++ b/src/memchorus/mempalace_memory_source.py
+@@ -1721,6 +1721,124 @@ class MemPalaceMemorySource(MemorySource):
+             )
+         return out
+ 
++    # -- cross-domain / diary / event channels (#225) --------------------------------
++
++    def find_tunnels(
++        self, wing: Optional[str] = None
++    ) -> Optional[List[Dict[str, Any]]]:
++        """Cross-domain tunnel records (MemChorus issue #225, sub-part 1).
++
++        Thin wrapper over the MemPalace ``mempalace_list_tunnels`` tool.
++        Returns the tunnel records as a list of dicts, each normalized to
++        carry ``source`` / ``target`` wing slugs when the server provides
++        them (keys are case-tolerant: ``from``/``to``/``source``/``target``
++        are all accepted).
++
++        Returns ``None`` when the MemPalace MCP server is unreachable — the
++        orchestrator treats ``None`` as *no data* for this channel and simply
++        omits the cross-domain section, leaving the vector/keyword channels
++        untouched (degradable-by-default).
++        """
++        if not (self._ensure_connected() and self._client.is_alive):
++            return None
++        args: Dict[str, Any] = {}
++        if wing:
++            args["wing"] = wing
++        result = self._client.call_tool("mempalace_list_tunnels", args)
++        if result is None:
++            return None
++        data = self._client._unwrap_responses(result)
++        if data is None:
++            return None
++        if not isinstance(data, list):
++            data = [data]
++        out: List[Dict[str, Any]] = []
++        for t in data:
++            if not isinstance(t, dict):
++                continue
++            norm = dict(t)
++            src = t.get("source") or t.get("from") or t.get("wing")
++            tgt = t.get("target") or t.get("to") or t.get("other_wing")
++            if src is not None:
++                norm["source"] = str(src)
++            if tgt is not None:
++                norm["target"] = str(tgt)
++            out.append(norm)
++        return out
++
++    def diary_read(self, limit: int = 10) -> Optional[List[Dict[str, Any]]]:
++        """Recent per-agent diary entries (MemChorus issue #225, sub-part 2).
++
++        Thin wrapper over the MemPalace ``mempalace_diary_read`` tool.
++        Returns the most recent diary entries as a list of dicts, each
++        carrying its narrative text (the ``text``/``content`` key is
++        normalized from whatever field the server uses).
++
++        Returns ``None`` when the MemPalace MCP server is unreachable — the
++        orchestrator treats ``None`` as *no data* and omits the agent-voice
++        section (degradable-by-default).
++        """
++        if not (self._ensure_connected() and self._client.is_alive):
++            return None
++        result = self._client.call_tool("mempalace_diary_read", {"limit": limit})
++        if result is None:
++            return None
++        data = self._client._unwrap_responses(result)
++        if data is None:
++            return None
++        if not isinstance(data, list):
++            data = [data]
++        out: List[Dict[str, Any]] = []
++        for e in data:
++            if not isinstance(e, dict):
++                continue
++            norm = dict(e)
++            # Normalize the narrative text into a ``text`` key when present
++            # under a server-specific field name.
++            text = (
++                e.get("text")
++                or e.get("content")
++                or e.get("body")
++                or e.get("entry")
++                or e.get("message")
++            )
++            if text is not None and not norm.get("text"):
++                norm["text"] = str(text)
++            out.append(norm)
++        return out
++
++    def event_list(self, limit: int = 20) -> Optional[List[Dict[str, Any]]]:
++        """Agent-coordination event log (MemChorus issue #225, sub-part 3).
++
++        Thin wrapper over the MemPalace ``mempalace_event_list`` tool.
++        Returns recent coordination events as a list of dicts (each carrying
++        ``type`` / ``created_at`` / ``correlation_id`` / ``to_agent`` etc.
++        when the server provides them).
++
++        Returns ``None`` when the MemPalace MCP server is unreachable — the
++        orchestrator treats ``None`` as *no data* and leaves the provenance
++        annotation absent (degradable-by-default).
++        """
++        if not (self._ensure_connected() and self._client.is_alive):
++            return None
++        result = self._client.call_tool(
++            "mempalace_event_list",
++            {"limit": limit, "order": "desc"},
++        )
++        if result is None:
++            return None
++        data = self._client._unwrap_responses(result)
++        if data is None:
++            return None
++        if not isinstance(data, list):
++            data = [data]
++        out: List[Dict[str, Any]] = []
++        for ev in data:
++            if not isinstance(ev, dict):
++                continue
++            out.append(dict(ev))
++        return out
++
+     @property
+     def is_available(self) -> bool:
+         """True if MCP is alive *or* the local cache dir is writable.
+diff --git a/src/memchorus/relevance_engine.py b/src/memchorus/relevance_engine.py
+index 2df1c21..ed01fc2 100644
+--- a/src/memchorus/relevance_engine.py
++++ b/src/memchorus/relevance_engine.py
+@@ -20,7 +20,7 @@ import logging
+ import re
+ from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+-from typing import Any, Dict, List, Optional, Protocol
++from typing import Any, Dict, List, Optional, Protocol, Set, Union
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -475,6 +475,63 @@ class ContextWeight:
+     source_type_weight: float = 0.25
+     active_project: Optional[str] = None
+     closet_boost_factor: float = 0.35
++    # --- #223: task-aware recall -------------------------------------------------
++    # Two additive scoring components (both *raise* the score of bound results,
++    # never lower unbound ones). OFF by default so a fresh session / no active
++    # project degrades to byte-identical v2.0.59 scoring.
++    #
++    # ``kg_entity_set`` — set of entity names the active project has recorded in
++    # its KG (resolved by the orchestrator via resolve_project_record +
++    # kg_query/kg_subgraph, then passed in). When non-empty, each drawer that
++    # *mentions* one of these entities receives a ``kg_entity_match`` bonus
++    # (capped at ``kg_entity_match_cap`` distinct entity matches) of
++    # ``kg_entity_match_weight`` added to the raw score.
++    # ``project_record`` — the text of the resolved project record (or a compact
++    # keyword string). When non-empty, a drawer's containment-similarity to it
++    # adds a ``project_relevance`` bonus of up to ``project_relevance_weight``.
++    # Both are additive and only ever lift a score, so an unbound drawer is
++    # untouched. Passing ``kg_entity_set=None`` and ``project_record=None``
++    # (the defaults) turns both components off.
++    kg_entity_set: Optional[Set[str]] = None
++    kg_entity_match_weight: float = 0.15
++    kg_entity_match_cap: int = 3
++    project_record: Optional[str] = None
++    project_relevance_weight: float = 0.10
++    # --- #224: temporal awareness ------------------------------------------------
++    # ``as_of`` — the point-in-time anchor against which staleness is measured
++    # (defaults to ``now`` when left None). Used by two additive behaviours:
++    #   * ``kg_valid_to`` on a candidate — when the candidate carries a KG
++    #     ``valid_to`` earlier than ``as_of``, it is marked ``is_expired`` and
++    #     its score is driven to 0.0 (filtered from the top-N). Only applied to
++    #     candidates that actually declare a ``kg_valid_to``; drawer-only
++    #     corpora are unaffected (regression guard).
++    #   * ``staleness_days`` / ``is_stale`` — informational annotations added to
++    #     the breakdown so ``_build_context_entries`` can surface a staleness
++    #     marker; these do NOT change the numeric score (state-anchored entries
++    #     still rank, but the reader can see when they stopped being current).
++    as_of: Optional[datetime] = None
++    staleness_threshold_days: float = 14.0
++    # --- #225: cross-domain enrichment (tunnels, diary, events) ------------------
++    # cross_domain=True causes orchestrator.search() to append recall-shaped
++    # entries from three supplementary MemPalace channels (tunnel, diary, event)
++    # to the results list.  Enrichment is purely additive: it does not alter
++    # the scores or ranked order of existing keyword/vector hits.
++    # Per-channel limits default to conservative values.
++    #
++    # include_diary — when True, fetch recent diary entries and append up to
++    # ``cross_domain_diary_limit`` as provenance-tagged results.  Default False
++    # (opt-in per #225 sub-part 2: "excluded (default)"); a diary entry below
++    # the similarity floor is never included even when enabled.
++    include_diary: bool = False
++    # annotate_provenance — when True (default), attach
++    # ``provenance``/``provenance_hint`` keys to every result produced by the
++    # cross_domain enrichment channels.  Set False for byte-identical
++    # (unannotated) cross-domain results.
++    annotate_provenance: bool = True
++    cross_domain: bool = False
++    cross_domain_tunnel_limit: int = 3
++    cross_domain_diary_limit: int = 1
++    cross_domain_event_limit: int = 3
+ 
+ 
+ @dataclass
+@@ -1142,9 +1199,113 @@ class RelevanceScorer:
+         penalty_matches, penalty_factor = self._match_penalty_patterns(c_text)
+         raw *= penalty_factor
+ 
++        # --- #223: task-aware recall — kg_entity_match + project_relevance (opt-in) ---
++        # Both are *additive* bonuses (they only ever lift a score, never lower an
++        # unbound one).  Both are OFF by default: if the caller does not set
++        # ``context.kg_entity_set`` and ``context.project_record`` the raw score
++        # is unchanged from v2.0.59 behaviour (regression guard).
++        kg_entity_match_contrib = 0.0
++        project_relevance_contrib = 0.0
++        active_project = getattr(context, "active_project", None)
++
++        # --- kg_entity_match: count distinct entity mentions in the content ---
++        entity_set: Optional[Set[str]] = getattr(context, "kg_entity_set", None)
++        if entity_set and c_text:
++            c_lower = c_text.lower()
++            matched = 0
++            cap = int(getattr(context, "kg_entity_match_cap", 3) or 3)
++            for entity in entity_set:
++                if not isinstance(entity, str) or not entity:
++                    continue
++                # A match is when the entity name appears as a *word boundary*
++                # match inside the drawer text (so "db" does not match "database").
++                pattern = re.escape(entity.lower())
++                if re.search(r"\b" + pattern + r"\b", c_lower):
++                    matched += 1
++                    if matched >= cap:
++                        break
++            if matched > 0:
++                kg_entity_match_contrib = matched * float(getattr(context, "kg_entity_match_weight", 0.15) or 0.15)
++                raw += kg_entity_match_contrib
++
++        # --- project_relevance: containment similarity to the project record ---
++        proj_text: Optional[str] = getattr(context, "project_record", None)
++        if proj_text and c_text:
++            try:
++                from memchorus.content_similarity import containment_similarity
++                sim = containment_similarity(proj_text, c_text)
++                if sim > 0.0:
++                    project_relevance_contrib = sim * float(getattr(context, "project_relevance_weight", 0.10) or 0.10)
++                    raw += project_relevance_contrib
++            except Exception as _e:
++                logger.debug("project_relevance: containment_similarity raised: %s", _e)
++
++        # --- #224: temporal awareness — as_of + kg_valid_to (opt-in) -------------
++        # Two separate behaviours:
++        #   (a) KG expiry filter: if the candidate declares a ``kg_valid_to`` that
++        #       is earlier than ``as_of`` (default now), the result is marked
++        #       ``is_expired=True`` and its final score is driven to 0.0.
++        #       Drawer-only candidates (no ``kg_valid_to``) are unaffected.
++        #   (b) Staleness annotation: adds ``staleness_days`` / ``is_stale`` to
++        #       the breakdown (informational; does NOT change the numeric score).
++        as_of = getattr(context, "as_of", None)
++        if as_of is None:
++            as_of = datetime.now(timezone.utc)
++
++        is_expired = False
++        kg_valid_to_str: Optional[str] = None
++        kg_valid_to_raw = result.get("kg_valid_to")
++        if kg_valid_to_raw:
++            try:
++                kg_valid_to_str = str(kg_valid_to_raw)
++                if isinstance(kg_valid_to_raw, (int, float)):
++                    vt = datetime.fromtimestamp(float(kg_valid_to_raw), tz=timezone.utc)
++                else:
++                    vt = datetime.fromisoformat(str(kg_valid_to_raw).replace("Z", "+00:00"))
++                    if vt.tzinfo is None:
++                        vt = vt.replace(tzinfo=timezone.utc)
++                if as_of.tzinfo is None:
++                    as_of_cmp = as_of.replace(tzinfo=timezone.utc)
++                else:
++                    as_of_cmp = as_of
++                if vt < as_of_cmp:
++                    is_expired = True
++            except Exception:
++                pass
++
++        # Staleness annotation (always computed when a temporal marker exists,
++        # but *informational* — does not change the score)
++        staleness_days = 0.0
++        is_stale = False
++        temporal_source: Optional[str] = None
++        ts_raw = kg_valid_to_raw or result.get("timestamp")
++        if ts_raw:
++            try:
++                if isinstance(ts_raw, (int, float)):
++                    ts_dt = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
++                else:
++                    ts_dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
++                    if ts_dt.tzinfo is None:
++                        ts_dt = ts_dt.replace(tzinfo=timezone.utc)
++                if as_of.tzinfo is None:
++                    as_of_dt = as_of.replace(tzinfo=timezone.utc)
++                else:
++                    as_of_dt = as_of
++                staleness_days = max(0.0, (as_of_dt - ts_dt).total_seconds() / 86400.0)
++                staleness_threshold = float(getattr(context, "staleness_threshold_days", 14.0) or 14.0)
++                is_stale = staleness_days >= staleness_threshold
++                temporal_source = "kg_valid_to" if kg_valid_to_raw else "timestamp"
++            except Exception:
++                pass
++
+         # Safety clamp (floating-point drift / user error guard)
+         final = float(min(max(raw, 0.0), score_max))
+ 
++        # #224: apply KG expiry filter — drive final to 0.0 only when this
++        # candidate explicitly declares a kg_valid_to earlier than as_of.
++        if is_expired:
++            final = 0.0
++
+         # (#206) Active-project closet boost — a *reporting* field, computed
+         # from (a) the context's active_project and (b) whether this specific
+         # result is bound to that project.  The partition (bound-first) happens
+@@ -1174,6 +1335,15 @@ class RelevanceScorer:
+                 "matches": [[label, factor] for label, factor in penalty_matches],
+             },
+             "closet_boost": boost_value,
++            # #223: task-aware recall (both components are additive; 0.0 = no bonus)
++            "kg_entity_match": round(kg_entity_match_contrib, 6),
++            "project_relevance": round(project_relevance_contrib, 6),
++            # #224: temporal awareness — staleness annotation + KG expiry flag
++            "staleness_days": round(staleness_days, 4),
++            "is_stale": is_stale,
++            "is_expired": is_expired,
++            "kg_valid_to": kg_valid_to_str,
++            "temporal_source": temporal_source,
+             "raw": raw,
+             "final": final,
+         }
+diff --git a/src/memchorus/tunnel_signal.py b/src/memchorus/tunnel_signal.py
+new file mode 100644
+index 0000000..b0d5155
+--- /dev/null
++++ b/src/memchorus/tunnel_signal.py
+@@ -0,0 +1,213 @@
++"""
++Cross-domain tunnel adjacency signal (#225, sub-part 1).
++
++Wires MemPalace's tunnel surface (cross-domain bridges linking rooms in
++different wings) into MemChorus's auto-recall loop.
++
++Design principle: **pure, testable, degradable.**  The three public functions
++here never talk to the network, never throw, and always fall back to an empty
++list when their inputs are missing or malformed.  That lets the orchestrator's
++recall path call them unconditionally and let the *data* — not the caller —
++decide whether cross-domain context is available.
++
++API:
++    tunnel_linked_rooms(active_wing, wing_map) -> list[str]
++        Given the active wing and a mapping {source_wing: [target_wing, ...]},
++        return the list of wings linked from *active_wing* via a tunnel.
++        De-duplicated, order-preserving, case-insensitive.
++
++    tunnel_adjacent(drawers, active_wing, wing_map, query=None,
++                    similarity=static_similarity, min_similarity=0.25,
++                    limit=3) -> list[dict]
++        Given a list of candidate drawers (each a dict with at least ``key``
++        and ``content``, optionally ``wing``), filter to those whose ``wing``
++        is a tunnel-adjacent wing of *active_wing*, apply an optional
++        text-similarity floor against *query*, and return up to *limit*
++        copies with a ``cross_domain=True`` tag and a ``tunnel_adjacent_to``
++        field naming the linking active wing.  Pure: no I/O, no exceptions.
++
++    tunnel_tag(item) -> dict
++        Return *item* with the ``cross_domain=True`` tag and a
++        ``tunnel_adjacent_to`` field added (used by the orchestrator to
++        preserve the tag through scoring).
++
++Backward compatibility: when ``wing_map`` is empty/None, no tunnels exist and
++the function returns ``[]``.  When ``query`` is None/empty, the similarity floor
++is skipped.  Every code path is total — no caller needs a ``try:``.
++
++This module is intentionally *small*: it is the *pure* half of the
++cross-domain tunnel signal.  The I/O half (fetching ``find_tunnels`` /
++``follow_tunnels`` from the MemPalace MCP) lives in
++:meth:`memchorus.mempalace_memory_source.MemPalaceMemorySource.find_tunnels`
++and :meth:`memchorus.mempalace_memory_source.MemPalaceMemorySource.follow_tunnels`,
++which return ``None``-on-exception for the degradable-by-default property.
++"""
++
++from __future__ import annotations
++
++import re
++from typing import Any, Callable, Dict, List, Optional
++
++__all__ = ["tunnel_linked_rooms", "tunnel_adjacent", "tunnel_tag"]
++
++# ---------------------------------------------------------------------------
++# Tokenizer (kept local to this module so we don't couple to content_similarity)
++# ---------------------------------------------------------------------------
++
++_TOKEN_RE = re.compile(r"[a-z0-9_]+")
++
++
++def _tokenize(text: Any) -> set:
++    """Lower-cased alphanumeric token set of *text* (empty set when not str)."""
++    if not isinstance(text, str):
++        return set()
++    return {t.lower() for t in _TOKEN_RE.findall(text)}
++
++
++# ---------------------------------------------------------------------------
++# Core pure functions
++# ---------------------------------------------------------------------------
++
++
++def tunnel_linked_rooms(
++    active_wing: Optional[str],
++    wing_map: Optional[Dict[str, List[str]]] = None,
++) -> List[str]:
++    """Return the list of wings tunnel-linked from *active_wing*.
++
++    Args:
++        active_wing: the active project / wing slug (may be None).
++        wing_map: mapping ``{source_wing: [target_wing, ...]}`` produced by
++            :meth:`MemPalaceMemorySource.find_tunnels`.  Case-insensitive on
++            the source key; case-preserved on the target values.
++
++    Returns:
++        A de-duplicated, order-preserving list of target wing slugs.  An empty
++        list when *active_wing* is falsy, *wing_map* is empty, or no targets
++        exist for *active_wing*.  Never raises.
++    """
++    if not active_wing or not isinstance(wing_map, dict):
++        return []
++    aw = str(active_wing).strip().lower()
++    if not aw:
++        return []
++    found: List[str] = []
++    seen = set()
++    for src, targets in wing_map.items():
++        if not isinstance(targets, (list, tuple)):
++            continue
++        if str(src).strip().lower() != aw:
++            continue
++        for t in targets:
++            ts = str(t).strip()
++            if not ts:
++                continue
++            key = ts.lower()
++            if key in seen:
++                continue
++            seen.add(key)
++            found.append(ts)
++    return found
++
++
++def tunnel_tag(item: Dict[str, Any], active_wing: Optional[str]) -> Dict[str, Any]:
++    """Return a *copy* of *item* tagged as cross-domain.
++
++    Adds (or preserves) three keys on the returned dict:
++      * ``cross_domain`` = True (the stable tag the hooks layer surfaces).
++      * ``tunnel_adjacent_to`` = *active_wing* (case-preserved) — the wing this
++        drawer bridges *from*.
++      * ``source`` is left unchanged.
++
++    Does not mutate *item* (a fresh dict is returned); missing keys become
++    ``None`` / empty on the copy.
++    """
++    out: Dict[str, Any] = dict(item) if isinstance(item, dict) else {"content": item}
++    out["cross_domain"] = True
++    out.setdefault("tunnel_adjacent_to", str(active_wing) if active_wing else None)
++    return out
++
++
++def tunnel_adjacent(
++    drawers: Optional[List[Dict[str, Any]]],
++    active_wing: Optional[str],
++    wing_map: Optional[Dict[str, List[str]]] = None,
++    query: Optional[str] = None,
++    similarity_fn: Optional[Callable[[str, str], float]] = None,
++    min_similarity: float = 0.25,
++    limit: int = 3,
++) -> List[Dict[str, Any]]:
++    """Tunnel-adjacent drawers that pass the similarity floor.
++
++    This is the pure selection step used by
++    :meth:`MemoryOrchestrator.search` when ``cross_domain=True``.  It:
++
++    1. Resolves the set of *tunnel-adjacent wings* of *active_wing* via
++       :func:`tunnel_linked_rooms`.
++    2. Filters *drawers* to those whose ``wing`` field (case-insensitive) is in
++       that set.
++    3. If *query* is a non-empty string and *similarity_fn* is provided, drops
++       any tunnel-adjacent drawer whose ``similarity_fn(query, drawer["content"])``
++       is below *min_similarity*.  When *query* or *similarity_fn* is absent, the
++       floor is skipped (all linked drawers qualify).
++    4. Limits the result to *limit* entries (first-wins order — the caller
++       supplies drawers ranked by their own scorer, so "first" means "most
++       relevant by the caller's own ordering").
++    5. Tags each result via :func:`tunnel_tag`.
++
++    De-duplication: a drawer whose ``key`` has already appeared in the output
++    is skipped (cycle A↔B de-dup, AC f).
++
++    Never raises.  Returns ``[]`` on any malformed input.
++    """
++    if not drawers or not isinstance(drawers, list):
++        return []
++    linked = tunnel_linked_rooms(active_wing, wing_map)
++    if not linked:
++        return []
++    linked_l = {w.lower() for w in linked}
++    q_present = bool(query) and isinstance(query, str)
++    use_floor = (similarity_fn is not None) and q_present
++
++    used_min = 0.0
++    if min_similarity is not None:
++        try:
++            used_min = float(min_similarity)
++            if used_min < 0:
++                used_min = 0.0
++        except Exception:
++            used_min = 0.0
++
++    limit_i = int(limit) if limit and limit > 0 else (len(drawers) or 1)
++    out: List[Dict[str, Any]] = []
++    seen_keys = set()
++    for d in drawers:
++        if not isinstance(d, dict):
++            continue
++        w = d.get("wing")
++        if not isinstance(w, str) or not w.strip():
++            # Drawers with no wing tag are *not* tunnel-adjacent by definition.
++            continue
++        if w.strip().lower() not in linked_l:
++            continue
++        key = d.get("key")
++        key_i = str(key) if key is not None else None
++        if key_i is not None and key_i in seen_keys:
++            continue
++
++        if use_floor:
++            content = d.get("content") or ""
++            try:
++                s = float(similarity_fn(str(query or ""), str(content)))  # type: ignore[misc]
++            except Exception:
++                s = 0.0
++            if s < used_min:
++                continue
++
++        tagged = tunnel_tag(d, active_wing)
++        if key_i is not None:
++            seen_keys.add(key_i)
++        out.append(tagged)
++        if len(out) >= limit_i:
++            break
++    return out
+diff --git a/tests/test_temporal_recall_pointer_resolution.py b/tests/test_temporal_recall_pointer_resolution.py
+new file mode 100644
+index 0000000..858dc91
+--- /dev/null
++++ b/tests/test_temporal_recall_pointer_resolution.py
+@@ -0,0 +1,302 @@
++"""Temporal graph recall — unresolved-pointer resolution (task t_510abeae).
++
++MemChorus issues #223 / #224 / #225 — "temporal graph recall".
++
++Recall items can arrive as *unresolved pointers*:
++
++    **learning-0e0f6c99a4e96624** — source=hermes_default— read it:
++        retrieve(key='learning-0e0f6c99a4e96624').  If that key is missing
++        (cold cache, never saved, or pruned), re-fetch the live source before
++        treating it as absent.
++
++Until this change, that literal instruction text was what the agent saw.  If
++the live source actually held the key, the pointer should be *resolved* to the
++live content; if it did not, the pointer should be rendered as a
++*confirmed-absent* note.  This test pins all five acceptance criteria (AC1-AC5)
++against the real recall path (``on_pre_llm_call`` → ``_resolve_unresolved_pointers``
++→ ``_format_context_block`` → ``_build_context_entries``).
++
++AC1  a recall item with a pointer (``**key**``) + a ``source=`` label + a
++     ``retrieve(key=…)`` call is detected, and the resolver calls the live
++     retrieve with the extracted key.
++AC2  if the live source has content for that key, the recall block contains the
++     resolved live content (not the pointer text).
++AC3  if the live source has no content for that key, the recall block says the
++     key is *confirmed absent* and the key is still present (so it can be
++     re-retrieved) — not a stale "go fetch it" instruction.
++AC4  the hook can never fail: no-key / no-source / retrieve-missing-content
++     cases all produce a recall block and never raise.
++AC5  the 'local-fallback' degrade note is only emitted when the source is truly
++     unavailable — a live resolution must NOT be marked as a local fallback.
++"""
++
++from unittest.mock import patch, MagicMock
++import pytest
++
++import memchorus.hooks as hooks
++
++
++@pytest.fixture(autouse=True)
++def _reset_suppression_window():
++    """Each test starts with a clean cross-turn suppression window.
++
++    The window is module-level state in hooks.py — the live render path marks
++    keys it has already surfaced (key -> content hash), and those keys are
++    suppressed on subsequent renders for the whole session.  Without a reset
++    between tests, one test that renders a given key would suppress it in the
++    next test ("Shown earlier") — which is exactly what the resolver tests
++    need to control: they exercise the *resolution* of a pointer, not
++    cross-turn suppression.
++    """
++    hooks._clear_suppression_windows()
++    yield
++    hooks._clear_suppression_windows()
++
++
++# Canonical pointer shape — exactly the form shipped in the [MemChorus Memory
++# Recall] block (see the task's injected context block).
++POINTER_KEY = "learning-0e0f6c99a4e96624"
++POINTER_BODY = (
++    "**%s** \u2014 source=hermes_default\u2014 read it: "
++    "retrieve(key='%s').  If that key is missing (cold cache, never saved, "
++    "or pruned), re-fetch the live source before treating it as absent."
++    % (POINTER_KEY, POINTER_KEY)
++)
++LIVE_CONTENT = (
++    "CYCLE 6 done. Silent exit fix: cap max 3 concurrent tool calls per turn."
++)
++
++
++def _make_orch(search_results, resolve_map=None, resolve_side_effect=None):
++    """Build a mock orchestrator for the recall path.
++
++    ``resolve_map`` maps key -> content (or None for absent).  Any key not in
++    the map raises KeyError unless a ``resolve_side_effect`` is supplied.
++    """
++    orch = MagicMock(name="MemoryOrchestrator")
++    orch.search.side_effect = lambda *a, **k: list(search_results)
++    if resolve_side_effect is not None:
++        orch.retrieve_with_source.side_effect = resolve_side_effect
++    elif resolve_map is not None:
++        def _rws(key):
++            val = resolve_map.get(key)
++            # ``None`` (or a missing key) models "live source does not hold
++            # this key" — retrieve_with_source returns None for an absent key.
++            if val is None:
++                return None
++            return {
++                "key": key,
++                "content": val,
++                "source_name": "mempalace_mcp",
++            }
++        orch.retrieve_with_source.side_effect = _rws
++    # config: keep guards + balance silent so they don't inject noise blocks.
++    orch.config = {"prohibitions": {"enabled": False}, "balance": {"enabled": False}}
++    return orch
++
++
++def _run_hook(orch):
++    with patch("memchorus.hooks._get_orchestrator", return_value=orch):
++        hook = hooks.MemChorusHooks()
++        return hook.on_pre_llm_call(
++            user_message="work the kanban task",
++            conversation_history=[{"role": "user", "content": "work the kanban task"}],
++            session_id="test-session",
++            task_id="t_510abeae",
++            turn_id=1,
++            is_first_turn=False,
++            model="test-model",
++            platform="cli",
++            sender_id="",
++        )
++
++
++# ---------------------------------------------------------------------------
++# AC1 — pointer + source= + retrieve() is detected; resolver uses the key
++# ---------------------------------------------------------------------------
++class TestAC1PointerDetected:
++    def test_pointer_body_recognised(self):
++        is_ptr, key, source = hooks._is_unresolved_pointer(POINTER_BODY)
++        assert is_ptr is True
++        assert key == POINTER_KEY
++        assert source == "hermes_default"
++
++    def test_resolver_calls_live_retrieve_with_extracted_key(self):
++        orch = _make_orch(
++            search_results=[
++                {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++                 "score": 0.9, "preview": POINTER_BODY[:80]},
++            ],
++            resolve_map={POINTER_KEY: LIVE_CONTENT},
++        )
++        _run_hook(orch)
++        # AC1: the resolver MUST have asked the live source for the exact key.
++        assert orch.retrieve_with_source.called, (
++            "resolver did not call the live retrieve() at all"
++        )
++        called_keys = [c.args[0] for c in orch.retrieve_with_source.call_args_list]
++        assert POINTER_KEY in called_keys, (
++            "resolver did not request the extracted pointer key %r (called: %r)"
++            % (POINTER_KEY, called_keys)
++        )
++
++
++# ---------------------------------------------------------------------------
++# AC2 — live source has content -> block contains resolved content
++# ---------------------------------------------------------------------------
++class TestAC2ResolvedInline:
++    def test_resolved_live_content_present_pointer_gone(self):
++        orch = _make_orch(
++            search_results=[
++                {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++                 "score": 0.9, "preview": POINTER_BODY[:80]},
++            ],
++            resolve_map={POINTER_KEY: LIVE_CONTENT},
++        )
++        result = _run_hook(orch)
++        assert result is not None
++        ctx = result["context"]
++        # AC2: the resolved live material is what the agent sees…
++        assert LIVE_CONTENT in ctx, (
++            "resolved live content missing from recall block:\n%s" % ctx
++        )
++        # …not the stale "read it: retrieve(key=…)" pointer instruction.
++        assert "read it:" not in ctx, (
++            "stale pointer instruction still present after resolution:\n%s" % ctx
++        )
++        # The key is still named (resolvable) but the "go fetch" framing is gone.
++        assert POINTER_KEY in ctx
++
++
++# ---------------------------------------------------------------------------
++# AC3 — live source has NO content -> confirmed-absent note, key retained
++# ---------------------------------------------------------------------------
++class TestAC3ConfirmedAbsent:
++    def test_absent_note_keeps_key_and_drops_go_fetch(self):
++        orch = _make_orch(
++            search_results=[
++                {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++                 "score": 0.9, "preview": POINTER_BODY[:80]},
++            ],
++            resolve_map={POINTER_KEY: None},  # live source does NOT hold the key
++        )
++        result = _run_hook(orch)
++        assert result is not None
++        ctx = result["context"]
++        assert POINTER_KEY in ctx, "key must survive a confirmed-absent render"
++        assert "absent" in ctx.lower(), (
++            "expected a 'confirmed absent' note, got:\n%s" % ctx
++        )
++        assert "read it:" not in ctx, (
++            "confirmed-absent render must not look like a stale 'go fetch it':\n%s" % ctx
++        )
++
++
++# ---------------------------------------------------------------------------
++# AC4 — the hook can never fail (no-key / no-source / retrieve-raises)
++# ---------------------------------------------------------------------------
++class TestAC4NeverFails:
++    def test_retrieve_raising_does_not_break_hook(self):
++        def _raise(key):
++            raise RuntimeError("live source blew up")
++        orch = _make_orch(
++            search_results=[
++                {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++                 "score": 0.9, "preview": POINTER_BODY[:80]},
++            ],
++            resolve_side_effect=_raise,
++        )
++        result = _run_hook(orch)  # must NOT raise
++        assert result is not None
++        # the original pointer text is preserved for the failing key
++        assert POINTER_KEY in result["context"]
++
++    def test_non_pointer_item_leaves_block_alone(self):
++        orch = _make_orch(
++            search_results=[
++                {"key": "prose-1", "content": "Always cap tool calls to three per turn.",
++                 "source": "hermes_default", "score": 0.7,
++                 "preview": "Always cap tool calls"},
++            ],
++            resolve_map={},
++        )
++        result = _run_hook(orch)
++        assert result is not None
++        assert "Always cap tool calls to three per turn." in result["context"]
++        # prose is not a pointer -> resolver must not have touched the live source
++        assert not orch.retrieve_with_source.called
++
++    def test_no_search_results_returns_none_gracefully(self):
++        orch = _make_orch(search_results=[], resolve_map={})
++        with patch("memchorus.hooks._get_orchestrator", return_value=orch):
++            # A guard/feedback line may still appear, but recall must be absent.
++            result = hooks.MemChorusHooks().on_pre_llm_call(
++                user_message="work", conversation_history=[],
++                session_id="s", task_id="", turn_id=1, is_first_turn=False,
++                model="m", platform="cli", sender_id="",
++            )
++        # No recall items -> no [MemChorus Memory Recall] bracket required.
++        if result is not None:
++            assert "[MemChorus Memory Recall]" not in result["context"]
++
++    def test_resolver_unit_never_raises_on_odd_types(self):
++        items = [
++            {"key": "a", "content": None, "source": "x", "score": 1.0},
++            {"key": "b", "content": 12345, "source": "x", "score": 1.0},
++            {"key": "c", "content": ["a", "b"], "source": "x", "score": 1.0},
++            "not-a-dict",
++        ]
++        orch = MagicMock()
++        enriched, report = hooks._resolve_unresolved_pointers(items, orch)
++        assert len(enriched) == len(items)
++        # None of these are documented pointers -> nothing resolved.
++        assert report["resolved"] == []
++        assert report["missing"] == []
++        assert report["unresolved"] == []
++
++
++# ---------------------------------------------------------------------------
++# AC5 — 'local-fallback' degrade note only when source is truly unavailable
++# ---------------------------------------------------------------------------
++class TestAC5LocalFallbackGating:
++    def test_live_resolution_not_marked_local_fallback(self):
++        orch = _make_orch(
++            search_results=[
++                {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++                 "score": 0.9, "preview": POINTER_BODY[:80]},
++            ],
++            resolve_map={POINTER_KEY: LIVE_CONTENT},
++        )
++        result = _run_hook(orch)
++        ctx = result["context"]
++        assert LIVE_CONTENT in ctx
++        # The resolved item's source is the live source, never 'local-fallback'.
++        lowered = ctx.lower()
++        assert "local-fallback" not in lowered.replace(" ", ""), (
++            "a successfully resolved live item must not be flagged local-fallback:\n%s" % ctx
++        )
++
++    def test_resolve_report_structure(self):
++        """The resolver returns a machine-readable report (resolved/missing/unresolved)."""
++        orch = MagicMock()
++        orch.retrieve_with_source.side_effect = {
++            POINTER_KEY: {"key": POINTER_KEY, "content": LIVE_CONTENT, "source_name": "mempalace_mcp"},
++        }.get
++        items = [
++            {"key": POINTER_KEY, "content": POINTER_BODY, "source": "hermes_default",
++             "score": 0.9, "preview": POINTER_BODY[:40]},
++        ]
++        enriched, report = hooks._resolve_unresolved_pointers(items, orch)
++        assert len(enriched) == 1
++        assert len(report["resolved"]) == 1
++        assert report["resolved"][0]["key"] == POINTER_KEY
++        assert report["resolved"][0]["source_name"] == "mempalace_mcp"
++        # The enriched item now carries the live content, not the pointer.
++        assert enriched[0]["content"] == LIVE_CONTENT
++        assert enriched[0]["source"] == "mempalace_mcp"
++        assert enriched[0].get("resolved_from_pointer") is True
++
++
++if __name__ == "__main__":
++    import sys
++    sys.exit(pytest.main([__file__, "-v"]))
