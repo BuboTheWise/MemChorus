@@ -94,15 +94,30 @@ def check_dependency_integrity() -> CheckResult:
     pydantic_ver = None
     try:
         import pydantic  # noqa: F401
-
+    except ImportError as exc:
+        # Issue #250: a bare ImportError used to be reported as "not installed",
+        # conflating two very different failures. Distinguish them:
+        #   * no pydantic distribution resolvable in importlib.metadata
+        #       -> genuinely missing ("not installed")
+        #   * a version IS resolvable but the module is unimportable
+        #       -> cross-ABI pydantic_core mismatch / local-file shadow
+        try:
+            pydantic_ver = imp_meta.version("pydantic")
+        except imp_meta.PackageNotFoundError:
+            problems.append("pydantic not installed")
+        else:
+            problems.append(
+                f"pydantic {pydantic_ver} is installed but unimportable "
+                "(likely a cross-ABI pydantic_core mismatch or shadow); "
+                f"import raised: {exc}"
+            )
+    else:
         pydantic_ver = imp_meta.version("pydantic")
         major_v = int(pydantic_ver.split(".")[0])
         if major_v < 2:
             problems.append(
                 f"pydantic {pydantic_ver} is below v2 (need >= 2.0)"
             )
-    except ImportError:
-        problems.append("pydantic not installed")
 
     # --- PyYAML -----------------------------------------------------
     pyyaml_ver = None
