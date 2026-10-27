@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 import asyncio
@@ -673,6 +674,79 @@ class _McpClient:
         wrapper = "\n".join(script_lines)
         return (python, ["-c", wrapper])
 
+    # Patterns in stderr that indicate an ImportError inside the MCP child
+    # (pydantic / pydantic_core failing on import) — surfaced verbatim by
+    # :meth:`_probe_pydantic_import` and the MCP child's stderr passthrough,
+    # and matched here so they are never swallowed as generic noise.
+    _IMPORT_ERROR_PATTERNS = (
+        "pydantic_core",
+        "cross-abi",
+        "pydantic",
+        "importerror",
+    )
+
+    @classmethod
+    def _probe_pydantic_import(
+        cls, python: str, extra_path: Optional[str] = None, timeout: float = 15.0
+    ) -> tuple[bool, str]:
+        """Pre-flight check (issue #250): verify ``import pydantic`` works in the
+        MCP subprocess's interpreter before any tool call is attempted.
+
+        Runs ``python -c "import pydantic; import pydantic_core; print('ok')"``,
+        inserting ``extra_path`` (if given) at the front of ``sys.path`` to
+        reproduce the subprocess's import environment — e.g. to surface a
+        *shadow* ``pydantic.py`` in a CWD or a *cross-ABI pydantic_core*
+        mismatch that ``pip`` metadata would not reveal.
+
+        Returns a two-element tuple:
+          * ``ok=True,  msg="pydantic + pydantic_core import OK"`` — healthy
+          * ``ok=False, msg=<raw stderr text>`` — the child exited non-zero;
+            ``msg`` carries verbatim the ImportError (including any
+            ``pydantic_core`` / cross-ABI detail).
+
+        Callers (``connect()``) should log ``msg`` at WARNING or ERROR level
+        and fall back gracefully rather than masking the real error.
+        """
+        code_parts = []
+        if extra_path:
+            # Insert at front of sys.path so a shadow module in ``extra_path``
+            # is found before site-packages (mirrors how the MCP server would
+            # import pydantic when CWD / PYTHONPATH resolves there).
+            code_parts.append(f"import sys; sys.path.insert(0, {extra_path!r})")
+        code_parts.append("import pydantic")
+        # pydantic_core is the C extension that typically fails on cross-ABI
+        # mismatches even when the pydantic pure-Python wrapper is importable.
+        code_parts.append("import pydantic_core")
+        code_parts.append("print('ok')")
+        probe_code = "\n".join(code_parts)
+
+        try:
+            proc = subprocess.run(
+                [python, "-c", probe_code],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return (False, f"pydantic pre-flight probe timed out (>{timeout:.0f}s) for {python!r}")
+        except OSError as exc:
+            return (False, f"pydantic pre-flight probe failed to exec {python!r}: {exc}")
+
+        if proc.returncode == 0 and "ok" in (proc.stdout or ""):
+            return (True, "pydantic + pydantic_core import OK")
+
+        # Non-zero exit: carry the child's stderr verbatim — this is where
+        # the cross-ABI / shadow detail lives.  Fall back to a structured
+        # diagnostic if stderr was empty (e.g. a segfault with no output).
+        stderr_text = (proc.stderr or "").strip()
+        if not stderr_text:
+            stderr_text = f"<child exited rc={proc.returncode} with no stderr output>"
+        # Trim to a reasonable cap but keep the tail (the actual exception
+        # text is what matters).
+        if len(stderr_text) > 2000:
+            stderr_text = "...\n" + stderr_text[-2000:]
+        return (False, f"pydantic pre-flight failed: {stderr_text}")
+
     def _get_transport(self) -> tuple[str, list]:
         """Return (command, args) for launching the MCP subprocess.
 
@@ -724,7 +798,15 @@ class _McpClient:
                     expanded,
                 )
 
-        # Step 2: dedicated PATH shim
+        # Step 2: sys.executable — the actively-running venv interpreter
+        # (issue #250: this is "the one that started the gate"; must win
+        # over stale PATH shims and pipx venv locations)
+        py = sys.executable
+        if Path(py).exists():
+            logger.info("python_bin resolved via sys.executable (same env): %s", py)
+            return py
+
+        # Step 3: dedicated PATH shim
         mp_python = shutil.which("mempalace-python")
         if mp_python:
             logger.info(
@@ -732,7 +814,7 @@ class _McpClient:
             )
             return mp_python
 
-        # Step 3: pipx venv locations
+        # Step 4: pipx venv locations
         for pipx_candidate in [
             os.path.expanduser("~/.local/share/pipx/venvs/mempalace/bin/python"),
             os.path.expanduser("~/.local/pipx/venvs/mempalace/bin/python"),
@@ -740,12 +822,6 @@ class _McpClient:
             if Path(pipx_candidate).is_file():
                 logger.info("python_bin resolved via pipx venv: %s", pipx_candidate)
                 return pipx_candidate
-
-        # Step 4: sys.executable (shares env with this process)
-        py = sys.executable
-        if Path(py).exists():
-            logger.info("python_bin resolved via sys.executable (same env): %s", py)
-            return py
 
         # Step 5: python3 on PATH
         py3 = shutil.which("python3")
@@ -762,7 +838,9 @@ class _McpClient:
             )
             return abs_fallback
 
-        # All paths exhausted -- sys.executable is our best guess
+        # All paths exhausted -- sys.executable is our best guess (may not
+        # exist on disk in some exotic setups, but we still return it so
+        # subprocess.Popen raises a real OSError rather than a TypeError)
         logger.warning(
             "python_bin could not verify any candidate via Path.exists or shutil.which; "
             "falling back to sys.executable: %s",
@@ -789,6 +867,37 @@ class _McpClient:
                 cmd,
                 args,
             )
+
+        # ---- Pre-flight: verify pydantic imports in the subprocess interpreter ----
+        # (issue #250: a cross-ABI pydantic_core mismatch or a shadowed
+        # pydantic.py makes "import pydantic" fail inside the child; surface
+        # the real error now, before the first tool call eats it as a generic
+        # MCP failure.)
+        try:
+            import_ok, import_diag = self._probe_pydantic_import(
+                self._python_bin,
+                extra_path=os.environ.get("PYTHONPATH") or None,
+            )
+            if import_ok:
+                logger.debug("connect: pydantic pre-flight probe passed for %s", self._python_bin)
+            else:
+                import_diag_cleaned = import_diag
+                if any(pat in import_diag_cleaned.lower() for pat in self._IMPORT_ERROR_PATTERNS):
+                    logger.warning(
+                        "connect: pydantic import pre-flight FAILED in %s — %s "
+                        "(likely cross-ABI pydantic_core mismatch or shadowed pydantic "
+                        "module; see 'install -m memchorus doctor --deps-check')",
+                        self._python_bin,
+                        import_diag_cleaned,
+                    )
+                else:
+                    logger.warning(
+                        "connect: pydantic import pre-flight failed in %s — %s",
+                        self._python_bin,
+                        import_diag_cleaned,
+                    )
+        except Exception as exc:  # probe must never block connection attempts
+            logger.debug("connect: pydantic pre-flight probe raised (ignored): %s", exc)
 
         # ---- Persistent session mode: one subprocess stays alive across calls ----
         try:
@@ -936,6 +1045,18 @@ class _McpClient:
                 "_call: MCP call raised BaseExceptionGroup (%d sub-exc(s)) — %s",
                 len(exc.exceptions),
                 summarize_exception_group(exc),
+            )
+            self._connected = False
+            return None
+        except ImportError as exc:
+            # issue #250: pydantic / pydantic_core failing on import inside the
+            # MCP child. Surface the FULL message verbatim — cross-ABI detail
+            # and shadow-module tracebacks must reach the log, not a bare None.
+            logger.error(
+                "_call: MCP child hit ImportError (often a pydantic / pydantic_core "
+                "cross-ABI mismatch or shadowed module): %s "
+                "(run 'python -m memchorus doctor --deps-check' for detail)",
+                exc,
             )
             self._connected = False
             return None
