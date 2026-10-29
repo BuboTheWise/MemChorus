@@ -170,16 +170,18 @@ class TestDirectiveColdNote:
         from memchorus.hooks import _format_context_block
 
         # A short JSON-blob body trips the #217 signal gate -> rendered as the
-        # one-line ``read it: retrieve(key='…')`` directive.  That directive
-        # must ALSO state the cold-cache possibility (assert the exact wording
-        # loosely, so a future edit cannot silently drop it).
+        # one-line reachable-handle directive.  Per spec-253 the directive
+        # names the CLI subcommand (``memchorus-recall retrieve <key>``)
+        # rather than the in-process call.  It must ALSO state the
+        # cold-cache possibility (assert loosely so a future edit cannot
+        # silently drop it).
         item = {
             "key": "LEARNING_PTR7770",
             "content": '{"a": 1, "b": 2, "c": 3}',
         }
         out = _format_context_block([item])
-        # The pointer directive is present ...
-        assert "retrieve(key='" in out
+        # The pointer directive is present (CLI reachable handle) ...
+        assert "memchorus-recall retrieve LEARNING_PTR7770" in out
         assert "LEARNING_PTR7770" in out
         # ... and the cold-cache note is stated alongside it.
         low = out.lower()

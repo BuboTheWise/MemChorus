@@ -207,15 +207,17 @@ class TestIdSpaceHintGreen(unittest.TestCase):
     # ---- Regression: existing #221 directives still present ---------------- #
 
     def test_pointer_directive_still_present(self):
-        """Regression: the canonical ``read it: retrieve(key='…')`` directive
-        must remain in the rendered gist so the C13 gate still recognises
-        the entry as a pointer.
+        """Regression: the canonical reachable-pointer directive must remain
+        in the rendered gist so the C13 gate still recognises the entry as a
+        pointer.  Per spec-253 the directive now names the CLI subcommand
+        (``memchorus-recall retrieve <key>``) as the reachable handle, not
+        the in-process ``retrieve(key='…')`` call.
         """
         out = self._render(HERMES_KEYS[0])
         self.assertIn(
-            "read it: retrieve(key='mistake-ac5ab347a4211a3f')",
+            "memchorus-recall retrieve mistake-ac5ab347a4211a3f",
             out,
-            f"Regression: pointer directive missing from rendered block:\n{out[:250]}",
+            f"Regression: reachable pointer directive missing from rendered block:\n{out[:250]}",
         )
 
     def test_cold_cache_note_still_present(self):

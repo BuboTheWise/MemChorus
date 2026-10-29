@@ -516,7 +516,10 @@ class TestHookNeverFails(_C13GateTestBase):
         # intentionally does not inline.  Pre-fix, the bare-MagicMock gate
         # return corrupted the entry and this line was absent entirely.
         self.assertIn("- **lesson**", ctx)
-        self.assertIn("retrieve(key='lesson')", ctx)
+        # spec-253: the directive now names the CLI subcommand as the
+        # reachable handle; assert on the reachable form (not the legacy
+        # in-process call).
+        self.assertIn("memchorus-recall retrieve lesson", ctx)
 
 
 if __name__ == "__main__":

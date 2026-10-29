@@ -1917,7 +1917,10 @@ def _build_context_entries(
             _src = item.get("source") or item.get("source_name") or "memory"
             # One-line gist (source + key + pointer), per #217 AC1–AC3.  No
             # body snippet: for a JSON blob the raw snippet is exactly the
-            # noise we are collapsing; the full body stays one retrieve() away.
+            # noise we are collapsing; the full body stays one
+            # `memchorus-recall retrieve <key>` away — the subcommand is
+            # the reachable handle the agent can call from its own tool box,
+            # not an in-process function name.
             # #221: state the cold-cache boundary the pointer rests on — the
             # agent following this directive must know that if retrieve()
             # reports a miss, the key is either pruned (cold, re-fetch me)
@@ -1933,14 +1936,14 @@ def _build_context_entries(
             if _m_ptr:
                 _ptr_cat = _m_ptr.group(1)
                 raw_content = (
-                    f"source={_src}\u2014 read it: retrieve(key='{key}'). "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}`. "
                     f"ID-space mismatch: pointer key, not a mempalace drawer_id (get_drawer 404s) — "
                     f"scope mempalace_search category='{_ptr_cat}'. "
                     f"If missing (cold/pruned), re-fetch the live source."
                 )
             else:
                 raw_content = (
-                    f"source={_src}\u2014 read it: retrieve(key='{key}'). "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}`. "
                     f"If that key is missing (cold cache, never saved, or pruned), "
                     f"re-fetch the live source before treating it as absent."
                 )
