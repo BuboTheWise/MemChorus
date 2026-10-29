@@ -5,6 +5,7 @@ Usage::
     memchorus-recall kg <entity> [--hops N] [--limit M] [--relations comma,list]
                               [--profile NAME] [--json]
     memchorus-recall project <name> [--profile NAME] [--json]
+    memchorus-recall retrieve <key> [--profile NAME] [--json]
 
 The ``kg`` subcommand prints a bounded Knowledge-Graph recall for *entity* as
 either a human-readable multi-line string or a JSON array, so it can be piped
@@ -16,12 +17,23 @@ resolved by the orchestrator's ``resolve_project_record`` API.  Both subcommands
 follow the same graceful-degradation pattern: a missing pipeline degrades to a
 clear status line on stderr and exit 1, never a traceback.
 
-Exit-code semantics (both subcommands):
-    0   success (zero or more relations returned / record resolved).
-    1   pipeline unreachable, or ``resolve_project_record`` returned ``None``
-        (orchestrator not registered, source has no API — the base-class
-        no-op degrade is treated as an explicit "no data here" signal).
-    2   usage error (missing argument, bad value).
+The ``retrieve`` subcommand (D1, spec-253) resolves a *recall pointer key* to
+its stored body — the second hop the injected ``retrieve(key='…')`` directive
+named but no surface actually exposed (see issue #253) — by calling the
+registered orchestrator's ``retrieve`` / ``retrieve_with_source`` and printing
+the body to stdout (``--json`` for the provenance form).  All three subcommands
+share the graceful-degradation contract: a missing pipeline or an unresolved
+look-up degrades to a clear status line on stderr and exit 1, never a traceback.
+
+Exit-code semantics (all three subcommands):
+    0   success — relations found, record resolved, or key resolved (body printed
+        to stdout).
+    1   miss / unavailable data: ``kg`` / ``project`` saw no relations or
+        ``resolve_project_record`` returned ``None`` (the base-class no-op
+        "no data here" signal), or ``retrieve`` saw an unresolved key (cold cache
+        / never saved — a re-fetch hint prints to stderr).
+    2   usage error (missing or empty argument, bad value, memchorus not importable,
+        or no orchestrator registered).
 
 OPSEC (spec §0 glossary): user-facing text uses ``<workspace>/<project>/…``
 placeholders.  Stored ``canonical_root`` values are surfaced as-is from the
@@ -236,6 +248,127 @@ def _run_recall_project(source: Any, project_name: str, as_json: bool) -> int:
     return 0
 
 
+def _unwrap_retrieve_result(result: object) -> object:
+    """:func:`MemoryOrchestrator.retrieve` boundary normaliser for the CLI.
+
+    The orchestrator already folds the MemPalace ``RETRIEVE_MISS`` sentinel back
+    to ``None`` on the generic path (``#221``), but a source may still hand the
+    sentinel back (e.g. via ``retrieve_with_source`` provenance paths) and the
+    CLI must never echo an opaque sentinel to a human reader.  This helper maps
+    both the sentinel and ``None`` to ``None`` and passes every other value
+    through untouched (routing-envelope unwrap is the orchestrator's job).
+    """
+    if result is None:
+        return None
+    try:
+        from memchorus.mempalace_memory_source import RETRIEVE_MISS
+    except Exception:  # pragma: no cover — source module always present
+        return result
+    if isinstance(result, type(RETRIEVE_MISS)):
+        return None
+    return result
+
+
+def _normalize_body(body: object) -> tuple:
+    """Coerce a retrieved body into a printable ``(render, is_json)`` pair.
+
+    * ``dict`` — canonical dict form returned by the orchestrator or
+      :func:`MemoryOrchestrator.retrieve_with_source`; rendered as compact JSON.
+    * ``str``  — printed verbatim (no ``repr`` wrapping — the stored payload is
+      already the canonical text; double-quoting would be noise).
+    * other    — ``repr`` so nothing is silently lost.
+    """
+    if isinstance(body, dict):
+        try:
+            return json.dumps(body), True
+        except (TypeError, ValueError):
+            return repr(body), False
+    if isinstance(body, str):
+        return body, False
+    return repr(body), False
+
+
+def run_retrieve(key: str, as_json: bool = False,
+                 profile: Optional[str] = None) -> int:
+    """Execute ``memchorus-recall retrieve <key>`` (D1, spec-253).
+
+    Exit codes (spec §4.1):
+      0 — key resolved; body printed to stdout
+      1 — miss (cold cache / never saved); hint printed to stderr
+      2 — pipeline unreachable (memchorus not importable, no orchestrator registered)
+    """
+    try:
+        from memchorus import get_orchestrator
+    except Exception:  # pragma: no cover — memchorus always importable here
+        print(
+            "error: memchorus not importable. "
+            "Is the package installed and on PYTHONPATH?",
+            file=sys.stderr,
+        )
+        return 2
+
+    orchestrator = get_orchestrator(profile) if profile else get_orchestrator()
+    if orchestrator is None:
+        print(
+            "error: no MemoryOrchestrator registered for this profile. "
+            "Is memchorus initialisation running in a live agent session?",
+            file=sys.stderr,
+        )
+        return 2
+
+    retrieve_fn = getattr(orchestrator, "retrieve", None)
+    source_fn = getattr(orchestrator, "retrieve_with_source", None)
+    if not callable(retrieve_fn):
+        print(
+            "error: orchestrator registered but has no callable 'retrieve'. "
+            "Is this a MemoryOrchestrator? (spec-253 D1)",
+            file=sys.stderr,
+        )
+        return 2
+
+    key = (key or "").strip()
+    if not key:
+        print("error: retrieve requires a non-empty key", file=sys.stderr)
+        return 2
+
+    try:
+        if as_json and callable(source_fn):
+            # spec-253 §3.36: ``--json`` prefers the provenance form
+            # (``key`` / ``content`` / ``source_name``) for machine readers.
+            result = source_fn(key)
+        else:
+            result = retrieve_fn(key)
+    except Exception as exc:  # noqa: BLE001
+        print(f"retrieve: {exc}", file=sys.stderr)
+        return 1
+
+    result = _unwrap_retrieve_result(result)
+    if result is None:
+        print(
+            f"Key not found: {key!r}\n"
+            "cold cache or never saved — re-fetch the live source",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ``result`` may be a full provenance dict (``retrieve_with_source``)
+    # or a bare content value (``retrieve`` / in-memory seed).
+    if isinstance(result, dict) and "content" in result:
+        body = result["content"]
+    else:
+        body = result
+
+    render, is_json = _normalize_body(body)
+    if as_json and not is_json:
+        render = json.dumps({"key": key, "body": body})
+    if as_json and isinstance(result, dict) and "source_name" in result:
+        # Re-emit the orchestration provenance verbatim — the source
+        # name is the part a machine reader (jq) needs most.
+        render = json.dumps(result, sort_keys=True)
+    print(render)
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="memchorus-recall",
@@ -290,10 +423,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Hermes profile name (default: $HERMES_PROFILE or 'default')",
     )
 
+    # ------------------------------------------------------------------ #
+    # retrieve <key>   (D1, spec-253 §4.2)                              #
+    # ------------------------------------------------------------------ #
+    ret_p = sub.add_parser(
+        "retrieve",
+        help="Fetch a stored memory body by recall key (pointer -> body resolver)",
+    )
+    ret_p.add_argument("key", help="Recall key (e.g. 'decision-<hash>', 'pointer-<uuid>')")
+    ret_p.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="Output the body as JSON (dicts as-is, other types wrapped)",
+    )
+    ret_p.add_argument(
+        "--profile", default=os.environ.get("HERMES_PROFILE") or "default",
+        help="Hermes profile name (default: $HERMES_PROFILE or 'default')",
+    )
+
     args = parser.parse_args(argv)
     command = getattr(args, "command", None)
-    if command not in ("kg", "project"):
+    if command not in ("kg", "project", "retrieve"):
         parser.error(f"unknown command: {command!r}")
+
+    if command == "retrieve":
+        return run_retrieve(
+            key=str(args.key),
+            as_json=args.as_json,
+            profile=args.profile,
+        )
 
     source = _resolve_source()
     if source is None:
