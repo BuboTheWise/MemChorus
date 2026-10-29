@@ -193,13 +193,13 @@ class TestRunnerPresence:
         assert callable(check_version_alignment)
         assert callable(check_test_suite)
 
-    def test_check_count_is_10(self):
-        """run_checks() returns 10 results (was 9 pre-#222)."""
+    def test_check_count_is_11(self):
+        """run_checks() returns 11 results (was 9 pre-#222, 10 post-#222)."""
         from memchorus.install_doctor import run_checks
 
         results = run_checks()
-        assert len(results) == 10, (
-            f"Expected 10 checks, got {len(results)}. "
+        assert len(results) == 11, (
+            f"Expected 11 checks, got {len(results)}. "
             f"Names: {[r.name for r in results]}"
         )
 

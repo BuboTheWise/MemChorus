@@ -34,10 +34,11 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -139,6 +140,207 @@ def check_dependency_integrity() -> CheckResult:
         name="dependency_integrity",
         status=PASS,
         message=f"pydantic={pydantic_ver}, PyYAML={pyyaml_ver}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# #252 — advertised bin-entrypoint probe
+#
+# A host toolchain re-provision drops the pip-installed packages and leaves
+# the console-script symlinks under ``~/.hermes/bin/`` dangling, so
+# ``memchorus-doctor`` / ``mempalace-mcp`` (and every other advertised
+# entrypoint) silently vanish for every profile. ``install_doctor`` used to
+# surface nothing, which is exactly the #252 gap. This probe reuses the #251
+# in-process child-interpreter pattern (``_import_ok`` below runs the target
+# interpreter as a fresh ``python -c "import <pkg>"``), extended to first
+# confirm the advertised bin link itself is intact (AC1a) before asking the
+# owning interpreter whether the package it would import still exists (AC1b).
+# ---------------------------------------------------------------------------
+
+# The install "advertises" these bin entries. Four are MemChorus console
+# scripts (owned by the memchorus distribution via [project.scripts]) and one
+# is the MemPalace MCP server (owned by the mempalace distribution). The bin
+# basename is what we check on disk; the owning *package* is what we must be
+# able to ``import`` through the resolved interpreter.
+_ADVERTISED_BIN_ENTRIES: Tuple[Tuple[str, str], ...] = (
+    ("memchorus-doctor", "memchorus"),
+    ("memchorus-init", "memchorus"),
+    ("memchorus-recalibrate", "memchorus"),
+    ("memchorus-recall", "memchorus"),
+    ("mempalace-mcp", "mempalace"),
+)
+
+
+def _import_ok(interpreter: Path, package: str, timeout: int = 20) -> bool:
+    """Return True only if ``interpreter`` can ``import package`` cleanly.
+
+    Mirrors the #251 child-interpreter probe (``_probe_pydantic_import``): a
+    fresh CPython process that must be able to resolve the package into its
+    own site-packages. Any non-zero exit — a ``ModuleNotFoundError``, a
+    broken interpreter, or a crash — counts as "missing". ``PYTHONNOUSERSITE``
+    shields the probe from an unrelated ``~/.local`` copy so the result
+    reflects the target venv specifically.
+    """
+    env = dict(os.environ)
+    env["PYTHONNOUSERSITE"] = "1"
+    try:
+        proc = subprocess.run(
+            [str(interpreter), "-c", f"import {package}"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+_NATIVE_SUFFIXES = (".so", ".dylib", ".dll")
+
+
+def _interpreter_of(target: Path) -> Optional[Path]:
+    """Return the interpreter an entrypoint file would launch.
+
+    ``target`` is the immediate, *existing* link target of an advertised bin
+    entry. In the real install that target is the pip **console-script file**
+    (``<venv>/bin/memchorus-doctor``), whose shebang names the interpreter; in
+    a test fixture it can instead be the interpreter directly. We must run the
+    *venv-level* interpreter (e.g. ``<venv>/bin/python``), NOT the bare CPython
+    it symlinks onto — a venv is only "active" while that venv-level binary is
+    the one executing (it finds ``pyvenv.cfg`` one level up), so probing the
+    transitive base interpreter would wrongly report an installable venv as
+    broken.
+    """
+    name = target.name
+    if name.endswith(_NATIVE_SUFFIXES):
+        return None  # a native library, not a launcher we can run
+    if name == "python" or name.startswith("python"):
+        # python / python3 / python3.13 / python3.13-something — the immediate
+        # target is itself (a) a python interpreter.
+        return target
+
+    # Otherwise it is a console-script (or other) executable: read shebang.
+    try:
+        with open(target, "rb") as fh:
+            first = fh.readline(256)
+    except OSError:
+        return None
+    if not first.startswith(b"#!"):
+        return None
+    shebang = first[2:].decode(errors="replace").strip()
+    parts = shebang.split()
+    if not parts:
+        return None
+    interp = Path(parts[0]).expanduser()
+    if not interp.exists():
+        return None
+    if interp.name.endswith(_NATIVE_SUFFIXES):
+        return None
+    return interp
+
+
+def _entry_interpreter(link: Path) -> Optional[Path]:
+    """Resolve an advertised bin entry to the interpreter it would launch.
+
+    Returns ``None`` only when the advertised link is broken (dangling, or a
+    non-symlink we cannot reason about) — that is the AC1a "target exists"
+    failure. Otherwise the single immediate link hop gives us the entrypoint's
+    script, and its interpreter is recovered from the shebang (see
+    :func:`_interpreter_of`).
+    """
+    if not link.is_symlink():
+        # A non-link entrypoint is outside the "advertsed symlink target
+        # exists" scope of AC1a; the link-target check does not apply.
+        return None
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return None
+    target = (link.parent / raw).expanduser()
+    if not target.exists():
+        return None  # dangling symlink — AC1a "the symlink target exists"
+    return _interpreter_of(target)
+
+
+def check_bin_entrypoints(strict: bool = False) -> CheckResult:
+    """Verify the advertised bin entrypoints are actually usable (#252).
+
+    For each advertised link under ``~/.hermes/bin/``:
+      (a) the symlink target still exists — it survives even after the venv
+          it pointed into was re-provisioned, which is precisely the silent
+          dangling state #252 describes; and
+      (b) resolving through it to the owning interpreter, that interpreter can
+          ``import`` the entrypoint's package (``memchorus`` for the memchorus
+          scripts, ``mempalace`` for ``mempalace-mcp``).
+
+    Status:
+      * any broken/dangling entrypoint -> ``FAIL`` under ``--strict`` (so a
+        gate blocks), otherwise ``WARN`` — the normal report still names every
+        broken link (AC2, and per-entrypoint so the #252 case is not hidden).
+      * no advertised bin dir / no links to check -> ``WARN`` (informational:
+        nothing to verify on this machine).
+      * every advertised entrypoint intact and importable -> ``PASS``.
+    """
+    bin_dir: Path = Path(hermes_home()) / "bin"
+
+    dangling: List[str] = []
+    unimportable: List[str] = []
+    checked: List[str] = []
+
+    if bin_dir.is_dir():
+        for name, package in _ADVERTISED_BIN_ENTRIES:
+            link = bin_dir / name
+            if not link.is_symlink() and not link.exists():
+                continue  # not advertised on this machine -> not checked
+            checked.append(name)
+
+            interpreter = _entry_interpreter(link)
+            if interpreter is None:
+                dangling.append(f"{name} -> target missing")
+                continue
+
+            if not _import_ok(interpreter, package):
+                unimportable.append(
+                    f"{name} -> {interpreter} cannot import {package}"
+                )
+
+    if not checked:
+        return CheckResult(
+            name="bin_entrypoints",
+            status=WARN,
+            message=(
+                f"no advertised bin entrypoints found under {bin_dir} — nothing "
+                f"to verify (fresh/non-installed machine?)"
+            ),
+            hint="nothing to fix; the advertised bin entries are not present here",
+        )
+
+    if dangling or unimportable:
+        status = FAIL if strict else WARN
+        broken = dangling + unimportable
+        problem_txt = "; ".join(broken)
+        reinstall = (
+            "pip install -e . "
+            "(re-adds the memchorus console scripts to the active venv) and "
+            "pip install mempalace "
+            "(re-adds mempalace-mcp)"
+        )
+        return CheckResult(
+            name="bin_entrypoints",
+            status=status,
+            message=f"broken/dangling advertised bin entrypoint(s): {problem_txt}",
+            hint=(
+                f"re-provisioning dropped the owning venv — {reinstall}, then "
+                f"re-run `memchorus-doctor` to confirm the links resolve"
+            ),
+        )
+
+    healthy = ", ".join(checked)
+    return CheckResult(
+        name="bin_entrypoints",
+        status=PASS,
+        message=f"all advertised bin entrypoints intact and importable: {healthy}",
     )
 
 
@@ -1575,11 +1777,19 @@ def _provenance_exit_code(report: Dict[str, Any]) -> int:
 # Runner
 # ---------------------------------------------------------------------------
 
-def run_checks() -> List[CheckResult]:
-    """Execute every check and return results."""
+def run_checks(strict: bool = False) -> List[CheckResult]:
+    """Execute every check and return results.
+
+    ``strict`` threads through to :func:`check_bin_entrypoints` (and the
+    ``--palace-layout`` path is handled separately in :func:`main`) so a
+    ``--strict`` invocation promotes a broken advertised bin entrypoint from
+    WARN to FAIL (#252 / AC2). It defaults to ``False`` so existing callers
+    that invoke ``run_checks()`` positionally are unaffected.
+    """
     checks = [
         check_python_version,
         check_dependency_integrity,
+        lambda: check_bin_entrypoints(strict=strict),
         check_memory_source_registration,
         check_plugin_hooks,
         check_config_validation,
@@ -1812,7 +2022,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif deps_only:
         results = deps_check_report()
     else:
-        results = run_checks()
+        results = run_checks(strict=strict)
     _emit(results, as_json)
     return 1 if any(r.status == FAIL for r in results) else 0
 
