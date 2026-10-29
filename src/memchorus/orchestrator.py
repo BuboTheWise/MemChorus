@@ -2237,8 +2237,9 @@ class MemoryOrchestrator:
         if key not in body:
             return False
         return (
-            "**" + key + "**" in body
-            or "read it: retrieve(key='" + key + "')" in body
+            ("**" + key + "**") in body
+            or (("read it: retrieve(key='" + key + "')") in body)
+            or (("read it: `memchorus-recall retrieve " + key + "`") in body)
             or (body.lstrip().startswith("source="))
         )
 

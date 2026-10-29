@@ -273,8 +273,9 @@ class TestLowSignalGate:
         out = _format_context_block([item])
         # Raw JSON is NOT injected verbatim …
         assert '"success": true' not in out
-        # … and a retrieve(key) pointer IS present instead.
-        assert "retrieve(key='" in out
+        # … and the reachable-handle pointer IS present instead
+        # (spec-253: the CLI subcommand is the reachable handle).
+        assert "memchorus-recall retrieve LEARNING_5ae6fc94_9940" in out
         assert "LEARNING_5ae6fc94_9940" in out
 
     def test_bare_url_collapses_to_gist(self):
@@ -285,8 +286,9 @@ class TestLowSignalGate:
         }
         out = _format_context_block([item])
         # The bare URL appears as the gist body segment, but the line
-        # must carry the retrieve(key) pointer (not just the raw URL).
-        assert "retrieve(key='" in out
+        # must carry the reachable-handle pointer (spec-253: CLI
+        # subcommand), not just the raw URL.
+        assert "memchorus-recall retrieve MISTAKE_ac5ab347a4211a3f" in out
         assert "MISTAKE_ac5ab347a4211a3f" in out
 
     def test_slash_stub_collapses_to_gist(self):
@@ -300,8 +302,10 @@ class TestLowSignalGate:
         out = _format_context_block([item])
         # Raw stub is not injected as the full body …
         assert "score/rank" not in out
-        # … but the retrieve(key) pointer IS present.
-        assert "retrieve(key='" in out
+        # … but the reachable-handle pointer IS present (spec-253: CLI
+        # subcommand; the legacy ``retrieve(key='…')`` form is no longer
+        # emitted by the C13b gist).
+        assert "memchorus-recall retrieve LEARNING_2775ec98_2835" in out
         assert "LEARNING_2775ec98_2835" in out
 
     def test_plain_word_still_inlines(self):
