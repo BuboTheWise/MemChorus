@@ -662,7 +662,10 @@ orch.register_source(HermesDefaultMemorySource('hermes_default'))
 ## Status
 
 
-### v2.0.70 (current — 2026-10-11)
+### v2.0.71 (current — 2026-10-29)
+- **`memchorus-recall retrieve <key>` subcommand (Issue #253):** the in-process `retrieve()` / `retrieve_with_source()` orchestrator resolver — which the injected `read it: retrieve(key='…')` recall directive named but no CLI tool surface actually exposed — now has a dedicated `memchorus-recall retrieve <key>` entry point. `--json` emits the provenance form (`key` / `content` / `source_name`) for `jq`; `--profile` scopes to a specific Hermes profile (defaults to `$HERMES_PROFILE` or `default`). Exit codes follow the established CLI convention: 0 resolved (body on stdout), 1 miss (cold-cache or never-saved, re-fetch hint on stderr), 2 pipeline unreachable or usage error. The C13b gist hint now names the subcommand as the reachable handle; `hooks.py` and `orchestrator.py` pointer-recognition accept the new form so the C13 liveness gate continues to classify pointer entries correctly. New test suite `tests/test_recall_cli_retrieve.py` (in-process glue + real-subprocess hit / miss / no-orchestrator acceptance per spec AC) and `tests/_recall_cli_retrieve_child.py` (child-process driver isolating the CLI's own import / registration from pytest state); five existing test files updated to the reachable-handle assertion form. Bumps `__version__` 2.0.70 → 2.0.71 (feature; dual-digit patch per X.Y.ZZ convention; version-sync gate across `__init__.py` / README / `setup.py` / `pyproject.toml` passes).
+
+### v2.0.70 (2026-10-11)
 - **Windows CI fix for the #239 reap test (Issue #239, PR #244):**
 
 ### v2.0.69 (2026-10-11)
