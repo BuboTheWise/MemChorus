@@ -5,6 +5,7 @@ Usage::
     memchorus-recall kg <entity> [--hops N] [--limit M] [--relations comma,list]
                               [--profile NAME] [--json]
     memchorus-recall project <name> [--profile NAME] [--json]
+    memchorus-recall retrieve <key> [--profile NAME] [--json]
 
 The ``kg`` subcommand prints a bounded Knowledge-Graph recall for *entity* as
 either a human-readable multi-line string or a JSON array, so it can be piped
@@ -16,12 +17,23 @@ resolved by the orchestrator's ``resolve_project_record`` API.  Both subcommands
 follow the same graceful-degradation pattern: a missing pipeline degrades to a
 clear status line on stderr and exit 1, never a traceback.
 
-Exit-code semantics (both subcommands):
-    0   success (zero or more relations returned / record resolved).
-    1   pipeline unreachable, or ``resolve_project_record`` returned ``None``
-        (orchestrator not registered, source has no API — the base-class
-        no-op degrade is treated as an explicit "no data here" signal).
-    2   usage error (missing argument, bad value).
+The ``retrieve`` subcommand (D1, spec-253) resolves a *recall pointer key* to
+its stored body — the second hop the injected ``retrieve(key='…')`` directive
+named but no surface actually exposed (see issue #253) — by calling the
+registered orchestrator's ``retrieve`` / ``retrieve_with_source`` and printing
+the body to stdout (``--json`` for the provenance form).  All three subcommands
+share the graceful-degradation contract: a missing pipeline or an unresolved
+look-up degrades to a clear status line on stderr and exit 1, never a traceback.
+
+Exit-code semantics (all three subcommands):
+    0   success — relations found, record resolved, or key resolved (body printed
+        to stdout).
+    1   miss / unavailable data: ``kg`` / ``project`` saw no relations or
+        ``resolve_project_record`` returned ``None`` (the base-class no-op
+        "no data here" signal), or ``retrieve`` saw an unresolved key (cold cache
+        / never saved — a re-fetch hint prints to stderr).
+    2   usage error (missing or empty argument, bad value, memchorus not importable,
+        or no orchestrator registered).
 
 OPSEC (spec §0 glossary): user-facing text uses ``<workspace>/<project>/…``
 placeholders.  Stored ``canonical_root`` values are surfaced as-is from the
