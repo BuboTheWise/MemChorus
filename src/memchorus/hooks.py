@@ -1934,10 +1934,9 @@ def _build_context_entries(
                 _ptr_cat = _m_ptr.group(1)
                 raw_content = (
                     f"source={_src}\u2014 read it: retrieve(key='{key}'). "
-                    f"ID-space mismatch: pointer key, not a mempalace drawer_id — "
-                    f"get_drawer(key='{key}') will 404. "
-                    f"Scope mempalace_search category='{_ptr_cat}' first. "
-                    f"If missing (cold cache/pruned), re-fetch the live source."
+                    f"ID-space mismatch: pointer key, not a mempalace drawer_id (get_drawer 404s) — "
+                    f"scope mempalace_search category='{_ptr_cat}'. "
+                    f"If missing (cold/pruned), re-fetch the live source."
                 )
             else:
                 raw_content = (
