@@ -307,41 +307,70 @@ def run_retrieve(key: str, as_json: bool = False,
         )
         return 2
 
-    orchestrator = get_orchestrator(profile) if profile else get_orchestrator()
-    if orchestrator is None:
-        print(
-            "error: no MemoryOrchestrator registered for this profile. "
-            "Is memchorus initialisation running in a live agent session?",
-            file=sys.stderr,
-        )
-        return 2
-
-    retrieve_fn = getattr(orchestrator, "retrieve", None)
-    source_fn = getattr(orchestrator, "retrieve_with_source", None)
-    if not callable(retrieve_fn):
-        print(
-            "error: orchestrator registered but has no callable 'retrieve'. "
-            "Is this a MemoryOrchestrator? (spec-253 D1)",
-            file=sys.stderr,
-        )
-        return 2
-
     key = (key or "").strip()
     if not key:
         print("error: retrieve requires a non-empty key", file=sys.stderr)
         return 2
 
+    # --- Path selection: orchestrator (full) vs bare MemPalace source --------
+    # The orchestrator registry (_INSTANCE_REGISTRY) is in-process only — it
+    # gets populated when a live agent first touches any memchorus symbol
+    # (triggering __getattr__ → auto-bootstrap).  A standalone CLI invocation
+    # (crontab, shell alias, test script) spawns a fresh Python runtime where
+    # the registry is empty, so get_orchestrator() always returns None.
+    #
+    # Fallback: construct a bare MemPalaceMemorySource that reads the local
+    # JSON cache at ~/.hermes/mempalace_cache/<key>.json — the exact same
+    # path _resolve_source() uses for kg/project subcommands.
+    orchestrator = get_orchestrator(profile) if profile else get_orchestrator()
+
+    if orchestrator is not None:
+        retrieve_fn = getattr(orchestrator, "retrieve", None)
+        source_fn = getattr(orchestrator, "retrieve_with_source", None)
+        if not callable(retrieve_fn):
+            print(
+                "error: orchestrator registered but has no callable 'retrieve'. "
+                "Is this a MemoryOrchestrator? (spec-253 D1)",
+                file=sys.stderr,
+            )
+            return 2
+        bare_source = None
+    else:
+        # Standalone CLI — no live orchestrator in this process.
+        try:
+            from memchorus.mempalace_memory_source import MemPalaceMemorySource
+            bare_source = MemPalaceMemorySource(name="mempalace", config={})
+        except Exception as exc:
+            print(
+                f"error: no orchestrator and MemPalaceMemorySource unavailable: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        retrieve_fn = source_fn = None
+
+    # --- Execute retrieval --------------------------------------------------
     try:
-        if as_json and callable(source_fn):
-            # spec-253 §3.36: ``--json`` prefers the provenance form
-            # (``key`` / ``content`` / ``source_name``) for machine readers.
-            result = source_fn(key)
+        if bare_source is not None:
+            # MemPalaceMemorySource.retrieve() supports fallback="live"
+            # (defined via _refetch_live) — pass it so a warm cache hit wins
+            # and a cold miss attempts a live MCP search before giving up.
+            # This mirrors exactly what MemoryOrchestrator.retrieve() does
+            # at line 1879-1883 of orchestrator.py.
+            result = bare_source.retrieve(key, fallback="live")
         else:
-            result = retrieve_fn(key)
+            if as_json and callable(source_fn):
+                # spec-253 §3.36: --json prefers the provenance form
+                # (key / content / source_name) for machine readers.
+                result = source_fn(key)
+            else:
+                result = retrieve_fn(key)
     except Exception as exc:  # noqa: BLE001
         print(f"retrieve: {exc}", file=sys.stderr)
         return 1
 
+    # _unwrap_retrieve_result() maps RETRIEVE_MISS and None both to None,
+    # and passes any real value (str, dict, list, …) through untouched.
     result = _unwrap_retrieve_result(result)
     if result is None:
         print(
@@ -351,8 +380,8 @@ def run_retrieve(key: str, as_json: bool = False,
         )
         return 1
 
-    # ``result`` may be a full provenance dict (``retrieve_with_source``)
-    # or a bare content value (``retrieve`` / in-memory seed).
+    # ``result`` may be a full provenance dict (retrieve_with_source)
+    # or a bare content value (retrieve / local JSON cache).
     if isinstance(result, dict) and "content" in result:
         body = result["content"]
     else:
