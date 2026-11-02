@@ -129,10 +129,58 @@ def test_run_retrieve_empty_key_returns_2(_patch_orch):
     assert code == 2
 
 
-def test_run_retrieve_no_orchestrator_returns_2(_no_orch, capsys):
-    code, out, err = _run(["retrieve", "decision-anywhere123456"], capsys)
-    assert code == 2
-    assert "no MemoryOrchestrator" in err or "not registered" in err
+def test_run_retrieve_no_orch_warm_cache_hit_returns_0(tmp_path, monkeypatch, capsys):
+    """Issue #255: no orchestrator + warm local cache → exit 0, body on stdout.
+
+    Before #255 this path always returned exit 2 ("no orchestrator registered")
+    even when the key was already in the local JSON cache.  The fix delegates
+    to a bare MemPalaceMemorySource that serves the warm hit directly.
+    """
+    hermes_dir = tmp_path / "hermes_home"
+    cache_dir = hermes_dir / "mempalace_cache"
+    cache_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+
+    key = "decision-255warmcache0123456789"
+    payload = "resolved warm cache body for issue 255"
+    (cache_dir / f"{key}.json").write_text(json.dumps(payload))
+
+    monkeypatch.setattr(memchorus, "get_orchestrator", lambda *a, **k: None)
+
+    code = recall_cli.main(["retrieve", key])
+    out = capsys.readouterr()
+    assert code == 0, f"expected exit 0 (warm cache hit), got {code}; stderr={out.err!r}"
+    assert payload in out.out
+    assert out.err == ""
+
+
+def test_run_retrieve_no_orch_cold_cache_miss_returns_1(tmp_path, monkeypatch, capsys):
+    """Issue #255: no orchestrator + cold cache → exit 1 (NOT exit 2).
+
+    Pre-#255 behavior: exit 2 with "no orchestrator registered".
+    Post-#255 behavior: the bare source consults the local cache (miss),
+    attempts a live refetch (returns None → no body), and the CLI reports
+    the miss as exit 1 — the same code path as an orchestrator-driven miss.
+    """
+    hermes_dir = tmp_path / "hermes_home"
+    (hermes_dir / "mempalace_cache").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_dir))
+
+    # Prevent the bare source from attempting a live MCP connection.
+    from memchorus.mempalace_memory_source import MemPalaceMemorySource
+    monkeypatch.setattr(
+        MemPalaceMemorySource, "_refetch_live", lambda self, key: None
+    )
+
+    monkeypatch.setattr(memchorus, "get_orchestrator", lambda *a, **k: None)
+
+    key = "decision-255coldmiss9876543210"
+    code = recall_cli.main(["retrieve", key])
+    out = capsys.readouterr()
+    assert code == 1, f"expected exit 1 (cold miss, not exit 2), got {code}; stderr={out.err!r}"
+    assert ("not found" in out.err or "cold cache" in out.err), (
+        f"expected cold-cache hint on stderr, got: {out.err!r}"
+    )
 
 
 def test_run_retrieve_json_hit_prefers_provenance(_patch_orch, capsys):
@@ -194,7 +242,7 @@ _SRC_PARENT = _TESTS_DIR.parent
 _REPO_SRC = _SRC_PARENT / "src"
 
 
-def _child_env():
+def _child_env(hermes_home: str | None = None):
     env = dict(os.environ)
     # Point the child at THIS worktree's src so it exercises the worktree code
     # (the repo's .venv has an editable install that may point at another tree).
@@ -202,14 +250,18 @@ def _child_env():
     env["PYTHONPATH"] = (
         f"{_REPO_SRC}{os.pathsep}{existing}" if existing else str(_REPO_SRC)
     )
+    if hermes_home is not None:
+        # Isolate the child's MemPalace local cache under a temp tree so the
+        # no-orchestrator fallback reads/writes a deterministic location.
+        env["HERMES_HOME"] = hermes_home
     return env
 
 
-def _spawn_child(args, timeout=60):
+def _spawn_child(args, timeout=60, hermes_home: str | None = None):
     return subprocess.run(
         [sys.executable, str(_CHILD_DRIVER)] + args,
         cwd=str(_SRC_PARENT),
-        env=_child_env(),
+        env=_child_env(hermes_home=hermes_home),
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -252,10 +304,47 @@ def test_subprocess_retrieve_miss_exit_1_hint_on_stderr():
     assert "cold cache" in res.stderr or "re-fetch" in res.stderr
 
 
-def test_subprocess_retrieve_no_orchestrator_exit_2():
-    res = _spawn_child(["decision-subno000000001", "noorche"])
-    assert res.returncode == 2, (
-        f"expected exit 2 (no orchestrator), got {res.returncode}\n"
+def test_subprocess_retrieve_no_orchestrator_warm_cache_exit_0(tmp_path):
+    """Issue #255 — standalone CLI (no orchestrator) + WARM local cache.
+
+    Pre-#255 this always exited 2 ("no orchestrator registered").  The fix
+    degrades to a bare MemPalace source that serves a warm cache hit, so a
+    key present in the local JSON cache must resolve to exit 0 with the body
+    on stdout.
+    """
+    hermes_dir = tmp_path / "hermes_home"
+    cache_dir = hermes_dir / "mempalace_cache"
+    cache_dir.mkdir(parents=True)
+    key = "decision-subno00000000w"
+    body = "resolved-body:" + key
+    (cache_dir / f"{key}.json").write_text(json.dumps(body))
+
+    res = _spawn_child(["" + key, "noorche"], hermes_home=str(hermes_dir))
+    assert res.returncode == 0, (
+        f"expected exit 0 (warm cache, no orchestrator), got {res.returncode}\n"
         f"stdout={res.stdout!r}\nstderr={res.stderr!r}"
     )
-    assert "MemoryOrchestrator" in res.stderr
+    assert body in res.stdout
+    # A clean hit must not leak the miss-hint onto stderr.
+    assert "cold cache" not in res.stderr
+
+
+def test_subprocess_retrieve_no_orchestrator_cold_cache_exit_1(tmp_path):
+    """Issue #255 — standalone CLI (no orchestrator) + COLD cache.
+
+    Pre-#255 this exited 2.  The fix lets the bare source attempt a live
+    refetch; in a fresh interpreter with no live MCP that misses, so the CLI
+    reports the miss as exit 1 (the same code path as an orchestrator-driven
+    miss) rather than exit 2.
+    """
+    hermes_dir = tmp_path / "hermes_home"
+    (hermes_dir / "mempalace_cache").mkdir(parents=True)
+
+    key = "decision-subno00000000c"
+    res = _spawn_child(["" + key, "noorche"], hermes_home=str(hermes_dir))
+    assert res.returncode == 1, (
+        f"expected exit 1 (cold miss, not exit 2), got {res.returncode}\n"
+        f"stdout={res.stdout!r}\nstderr={res.stderr!r}"
+    )
+    assert "not found" in res.stderr
+    assert "cold cache" in res.stderr or "re-fetch" in res.stderr
