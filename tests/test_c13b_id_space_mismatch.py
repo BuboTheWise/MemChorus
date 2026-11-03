@@ -203,6 +203,53 @@ class TestIdSpaceHintGreen(unittest.TestCase):
             f"GREEN failed: ID-space hint not present for learning key.\n{out[:200]}",
         )
 
+    def test_directive_has_no_rejected_category_param(self):
+        """RED->GREEN (Issue #256): the mempalace_search scope hint must not name
+        a parameter the MCP tool actually rejects.
+
+        The MCP ``mempalace_search`` schema is (wing, room, source_file, since,
+        before, query, limit, offset).  It has NO ``category`` parameter, so a
+        directive that reads ``scope mempalace_search category='<cat>'`` sends
+        the agent to a call the server rejects with
+        ``MCPError: Unknown parameter 'category' for tool mempalace_search``.
+
+        This guard asserts the rendered per-pointer directive carries no
+        ``category=`` token.  RED: the pre-fix directive contains
+        ``category='<cat>'`` -> fails.  GREEN: post-fix directive omits the
+        rejected parameter -> passes.  The get_drawer-404 note, the category
+        prefix, and the re-fetch-on-miss note must all remain.
+        """
+        out = self._render(HERMES_KEYS[0])
+        self.assertNotIn(
+            "category=",
+            out,
+            "Issue #256: rendered directive still names `category=`, which the "
+            "MCP mempalace_search tool does not accept.\nrendered: " + out[:300],
+        )
+
+        # The remaining disambiguation signal (get_drawer 404 + re-fetch note
+        # + the category prefix as a search hint) must be preserved.
+        self.assertIn("get_drawer", out,
+                      "Issue #256: get_drawer-404 note missing from directive.\n" + out[:300])
+        self.assertIn("mistake", out.lower(),
+                      "Issue #256: category prefix 'mistake' missing from directive.\n" + out[:300])
+        self.assertTrue(
+            ("re-fetch" in out.lower()) or ("refetch" in out.lower()),
+            "Issue #256: re-fetch-on-miss note missing from directive.\n" + out[:300],
+        )
+
+    def test_learning_key_directive_has_no_rejected_category_param(self):
+        """Issue #256: the same guard applies to a learning-* key (learning-5ae6fc94-9940)."""
+        out = self._render(HERMES_KEYS[2])
+        self.assertNotIn(
+            "category=",
+            out,
+            "Issue #256: rendered directive still names `category=`, which the "
+            "MCP mempalace_search tool does not accept.\nrendered: " + out[:300],
+        )
+        self.assertIn("get_drawer", out)
+        self.assertIn("learning", out.lower())
+
 
     # ---- Regression: existing #221 directives still present ---------------- #
 

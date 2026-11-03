@@ -1938,7 +1938,7 @@ def _build_context_entries(
                 raw_content = (
                     f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}`. "
                     f"ID-space mismatch: pointer key, not a mempalace drawer_id (get_drawer 404s) — "
-                    f"scope mempalace_search category='{_ptr_cat}'. "
+                    f"scope mempalace_search by the pointer's category prefix '{_ptr_cat}'. "
                     f"If missing (cold/pruned), re-fetch the live source."
                 )
             else:
