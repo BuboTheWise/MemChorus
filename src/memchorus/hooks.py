@@ -1807,9 +1807,10 @@ def _profile_from_source_marker(source: Optional[str]) -> Optional[str]:
 
     The injected ``source=hermes_default`` marker is the Hermes-default memory
     source; its owning store is the profile named by the marker's identity —
-    ``hermes_default`` → ``default`` (AC1). Every profile's orchestrator names
-    its Hermes source ``hermes_<identity>`` (orchestrator.py), so the marker is
-    a reliable store routing hint and not a bare source label: the CLI's
+    ``hermes_default`` → ``default`` (AC1). The marker name is a fixed
+    ``hermes_default`` in every orchestrator (orchestrator.py — the name is
+    fixed, not ``hermes_<p>``), so the marker is a reliable store routing hint
+    and not a bare source label: the CLI's
     ``memchorus-recall retrieve --profile <p>`` routes to that profile's leaf
     (``~/.hermes/memories`` for default, else ``~/.hermes/profiles/<p>/memories``),
     which is exactly where the pointer key was written — the store the key
