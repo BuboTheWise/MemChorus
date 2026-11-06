@@ -34,6 +34,7 @@ from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from memchorus.hermes_home import hermes_home
+from memchorus import _sanitize_profile as _sanitize_profile
 
 logger = logging.getLogger(__name__)
 
@@ -1800,6 +1801,36 @@ def _render_project_record_block(project_name: str, record: Any) -> str:
     return "\n".join(out_lines)
 
 
+def _profile_from_source_marker(source: Optional[str]) -> Optional[str]:
+    """Derive the owning Hermes *profile* (store leaf) from a recall item's
+    ``source`` marker for the injected retrieve directive.
+
+    The injected ``source=hermes_default`` marker is the Hermes-default memory
+    source; its owning store is the profile named by the marker's identity —
+    ``hermes_default`` → ``default`` (AC1). Every profile's orchestrator names
+    its Hermes source ``hermes_<identity>`` (orchestrator.py), so the marker is
+    a reliable store routing hint and not a bare source label: the CLI's
+    ``memchorus-recall retrieve --profile <p>`` routes to that profile's leaf
+    (``~/.hermes/memories`` for default, else ``~/.hermes/profiles/<p>/memories``),
+    which is exactly where the pointer key was written — the store the key
+    actually lives in (not the *reader's* ambient profile, which is precisely
+    the cold-miss #259 describes: cthugha reading a default-leaf key would
+    otherwise be routed to cthugha's own leaf and cold-miss).
+
+    Returns ``None`` when the marker carries no derivable profile (no
+    ``hermes_`` prefix / empty / unsafe), in which case the caller omits
+    ``--profile`` and the CLI falls back to ``$HERMES_PROFILE`` / ``default``
+    (AC3-safe — a no-op for in-profile reads).
+    """
+    if not source:
+        return None
+    s = str(source).strip()
+    if not s.startswith("hermes_"):
+        return None
+    profile = _sanitize_profile(s[len("hermes_"):])
+    return profile or None
+
+
 def _build_context_entries(
     items: List[Dict[str, Any]],
     max_chars: int,
@@ -1933,17 +1964,30 @@ def _build_context_entries(
             # hint tells the reader to scope a mempalace_search by the
             # category prefix instead of relying on an exact-key lookup.
             _m_ptr = re.match(r'^([a-z]+)-[0-9a-f]{4,}', key.lower())
+            # GH-259: store-routed profile for the retrieve directive.
+            # The ``source`` field is the store the key was written into —
+            # ``hermes_default`` means the *default* profile's leaf (across
+            # profiles every orchestrator names its local Hermes source
+            # ``hermes_default`` — the name is fixed, not ``hermes_<p>``).
+            # The *reader's* ambient profile is exactly the leaf that cold-
+            # misses (#259: cthugha/nyarlathotep reading a default-leaf key from
+            # their own leaf), so routing by the source marker — not the reader
+            # env — is what makes the directive resolvable as written. Derive
+            # the profile via the same sanitizer the registry uses so the flag
+            # stays byte-identical to the store key. AC1: hermes_default → default.
+            _profile = _profile_from_source_marker(item.get("source") or item.get("source_name"))
+            _profile_suffix = f" --profile {_profile}" if _profile else ""
             if _m_ptr:
                 _ptr_cat = _m_ptr.group(1)
                 raw_content = (
-                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}`. "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}{_profile_suffix}`. "
                     f"ID-space mismatch: pointer key, not a mempalace drawer_id (get_drawer 404s) — "
                     f"scope mempalace_search by the pointer's category prefix '{_ptr_cat}'. "
                     f"If missing (cold/pruned), re-fetch the live source."
                 )
             else:
                 raw_content = (
-                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}`. "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}{_profile_suffix}`. "
                     f"If that key is missing (cold cache, never saved, or pruned), "
                     f"re-fetch the live source before treating it as absent."
                 )
