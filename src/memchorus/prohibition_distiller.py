@@ -82,6 +82,43 @@ class ProhibitionDistiller:
         "empty response",
     ]
 
+    # Explicit "something actually went wrong" markers (GH-266 AC3). A self-break
+    # keyword names a *domain* (editable installs, venv, imports); it earns a
+    # CRITICAL guard only when the text ALSO carries an explicit failure signal,
+    # so benign success-path lines that merely mention the domain do not promote
+    # into a hard guard.
+    FAILURE_SIGNAL_KEYWORDS: List[str] = [
+        "broke",
+        "broken",
+        "breakage",
+        "corrupt",
+        "damag",
+        "crash",
+        "deleted",
+        "pollut",
+        "missing",
+        "not found",
+        "notfound",
+        "no such",
+        "failed",
+        "failure",
+        "error",
+        "cannot",
+        "unable",
+        "traceback",
+        "exception",
+        "segfault",
+        "segmentation",
+        "stopped working",
+        "went down",
+        "pollution",
+        "polluted",
+        "wrote",
+        "lingering",
+        "stale",
+        "resolves to the wrong",
+    ]
+
     def __init__(self, config: Optional[DistillationConfig] = None):
         self.config = config or DistillationConfig()
         self._rules_created_this_session: int = 0
@@ -95,6 +132,29 @@ class ProhibitionDistiller:
     def _text_lower(text: str) -> str:
         """Lowercase helper for keyword matching."""
         return text.lower() if isinstance(text, str) else ""
+
+    @classmethod
+    def _has_failure_signal(cls, error_text: str) -> bool:
+        """Return True only when the text carries an explicit failure signal (GH-266 AC3).
+
+        This is the gate that separates a *self-break domain mention* (e.g.
+        "pip install -e succeeded") from an actual *failure* (e.g. "pip install -e
+        broke the venv"). Without a failure signal the text is not worthy of a hard
+        guard, even if it names a self-break domain.
+        """
+        lower = cls._text_lower(error_text)
+        return any(signal.lower() in lower for signal in cls.FAILURE_SIGNAL_KEYWORDS)
+
+    def reset_session(self) -> None:
+        """Reset per-session accounting (fresh cap window + cooldown fingerprints).
+
+        Called once per new orchestrator/session :func:`on_session_start` so a
+        *persistent* distiller instance (reused across all distill calls within a
+        session, GH-266 AC1 / AC4) gets a clean cap and cooldown at each new session
+        boundary, instead of being constructed and discarded per call.
+        """
+        self._rules_created_this_session = 0
+        self._recent_pattern_hashes = {}
 
     @classmethod
     def is_worthy_of_guard(cls, error_text: str) -> MistakeSeverity:
@@ -122,11 +182,20 @@ class ProhibitionDistiller:
                 )
                 return MistakeSeverity.LOW
 
-        # Check for critical self-breaking patterns
+        # Check for critical self-breaking patterns.  A self-break domain mention
+        # only earns a CRITICAL guard when the text ALSO carries an explicit failure
+        # signal (GH-266 AC3) — otherwise a benign line that merely names the domain
+        # (e.g. "pip install -e succeeded") would be promoted into a hard guard.
         for kw in cls.SELFBREAK_KEYWORDS:
             if kw.lower() in lower:
+                if not cls._has_failure_signal(error_text):
+                    logger.debug(
+                        "distiller: '%s' matched SELFBREAK keyword %r but has NO failure signal — not worthy (AC3)",
+                        error_text[:80], kw,
+                    )
+                    return MistakeSeverity.LOW
                 logger.info(
-                    "distiller: '%s' matched SELFBREAK keyword %r — CRITICAL, worthy of guard",
+                    "distiller: '%s' matched SELFBREAK keyword %r + failure signal — CRITICAL, worthy of guard",
                     error_text[:80], kw,
                 )
                 return MistakeSeverity.CRITICAL
@@ -335,8 +404,15 @@ class ProhibitionDistiller:
     # ------------------------------------------------------------------
 
     def _is_on_cooldown(self, error_text: str) -> bool:
-        """Check if a similar error was recently distilled (within cooldown window)."""
-        content_hash = _hash_error_fingerprint(error_text)
+        """Check if a similar error was recently distilled (within cooldown window).
+
+        The key is a *stem* fingerprint of the self-break domain tokens (the
+        matched SELFBREAK keywords / "triggers"), so two errors that name the same
+        self-break domain get the same cooldown key even if the surrounding wording
+        differs (GH-266 AC4 — cooldown actually enforced across calls). Falls back to
+        the normalised text hash when no domain token matches.
+        """
+        content_hash = self._pattern_fingerprint(error_text)
         now = time_now_float()
 
         for hash_key, ts in self._recent_pattern_hashes.items():
@@ -349,9 +425,24 @@ class ProhibitionDistiller:
         return False
 
     def _record_cooldown(self, error_text: str) -> None:
-        """Record a new pattern hash for cooldown tracking."""
-        content_hash = _hash_error_fingerprint(error_text)
+        """Record a new pattern stem fingerprint for cooldown tracking."""
+        content_hash = self._pattern_fingerprint(error_text)
         self._recent_pattern_hashes[content_hash] = time_now_float()
+
+    def _pattern_fingerprint(self, error_text: str) -> str:
+        """Stem fingerprint: hash of the matched self-break domain tokens.
+
+        Uses the sorted set of SELFBREAK keywords present in the text (the
+        "triggers") as the semantic key, so semantically-equivalent self-breaks
+        dedup together. Falls back to a normalised text hash when none match.
+        """
+        lower = self._text_lower(error_text)
+        matched = sorted(kw for kw in self.SELFBREAK_KEYWORDS if kw.lower() in lower)
+        if matched:
+            canonical = "|".join(matched)
+        else:
+            canonical = re.sub(r"\s+", " ", error_text.strip().lower())[:200]
+        return hashlib.md5(canonical.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------

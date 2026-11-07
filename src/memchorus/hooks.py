@@ -204,12 +204,54 @@ def _auto_save(orchestrator, text, error_context=""):
         )
 
 
+def _get_session_distiller(orchestrator) -> Optional[Any]:
+    """Return the orchestrator's session-scoped :class:`ProhibitionDistiller`, creating it once.
+
+    GH-266 AC1 ("one distiller instance per orchestrator/session") + AC4 (cap/cooldown
+    actually enforced across calls). Previously ``_try_distill_prohibition`` built a
+    fresh distiller on every save, which reset the per-session rule cap and the
+    recent-pattern cooldown fingerprints, so the guards never accumulated and
+    identical benign lines each minted a new CRITICAL rule. Caching on the
+    orchestrator keeps the same instance alive for the whole session, so its
+    ``_rules_created_this_session`` counter and ``_recent_pattern_hashes`` cooldown
+    map persist across all distill calls. The instance is re-created (and its
+    session accounting reset) on ``on_session_start`` via :func:`reset_distiller_session`.
+    """
+    cached = getattr(orchestrator, "_prohibition_distiller", None)
+    if cached is not None:
+        return cached
+    from memchorus.prohibition_distiller import ProhibitionDistiller
+
+    inst = ProhibitionDistiller()
+    orchestrator._prohibition_distiller = inst
+    return inst
+
+
+def reset_distiller_session(orchestrator) -> None:
+    """Reset the orchestrator's session distiller for a fresh session (GH-266 AC1/AC4).
+
+    Called from :meth:`on_session_start`. If a distiller already exists it is
+    re-used but its per-session accounting (cap counter + cooldown fingerprints) is
+    cleared, so a new session starts a clean cap window. If none exists yet, nothing
+    to reset — it will be lazily created on first distill, already clean.
+    """
+    cached = getattr(orchestrator, "_prohibition_distiller", None)
+    if cached is not None and hasattr(cached, "reset_session"):
+        cached.reset_session()
+
+
 def _try_distill_prohibition(text: str, orchestrator) -> None:
     """Post-storage distillation: try to convert a critical mistake into a prohibition guard.
 
     Called after capture_outcome saves a significant outcome. If the saved text looks like
     self-breaking behavior, distill it into an enforceable rule so the next agent actually
     sees and respects the guard.
+
+    GH-266: the distiller is now the orchestrator's *session-scoped* instance
+    (:func:`_get_session_distiller`) so the rule cap and 24 h cooldown are enforced across
+    all distill calls in a session rather than resetting per call. The semantic dedup in
+    ProhibitionsManager.add_rule (AC2) + the failure-signal gate in is_worthy_of_guard (AC3)
+    keep benign lines from bloating into guards.
 
     Gracefully degrades when ProhibitionDistiller or ProhibitionsManager are unavailable.
     Skips entirely when prohibitions.distillation_enabled is False.
@@ -221,10 +263,11 @@ def _try_distill_prohibition(text: str, orchestrator) -> None:
         return
 
     try:
-        from memchorus.prohibition_distiller import ProhibitionDistiller
         from memchorus.prohibitions import ProhibitionsManager
 
-        distiller = ProhibitionDistiller()
+        distiller = _get_session_distiller(orchestrator)
+        if distiller is None:
+            return
         rule_dict = distiller.distill(text)
         if rule_dict is None:
             return  # not worthy or cooldown active — nothing to do
@@ -734,6 +777,14 @@ class MemChorusHooks:
         orchestrator = _get_orchestrator()
         if orchestrator is None:
             return None
+
+        # GH-266 AC1/AC4 — reset the session-scoped prohibition distiller so this
+        # session starts a clean cap window + cooldown, re-using one instance across
+        # all distill calls instead of constructing a fresh one per save.
+        try:
+            reset_distiller_session(orchestrator)
+        except Exception as _exc:  # pragma: no cover - graceful
+            logger.debug("on_session_start distiller reset skipped. %s", _exc)
 
         try:
             # Try to load orientation engine (may not exist yet — optional import)
