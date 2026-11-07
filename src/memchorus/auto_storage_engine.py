@@ -104,6 +104,77 @@ _TRIVIAL_WORDS: frozenset[str] = frozenset({"ok", "done", "yep", "yeah", "omg"})
 
 
 # ---------------------------------------------------------------------------
+# Stored prompt-injection guard (security fix) -- structural recall-block delimiters
+# ---------------------------------------------------------------------------
+# The recall block rendered back to the model during on_pre_llm_call is wrapped in
+# four structural markers (hooks.py, _build_context_entries / on_pre_llm_call):
+#
+#     [MemChorus Memory Recall] ... [/MemChorus Memory Recall]
+#       [MemChorus injected context] ... [/MemChorus injected block]
+#
+# Auto-captured tool output is *untrusted* — it is rendered verbatim into that
+# block on a later turn. If a captured string contains a forged close-marker, the
+# model sees a malformed / prematurely-closed (or nested) recall block and an
+# attacker-controlled tail is attributed by the model to MemChorus. This is a
+# stored prompt-injection via the auto-capture path.
+#
+# The fix: neutralize every structural delimiter in auto-captured content BEFORE
+# it is stored, so that no captured body can ever open or close a recall block.
+# A space is substituted for the brackets (e.g. "[MemChorus Memory Recall]" ->
+# " MemChorus Memory Recall ") — this preserves the human/model readability of the
+# content while stripping the structural brackets that carry the injection.
+#
+# capture_outcome() is the single chokepoint every auto-capture flows through
+# (all three hook save paths + the enforcement_manager caller funnel into it),
+# so neutralizing here protects every auto-save path in one place.
+STRUCTURAL_MARKERS: tuple = (
+    "[MemChorus Memory Recall]",
+    "[MemChorus injected context]",
+    "[MemChorus injected block]",
+    # Close markers include the leading "/" — match those too via the alternation.
+)
+
+# Ordered longest-first so overlap-prone alternatives resolve correctly; each
+# bracket is escaped independently.
+_STRUCTURAL_MARKER_RE: re.Pattern = re.compile(
+    r"\[(/?)"
+    r"(?:MemChorus Memory Recall|MemChorus injected context|MemChorus injected block)"
+    r"\]"
+)
+
+
+def _neutralize_structural_markers(text: str) -> str:
+    """Replace structural recall-block delimiters with a readable, non-structural
+    form so auto-captured (untrusted) content can open or close a recall block.
+
+    Each ``[MemChorus ...]`` / ``[/MemChorus ...]`` marker is rewritten with the
+    brackets swapped to a ``space + word + space`` shape, e.g.::
+
+        "[MemChorus Memory Recall]"      -> "MemChorus Memory Recall"
+        "[/MemChorus injected block]"    -> "/MemChorus injected block"
+
+    The slashes on close-markers are preserved (they still read as labels) and the
+    surrounding space is normalised so we don't introduce double spaces into
+    mid-line text. Idempotent and a near no-op for content that carries no
+    delimiter.
+    """
+    if not text:
+        return text
+
+    def _sub(match: re.Match[str]) -> str:
+        slash, label = match.group(1), _match_label(match.group(0))  # type: ignore[arg-type]
+        return f" {slash}{label}"
+
+    return _STRUCTURAL_MARKER_RE.sub(_sub, text)
+
+
+def _match_label(marker: str) -> str:
+    """Strip the leading bracket/slash and trailing bracket from a raw marker,
+    returning just the human label (e.g. "MemChorus injected block")."""
+    return marker.removeprefix("[").removeprefix("/").removesuffix("]")
+
+
+# ---------------------------------------------------------------------------
 # Noise pattern rejection (Bug 3 AC-2) -- precompiled regex patterns that match
 # error stacks, tracebacks, binary dumps, empty imports, and boilerplate that
 # provides no semantic signal worth storing.
@@ -554,7 +625,12 @@ class AutoStorageEngine:
         self._buffer = buffer
 
     def capture_outcome(
-        self, text: Optional[str], outcome_type: str = "automatic"
+        self,
+        text: Optional[str],
+        outcome_type: str = "automatic",
+        *,
+        source_tool: str | None = None,
+        source_url: str | None = None,
     ) -> Dict[str, Any]:
         """Capture a significant outcome from post-action text.
 
@@ -596,6 +672,22 @@ class AutoStorageEngine:
                 "outcome_type": outcome_type,
                 "importance_score": 0.0,
             }
+
+        # --- Step 0b: stored prompt-injection mitigation (security fix) -----
+        # Auto-captured content is untrusted tool output that is later rendered
+        # VERBATIM into the recall block on a future turn. Neutralize every
+        # structural recall-block delimiter so a forged close-marker cannot
+        # prematurely close / nest the block the model is reading. Runs before
+        # the filter pipeline so the neutralized text is what gets stored and
+        # what the recall renderer later injects.
+        neutralized = _neutralize_structural_markers(text)
+        if neutralized is not text:
+            logger.debug(
+                "AutoStorageEngine: neutralized structural recall-block marker(s) "
+                "in auto-captured content (%d chars)",
+                len(text),
+            )
+            text = neutralized
 
         # --- Step 1: filter query echo artifacts ---
         if _is_query_echo(text):
@@ -737,6 +829,15 @@ class AutoStorageEngine:
             # uniquely identifies the source content.
             "source_file": key,
         }
+        # Provenance: record the originating tool / URL when the caller
+        # supplied it. These are OPTIONAL enrichment fields — the base provenance
+        # contract above is unchanged, so existing consumers (RelevanceScorer's
+        # _auto_provenance P=0.3 check, category validation, dedup) are unaffected.
+        # Rides through orchestrator.save() as a top-level value key.
+        if source_tool:
+            payload["source_tool"] = source_tool
+        if source_url:
+            payload["source_url"] = source_url
 
         # --- Step 9b: write via batch buffer OR direct save -------------
         try:
