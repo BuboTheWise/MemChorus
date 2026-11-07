@@ -122,7 +122,12 @@ def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
             for payload in payloads:
                 try:
                     text = payload.get("text", "")
-                    res = engine.capture_outcome(text, outcome_type="automatic")
+                    res = engine.capture_outcome(
+                        text,
+                        outcome_type=payload.get("outcome_type", "automatic"),
+                        source_tool=payload.get("source_tool") or None,
+                        source_url=payload.get("source_url") or None,
+                    )
                     if res.get("saved"):
                         logger.info(
                             "hooks: batch-saved content (%s, importance %.2f)",
@@ -155,23 +160,37 @@ def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
         return None
 
 
-def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
+def _try_save_with_batch(orchestrator: Any, output_str: str,
+                         source_tool: Optional[str] = None,
+                         source_url: Optional[str] = None) -> None:
     """Queue a tool-capture payload in the batch buffer (GAP026-C).
 
     If batching is unavailable, falls back to an immediate orchestrator.save()
     so no data is lost — just written individually instead of batched.
+    ``source_tool`` / ``source_url`` (optional) are forwarded to
+    ``capture_outcome`` as provenance enrichment fields.
     """
     try:
         batcher = _get_capture_batcher(orchestrator)
         if batcher is not None:
-            batcher.add({"text": output_str, "outcome_type": "automatic"})
+            _batch_payload: Dict[str, Any] = {"text": output_str, "outcome_type": "automatic"}
+            if source_tool:
+                _batch_payload["source_tool"] = source_tool
+            if source_url:
+                _batch_payload["source_url"] = source_url
+            batcher.add(_batch_payload)
             return
 
         # Batch unavailable — route through engine for proper classification
         try:
             from memchorus.auto_storage_engine import AutoStorageEngine
             engine = AutoStorageEngine(orchestrator=orchestrator)
-            res = engine.capture_outcome(output_str, outcome_type="automatic")
+            res = engine.capture_outcome(
+                output_str,
+                outcome_type="automatic",
+                source_tool=source_tool,
+                source_url=source_url,
+            )
             if res.get("saved"):
                 logger.info(
                     "hooks: fallback-direct saved (%s, importance %.2f)",
@@ -182,16 +201,25 @@ def _try_save_with_batch(orchestrator: Any, output_str: str) -> None:
                 logger.debug("hooks: fallback-direct rejected: %s", res.get("reason", ""))
         except ImportError as ie:
             logger.warning("hooks: AutoStorageEngine unavailable: %s", ie)
-            _auto_save(orchestrator, output_str)
+            _auto_save(orchestrator, output_str, source_tool=source_tool,
+                       source_url=source_url)
     except Exception as e:
-        _auto_save(orchestrator, output_str, str(e))
+        _auto_save(orchestrator, output_str, str(e), source_tool=source_tool,
+                   source_url=source_url)
 
-def _auto_save(orchestrator, text, error_context=""):
+def _auto_save(orchestrator, text, error_context="",
+               source_tool: Optional[str] = None,
+               source_url: Optional[str] = None):
     """Last-resort save when both batch and engine paths are unavailable."""
     try:
         from memchorus.auto_storage_engine import AutoStorageEngine
         engine = AutoStorageEngine(orchestrator=orchestrator)
-        res = engine.capture_outcome(text, outcome_type="automatic")
+        res = engine.capture_outcome(
+            text,
+            outcome_type="automatic",
+            source_tool=source_tool,
+            source_url=source_url,
+        )
         if res.get("saved"):
             logger.info(
                 "hooks: _auto_save saved (%s)", res.get("significance", ""),
@@ -667,6 +695,19 @@ class MemChorusHooks:
             if not tool_output:
                 return None
 
+            # Provenance: best-effort extraction of the originating tool name +
+            # URL from the hook kwargs (Hermes passes these when available).
+            # Forwarded into capture_outcome as enrichment fields so the stored
+            # payload records WHERE this auto-capture came from. No trust
+            # decision is made from it — every auto-capture is already treated
+            # as untrusted and its structural markers are neutralized upstream.
+            _source_tool: Optional[str] = (
+                str(kwargs.get("tool_name") or kwargs.get("name") or "").strip() or None
+            )
+            _source_url: Optional[str] = (
+                str(kwargs.get("url") or kwargs.get("source_url") or "").strip() or None
+            )
+
             # #220: use the deterministic _emit_body serializer so the body is
             # canonical JSON (dict/list/dataclass-with-bag) or a tagged repr,
             # rather than a bare str(...) Python-repr that the read side cannot
@@ -716,7 +757,9 @@ class MemChorusHooks:
             # proper significance detection, scoring, provenance markers, and
             # dedup — results are buffered via ToolCaptureBatcher to avoid
             # hammering storage on every tool call (GAP026-C / GAP026-D).
-            _try_save_with_batch(orchestrator, output_str)
+            _try_save_with_batch(
+                orchestrator, output_str, source_tool=_source_tool, source_url=_source_url
+            )
 
             return None
 
