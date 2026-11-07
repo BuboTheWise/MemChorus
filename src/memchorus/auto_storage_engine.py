@@ -543,6 +543,20 @@ def _gen_key(text: str, categories: List[SignificanceCategory],
 # ---------------------------------------------------------------------------
 
 
+
+def _normalize_capture(text: str) -> str:
+    """Canonical form for exact-identical comparison (case + whitespace).
+
+    Lowercases and collapses all internal runs of whitespace to single spaces
+    so that a re-rendered / re-emitted capture is recognised as *identical*,
+    while any genuine wording change (even one word) yields a different form
+    and therefore must be treated as a superseding correction (GH-263).
+    """
+    if not text:
+        return ""
+    return " ".join(text.lower().split())
+
+
 def _text_to_bag(text: str) -> Set[str]:
     """Lowercased, deduplicated bag of >=2-character alpha-words excluding stop words."""
     return {w.lower() for w in re.findall(r'[a-z]{2,}', text) if w not in _STOP_WORDS}
@@ -793,17 +807,46 @@ class AutoStorageEngine:
         category_list = [chosen_category] if chosen_category else []
         key = _gen_key(text, category_list)
 
-        # --- Step 8: dedup check ---
-        merged_result = self._check_dedup(text)
-        if merged_result is not None:
-            return {
-                "saved": True,
-                "key": merged_result["key"],
-                "significance": category_str,
-                "reason": "merged_into_existing",
-                "outcome_type": outcome_type,
-                "importance_score": importance,
-            }
+        # --- Step 8: dedup check (GH-263: honest outcomes) ---
+        # Two distinct buckets, both reported honestly:
+        #  - identical to a recent capture   -> suppressed (reason "deduped_identical")
+        #  - near-duplicate but not identical -> PERSISTED under a fresh key (reason
+        #    "superseded"): the newer correction wins instead of being silently
+        #    dropped while still claiming saved=True.
+        # Neither path below is a lie: every capture reported as saved=True was
+        # actually persisted (or is a verifiable exact-echo of one that was).
+        dedup_hit = self._check_dedup(text)
+        if dedup_hit is not None:
+            if dedup_hit.get("identical"):
+                logger.debug(
+                    "AutoStorageEngine: identical re-capture suppressed "
+                    "(key=%s, jaccard=%.3f, containment=%.3f)",
+                    dedup_hit["key"],
+                    dedup_hit.get("jaccard", 0.0),
+                    dedup_hit.get("containment", 0.0),
+                )
+                self._dedup_cache.append((text, dedup_hit["key"], _time_mod.time()))
+                return {
+                    "saved": True,
+                    "key": dedup_hit["key"],
+                    "significance": category_str,
+                    "reason": "deduped_identical",
+                    "outcome_type": outcome_type,
+                    "importance_score": importance,
+                }
+            logger.debug(
+                "AutoStorageEngine: near-duplicate correction persisting as a new "
+                "key (superseded=%s new=%s, jaccard=%.3f, containment=%.3f)",
+                dedup_hit["key"], key,
+                dedup_hit.get("jaccard", 0.0),
+                dedup_hit.get("containment", 0.0),
+            )
+            # Fall through to Step 9 — write the *newer* text under its own key.
+            # The reason "superseded" is stamped on the returned dict below by
+            # the writer path (which also seeds the dedup cache only on success).
+            _dedup_superseded = True
+        else:
+            _dedup_superseded = False
 
         # --- Step 9: save to orchestrator with provenance marker (Bug 3 AC4) ---
         # Detected significance categories only — no "AUTO" tag here anymore so the
@@ -886,13 +929,31 @@ class AutoStorageEngine:
             logger.warning("AutoStorageEngine: orchestrator save failed: %s", exc)
             success = False
 
-        # Always add to dedup cache (even if orchestrator fail) so future dedup works
-        self._dedup_cache.append((text, key, _time_mod.time()))
+        # GH-263: seed the dedup cache ONLY on successful persistence. The old
+        # behaviour appended unconditionally, so a failed save was still recorded
+        # as "seen" — a corrected retry inside the window then matched the
+        # cache and was reported as merged/saved while nothing landed on disk.
+        # Only a capture that was actually written (or buffered) becomes a
+        # dedup anchor; failures are left out so the next attempt can still
+        # persist and report honestly.
+        if success:
+            self._dedup_cache.append((text, key, _time_mod.time()))
+
+        # GH-263 honest reporting: "reason" names the outcome bucket that the
+        # caller can branch on. successful => "written" (fresh capture) or
+        # "superseded" (a near-duplicate correction that displaced an older
+        # capture); failure => "failed" (persisted=False). The earlier
+        # "merged_into_existing" label is retired: it claimed success while
+        # dropping the newer text, which is exactly the bug this card fixes.
+        reason = "written" if not _dedup_superseded else "superseded"
+        if not success:
+            reason = "failed"
 
         return {
             "saved": success,
             "key": key,
             "significance": category_str,
+            "reason": reason,
             "outcome_type": outcome_type,
             "importance_score": importance,
         }
@@ -901,10 +962,18 @@ class AutoStorageEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _check_dedup(self, text: str) -> Optional[Dict[str, str]]:
-        """Return existing entry if *text* is too similar to recent content.
+    def _check_dedup(self, text: str) -> Optional[Dict[str, Any]]:
+        """Classify *text* against recent captures inside the dedup window.
 
-        Returns ``{"key": <existing_key>}`` when dedup matches, else None.
+        Returns ``{"key": <existing_key>, "identical": True,
+        "jaccard": float, "containment": float}`` on a hit, else ``None``.
+
+        ``identical`` is True only when the incoming text is an exact
+        (whitespace/case-normalized) re-capture of content already persisted —
+        that bucket may be suppressed as a harmless echo. A near-duplicate hit
+        (``identical`` False) is a *different* fact (typically a correction) and
+        must never be merged away into the older key; the caller persists it
+        under a fresh key as ``superseded``. GH-263.
         """
         now = _time_mod.time()
 
@@ -918,17 +987,40 @@ class AutoStorageEngine:
         # Check similarity against remaining entries
         for stored_text, stored_key, _ts in self._dedup_cache:
             ratio = _jaccard_similarity(text, stored_text)  # type: ignore[union-attr]
+            containment = 0.0
             if ratio >= self.dedup_similarity_threshold:
-                return {"key": stored_key}
+                containment = _containment_similarity(text, stored_text)  # type: ignore[union-attr]
+                return {
+                    "key": stored_key,
+                    "identical": self._is_identical(text, stored_text),
+                    "jaccard": ratio,
+                    "containment": containment,
+                }
             # GH-142 option 2: containment OR-gate. A short saved entry fully
             # contained in the incoming text (or vice-versa) scores a low
             # Jaccard (large union) but near-1.0 containment, so we still merge
             # the long-doc case that Jaccard alone would let through.
             containment = _containment_similarity(text, stored_text)  # type: ignore[union-attr]
             if containment >= self.dedup_similarity_threshold:
-                return {"key": stored_key}
+                return {
+                    "key": stored_key,
+                    "identical": self._is_identical(text, stored_text),
+                    "jaccard": ratio,
+                    "containment": containment,
+                }
 
         return None
+
+    @staticmethod
+    def _is_identical(text: str, stored_text: str) -> bool:
+        """True when *text* is the exact same capture as *stored_text*.
+
+        Normalizes case and collapses internal whitespace so a re-rendered or
+        re-emitted line is recognised as identical, while a genuine correction
+        (even a single word changed) is *not* identical and must supersede.
+        """
+        _norm = lambda s: " ".join(s.lower().split())  # noqa: E731
+        return _norm(text) == _norm(stored_text)  # type: ignore[arg-type]
 
     def _is_trivial(self, text: str) -> bool:
         """Return True when *text* is short or contains only trivial word confirmations."""
