@@ -69,6 +69,17 @@ def _exclusion_prefixes() -> list[Path]:
     home = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
     if home:
         _add(Path(home) / "work")
+
+    # Windows 95/98 legacy reparse points: "Application Data" (→ AppData/Roaming)
+    # and "Local Settings" (→ AppData/Local).  On a *cold* runner the OS
+    # materialises these junctions the first time anything touches the AppData
+    # tree, bumping their mtime.  They never hold operator data, so exclude
+    # them by name (case-insensitive) whenever we land on Windows.  This is
+    # what makes the gate pass on Windows 3.11 while still guarding AppData
+    # itself and the operator data dirs under it.
+    if os.name == "nt":
+        for legacy in ("Application Data", "Local Settings"):
+            _add(Path(home) / legacy)
     return prefixes
 
 

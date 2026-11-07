@@ -56,7 +56,20 @@ def _install_test_home_isolation():
     # Neutralise every direct home-resolution path (Path.home / expanduser("~")).
     os.environ["HOME"] = root                    # POSIX (no-op on Windows, harmless)
     os.environ["USERPROFILE"] = root             # Windows primary; POSIX harmless
-    os.environ.setdefault("LOCALAPPDATA", os.path.join(root, "AppData", "Local"))
+    # On Windows, Python's tempfile module resolves its working directory from
+    # TEMP/TMP (not LOCALAPPDATA) before falling back to %LOCALAPPDATA%\\Temp.
+    # Without these, pytest/xdist/hypothesis write into
+    # C:\\Users\\runneradmin\\AppData\\Local\\Temp → bumps the AppData/Local
+    # reparse-point mtime → Windows bumps "Application Data" and "Local
+    # Settings" (legacy Win95/98 junction points) → the #269 gate flags them.
+    # Redirect the OS temp dirs into the test root so tempfile uses it.
+    _tmp_root = os.path.join(root, "_tmp")
+    os.makedirs(_tmp_root, exist_ok=True)
+    os.environ["TEMP"]    = _tmp_root
+    os.environ["TMP"]     = _tmp_root
+    os.environ["TMPDIR"]  = _tmp_root             # POSIX: tempfile reads TMPDIR too
+    os.environ["LOCALAPPDATA"] = os.path.join(root, "AppData", "Local")
+    os.environ["APPDATA"]    = os.path.join(root, "AppData", "Roaming")  # Win32 only
     # Tidy up on interpreter exit (best-effort; subprocesses may hold refs).
     if not pinned:
         _atexit.register(lambda: _shutil.rmtree(root, ignore_errors=True))
