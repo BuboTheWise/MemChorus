@@ -51,6 +51,13 @@ jobs:
       - name: Install package + test deps
         run: pip install .[mcp,dev] pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
 
+      - name: Snapshot real home BEFORE tests (issue #269 hermeticity guard)
+        # Record the pre-run tree of the runner's real home. The final "Check no
+        # home leak" step (below) will fail if any file/dir was created or modified
+        # under that tree by the test suite. See tests/conftest.py (#269) for the
+        # HOME/HERMES_HOME redirection that makes the suite hermetic.
+        run: python scripts/assert_no_home_leak.py --state "$RUNNER_TEMP/mc269_home_leak_state.json" snapshot
+
       - name: Pre-push board-card gate tests (IMPL #203 — local hook logic, CI-safe)
         # The hook's decision logic (memchorus/pre_push_gate::check_commit) is pure
         # stdlib + sqlite3 and runs against a fixture board, so it works on any CI
@@ -105,7 +112,21 @@ jobs:
         run: python3 scripts/check_version_sync.py
 
       - name: Verify key imports and routing overlay structure
+        # This runs OUTSIDE pytest, so the conftest HOME isolation (tests/conftest.py,
+        # #269) is not in effect. The bare ``import memchorus`` triggers the lazy
+        # bootstrap, which instantiates MemPalaceMemorySource (+ friends) and
+        # eager-mkdirs their cache dirs (``~/.hermes/mempalace_cache``,
+        # ``~/.hermes/memories``) into whichever home is currently visible. If we
+        # let it run against the runner's real home, it writes ``~/.hermes`` —
+        # exactly the #269 leak the "Check no home leak AFTER tests" gate flags.
+        # So redirect HOME + HERMES_HOME (both) into a temp dir first, matching
+        # the conftest intent; all import-time writes land in temp, not the
+        # operator's/runner's real home.
         run: |
+          VERIFY_HOME="$RUNNER_TEMP/mc269_verify_home"
+          mkdir -p "$VERIFY_HOME"
+          export HOME="$VERIFY_HOME"
+          export HERMES_HOME="$VERIFY_HOME"
           PYTHONPATH=src python -c "
           from memchorus import MemoryOrchestrator
           from memchorus.mempalace_memory_source import MemPalaceMemorySource, _DEFAULT_WING_MAP, _DEFAULT_ROOM_MAP
@@ -114,6 +135,14 @@ jobs:
           assert 'room_map' in _DEFAULT_MEMPALACE_ROUTING
           print('All imports + routing overlay verified')
           "
+
+      - name: Check no home leak AFTER tests (issue #269 hermeticity gate)
+        # Fails if any file/dir under the runner's real home was created or
+        # modified by the test suite. The suite is supposed to redirect all
+        # home-resolution into a private temp root (see tests/conftest.py, #269);
+        # this step is the end-to-end proof that no leak reached the operator's
+        # real ``~/.hermes`` / ``~/.memchorus-data`` / ``~/.mempalace`` etc.
+        run: python scripts/assert_no_home_leak.py --state "$RUNNER_TEMP/mc269_home_leak_state.json" check
 
   test-windows:
     runs-on: windows-latest
@@ -137,6 +166,12 @@ jobs:
 
       - name: Install package + test deps
         run: python -m pip install .[mcp,dev] pytest pytest-asyncio anyio pytest-xdist pytest-timeout pytest-sugar
+
+      - name: Snapshot real home BEFORE tests (issue #269 hermeticity guard)
+        # Same guard as Linux: record the pre-run tree of the runner's real home.
+        # The check step (below) will fail if any file/dir was created or modified
+        # under that tree by the test suite (issue #269).
+        run: python scripts/assert_no_home_leak.py --state "$env:RUNNER_TEMP\mc269_home_leak_state.json" snapshot
 
       - name: Run key regression test (GH-146 atomic replace over existing target)
         env:
@@ -173,7 +208,20 @@ jobs:
         run: python scripts/check_version_sync.py
 
       - name: Verify key imports and routing overlay structure
+        # SAME reasoning as the Linux job: this step runs OUTSIDE pytest, so the
+        # conftest HOME isolation (#269) is not in effect and the bare import
+        # eager-mkdirs ``~/.hermes/mempalace_cache`` + ``~/.hermes/memories``
+        # into whatever home is visible. Redirect the home env (USERPROFILE on
+        # Windows, which ``Path.home()``/``expanduser("~")`` resolve first) and
+        # HERMES_HOME into a temp dir so those writes land in temp, not the
+        # runner's real home — keeping the "Check no home leak AFTER tests"
+        # green.
         run: |
+          $env:VERIFY_HOME = "$env:RUNNER_TEMP\mc269_verify_home"
+          New-Item -ItemType Directory -Force -Path $env:VERIFY_HOME | Out-Null
+          $env:HOME = $env:VERIFY_HOME
+          $env:USERPROFILE = $env:VERIFY_HOME
+          $env:HERMES_HOME = $env:VERIFY_HOME
           $env:PYTHONPATH = "src"
           python -c "
           from memchorus import MemoryOrchestrator
@@ -183,6 +231,13 @@ jobs:
           assert 'room_map' in _DEFAULT_MEMPALACE_ROUTING
           print('All imports + routing overlay verified')
           "
+
+      - name: Check no home leak AFTER tests (issue #269 hermeticity gate)
+        # Same gate as Linux: fails if any file/dir under the runner's real home
+        # was created or modified by the test suite. The suite is supposed to
+        # redirect home-resolution into a private temp root (see tests/conftest.py,
+        # #269); this step proves no leak reached the operator's real home tree.
+        run: python scripts/assert_no_home_leak.py --state "$env:RUNNER_TEMP\mc269_home_leak_state.json" check
 
   integration:
     runs-on: ubuntu-latest

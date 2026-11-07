@@ -66,11 +66,22 @@ class TestResolveLifecycleConfig(unittest.TestCase):
         self.assertAlmostEqual(cfg["eviction"]["similarity_min"], 0.75)
 
     def test_audit_defaults(self):
+        from memchorus.hermes_home import hermes_home
         from memchorus.lifecycle_manager import _resolve_lifecycle_config
 
         cfg = _resolve_lifecycle_config({})
         self.assertTrue(cfg["audit"]["enabled"])
-        self.assertIn("hermes", os.path.expanduser(cfg["audit"]["log_path"]))
+        # The audit log must live inside the hermes home (single source of truth).
+        # We compare against hermes_home() directly rather than string-matching a
+        # literal so the assertion stays correct under HOME/HERMES_HOME isolation
+        # (issue #269) where the resolved home is a temp root, not ``~/.hermes``.
+        log_path = os.path.expanduser(cfg["audit"]["log_path"])
+        home = str(hermes_home() / "memchorus_audit.jsonl")
+        self.assertEqual(
+            os.path.normcase(os.path.abspath(log_path)),
+            os.path.normcase(os.path.abspath(home)),
+            f"audit log_path {log_path!r} is not hermes_home()/memchorus_audit.jsonl ({home!r})",
+        )
         self.assertEqual(cfg["audit"]["max_entries"], 10_000)
 
 
