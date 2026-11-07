@@ -1,9 +1,12 @@
 """Pytest configuration for MemChorus test suite."""
 import asyncio
+import atexit as _atexit
 import gc
 import inspect as _inspect
 import os
+import shutil as _shutil
 import sys
+import tempfile as _tempfile
 
 # Ensure src/ is on sys.path so xdist workers can import memchorus regardless of CWD.
 _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -12,6 +15,67 @@ if _src_path not in sys.path:
     sys.path.insert(0, _src_path)
 import types as _types
 import pytest
+
+
+# ── Issue #269: test-suite HOME isolation ──────────────────────────────────
+# The suite must never write into the operator's real home tree (~/.hermes,
+# ~/.memchorus-data, ~/.mempalace, ~/.config/hermes, ...). Many code paths
+# bypass the hermes_home() resolver and touch the home directory directly via
+# Path.home() / os.path.expanduser("~"), several of them at *import* time
+# (e.g. memchorus.auto_init.DEFAULT_DATA_DIR). The single robust lever is to
+# point the underlying home env vars (HOME on POSIX, USERPROFILE on Windows)
+# AND HERMES_HOME at a private temp root BEFORE any memchorus module — and any
+# of their transitive imports — is first imported.
+#
+# Placing this at conftest import time (before the all_skip_gate /
+# test_natural_live_e2e imports below) guarantees it runs in the controller
+# and in every xdist worker, and before module-level memchorus constants bake
+# in a real path. Tests that need their own home can still override per-test
+# with monkeypatch (their setenv wins, since resolution is lazy at call time);
+# tests unit-testing the resolver itself (test_hermes_home.py) already manage
+# HERMES_HOME/HOME explicitly and keep holding because both sides of their
+# assertions compute against the same isolated HOME.
+def _install_test_home_isolation():
+    # Capture the REAL home (pre-isolation, cross-platform) so the regression
+    # test can assert suite writes never land there. Exposed under a distinct
+    # key the isolation step never touches.
+    _pre = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
+    if _pre:
+        os.environ.setdefault("_MC269_REAL_HOME", _pre)
+    # Issue #269: the suite writes only to a private temp root, never to the
+    # operator's real tree (~/.hermes, ~/.mempalace, ~/.memchoris-data, ...).
+    #
+    # Why NOT "honour a pre-existing HERMES_HOME": in a Hermes CLI runtime
+    # ``HOME`` (and thus HERMES_HOME) already points at the operator's real
+    # profile home (~/.hermes/profiles/<p>/) — the exact tree #269 protects.
+    # Redirecting to a fresh temp root is the whole point; a CI job that
+    # genuinely wants to pin a specific location can set MC269_TEST_HOME.
+    pinned = os.environ.get("MC269_TEST_HOME")
+    root = pinned if (pinned and os.path.isdir(pinned)) else _tempfile.mkdtemp(prefix="mc269-test-home-")
+    os.environ["HERMES_HOME"] = root
+    # Neutralise every direct home-resolution path (Path.home / expanduser("~")).
+    os.environ["HOME"] = root                    # POSIX (no-op on Windows, harmless)
+    os.environ["USERPROFILE"] = root             # Windows primary; POSIX harmless
+    # On Windows, Python's tempfile module resolves its working directory from
+    # TEMP/TMP (not LOCALAPPDATA) before falling back to %LOCALAPPDATA%\\Temp.
+    # Without these, pytest/xdist/hypothesis write into
+    # C:\\Users\\runneradmin\\AppData\\Local\\Temp → bumps the AppData/Local
+    # reparse-point mtime → Windows bumps "Application Data" and "Local
+    # Settings" (legacy Win95/98 junction points) → the #269 gate flags them.
+    # Redirect the OS temp dirs into the test root so tempfile uses it.
+    _tmp_root = os.path.join(root, "_tmp")
+    os.makedirs(_tmp_root, exist_ok=True)
+    os.environ["TEMP"]    = _tmp_root
+    os.environ["TMP"]     = _tmp_root
+    os.environ["TMPDIR"]  = _tmp_root             # POSIX: tempfile reads TMPDIR too
+    os.environ["LOCALAPPDATA"] = os.path.join(root, "AppData", "Local")
+    os.environ["APPDATA"]    = os.path.join(root, "AppData", "Roaming")  # Win32 only
+    # Tidy up on interpreter exit (best-effort; subprocesses may hold refs).
+    if not pinned:
+        _atexit.register(lambda: _shutil.rmtree(root, ignore_errors=True))
+
+
+_install_test_home_isolation()
 
 
 # ── IMPL #168: selective recall-battery invocation ─────────────────────
