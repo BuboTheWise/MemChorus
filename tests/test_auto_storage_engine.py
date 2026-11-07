@@ -317,9 +317,15 @@ class TestDeduplication(unittest.TestCase):
             "I learned that the API endpoint returns an array with items",
         )
         
-        # Should merge: check reason indicates it was merged
+        # GH-263: a near-duplicate (different) capture is a *correction*, not a
+        # merge. The old code reported saved=True / merged_into_existing but
+        # never wrote the newer text — corrections silently lost to stale facts.
+        # Honest contract: the newer fact is persisted under its own (fresh) key
+        # and reported as "superseded", so the caller knows it displaced the
+        # older capture. The two must land on different keys.
         self.assertTrue(result2["saved"])
-        self.assertEqual(result2["reason"], "merged_into_existing")
+        self.assertEqual(result2["reason"], "superseded")
+        self.assertNotEqual(result1["key"], result2["key"])
 
     def test_long_gap_skips_dedup(self) -> None:
         engine = AutoStorageEngine(
