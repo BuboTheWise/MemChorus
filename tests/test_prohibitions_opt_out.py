@@ -47,6 +47,7 @@ class TestDistillationOptOut:
     def _mock_orch(self, cfg):
         m = MagicMock()
         m.config = cfg
+        m._prohibition_distiller = None  # exercise the fresh-instance path (GH-266 AC1)
         return m
 
     def test_distillation_bypassed_when_disabled(self):
@@ -65,7 +66,8 @@ class TestDistillationOptOut:
             pd_mock.return_value = pd_inst
             from memchorus.hooks import _try_distill_prohibition
             _try_distill_prohibition("critical failure", mock_orch)
-            pd_mock.assert_called_once()
+            # Instance was created and its distill() actually invoked.
+            pd_inst.distill.assert_called_once_with("critical failure")
 
     def test_distillation_runs_by_default(self):
         config = {}
@@ -76,7 +78,44 @@ class TestDistillationOptOut:
             pd_mock.return_value = pd_inst
             from memchorus.hooks import _try_distill_prohibition
             _try_distill_prohibition("critical failure", mock_orch)
-            pd_mock.assert_called_once()
+            # Instance was created and its distill() actually invoked.
+            pd_inst.distill.assert_called_once_with("critical failure")
+
+    def test_distiller_instance_reused_across_session_saves(self):
+        """AC1/AC4: one distiller instance per orchestrator/session.
+
+        Distilling twice through the same orchestrator must reuse the SAME instance
+        (not mint a fresh one), so the cap + cooldown counters persist across calls.
+        """
+        config = {"prohibitions": {"distillation_enabled": True}}
+        mock_orch = self._mock_orch(config)
+        with patch("memchorus.prohibition_distiller.ProhibitionDistiller") as pd_mock:
+            first = MagicMock()
+            first.reset_session = MagicMock()
+            first.distill.return_value = None
+            second = MagicMock()
+            second.distill.return_value = None
+            pd_mock.side_effect = [first, second]
+            from memchorus.hooks import _try_distill_prohibition
+            _try_distill_prohibition("a self-break", mock_orch)
+            _try_distill_prohibition("b self-break", mock_orch)
+            # Exactly ONE distiller instance was constructed (the AC1 fix).
+            assert pd_mock.call_count == 1, "must reuse one distiller per session (AC1)"
+            # Both saves routed through that single instance; the (would-be) 2nd
+            # instance was never created or used.
+            assert first.distill.call_count == 2, "same instance must distill both saves"
+            second.distill.assert_not_called()
+
+    def test_session_reset_clears_distiller_accounting(self):
+        """AC4: on_session_start resets the session distiller's cap + cooldown."""
+        config = {"prohibitions": {"distillation_enabled": True}}
+        mock_orch = self._mock_orch(config)
+        inst = MagicMock()
+        inst.reset_session = MagicMock()
+        mock_orch._prohibition_distiller = inst
+        from memchorus.hooks import reset_distiller_session
+        reset_distiller_session(mock_orch)
+        inst.reset_session.assert_called_once()
 
 
 class TestConfigDefaultsAndBackwardCompatibility:

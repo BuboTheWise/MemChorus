@@ -9,6 +9,7 @@ by injecting into prompt space with [[double brackets]] markers that cannot be s
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -318,13 +319,57 @@ class ProhibitionsManager:
     # -- Rule Management --------------------------------------------------
 
     def add_rule(self, rule: Prohibition) -> None:
-        """Add a new rule (after dedup check)."""
+        """Add a new rule (after a *semantic* dedup check).
+
+        Dedup is no longer by random uuid alone (GH-266 AC2). A rule is treated as a
+        duplicate when it shares the same semantic fingerprint as an existing rule,
+        i.e. the same trigger-keyword set AND the same condition *stem* (the
+        instructional clause, ignoring the "Past error (...)" tail). This is what
+        stops repeated benign lines from each minting a fresh CRITICAL guard.
+        """
         for existing in self._rules:
             if existing.id == rule.id:
-                logger.warning("Rule %s already exists — not adding duplicate", rule.id)
+                logger.warning("Rule %s already exists — not adding duplicate (id)", rule.id)
+                return
+            if self._rule_fingerprint(existing) == self._rule_fingerprint(rule):
+                logger.warning(
+                    "Rule %s is a semantic duplicate of %s (same triggers + condition stem) — not adding (AC2)",
+                    rule.id, existing.id,
+                )
                 return
         rule._compile_patterns()
         self._rules.append(rule)
+
+    @staticmethod
+    def _condition_stem(condition: str) -> str:
+        """The instructional clause of a condition, minus the 'Past error (...)' tail.
+
+        Distilled conditions read like "<imperative clause> ... Past error (<kw>):
+        <sanitized error>". The "stem" is everything before that marker — it is the
+        stable, comparable part, while the tail is free-form error text that varies
+        per occurrence.
+        """
+        text = (condition or "").strip()
+        marker = "past error"
+        lower = text.lower()
+        if marker in lower:
+            text = text[: lower.index(marker)]
+        return re.sub(r"\s+", " ", text).strip().lower()
+
+    @classmethod
+    def _rule_fingerprint(cls, rule: Prohibition) -> str:
+        """Semantic fingerprint: sorted trigger-keyword set + condition stem (GH-266 AC2).
+
+        Rules that agree on both are considered semantically identical and the second
+        is dropped. This is independent of the rule id, so a freshly-minted uuid
+        cannot mask a real duplicate.
+        """
+        try:
+            triggers = sorted(k.lower().strip() for k in (rule.trigger_keywords or []) if k and k.strip())
+        except Exception:
+            triggers = []
+        canonical = "||triggers||" + ",".join(triggers) + "||stem||" + cls._condition_stem(rule.condition)
+        return hashlib.md5(canonical.encode("utf-8", "replace")).hexdigest()[:24]
 
     def remove_rule(self, rule_id: str) -> bool:
         """Remove a rule by ID. Returns True if found and removed."""
