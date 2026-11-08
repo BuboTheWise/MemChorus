@@ -211,7 +211,7 @@ def write_checkpoint(
             key=key,
             value=value,
             source_name=None,
-            category="SESSION",
+            category="RESULT",
             metadata={"provenance": "memchorus.session-checkpoint", "kind": "checkpoint"},
         )
         if ok:
