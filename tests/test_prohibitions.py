@@ -228,6 +228,61 @@ class TestProhibitionsManager:
         manager.add_rule(rule)
         assert len(manager.rules) == n0 + 1
 
+    def test_add_rule_semantic_dedup_across_distinct_ids(self, manager):
+        """GH-266 AC2: a rule whose trigger set AND condition stem match an existing
+        rule is a duplicate — even when its id differs (freshly-minted uuid).
+
+        This pins the fingerprint branch in add_rule (the old id-only path would let
+        the second rule through). The two rules share the exact trigger keyword set and
+        the identical instructional clause (the "Past error (...)" tail may vary freely).
+        """
+        from memchorus.prohibitions import Prohibition
+        stem = "Never run pip install -e into self-critical paths."
+        original = Prohibition(
+            id="guard-existing-001",
+            condition=stem + " Past error (pip install -e): the venv broke after the edit.",
+            trigger_keywords=["pip install -e", "editable install"],
+        )
+        re_distilled = Prohibition(
+            id="guard-fresh-999",  # deliberately a DIFFERENT id
+            condition=stem + " Past error (pip install -e): the CLI went down this time.",
+            trigger_keywords=["editable install", "pip install -e"],  # same set, different order
+        )
+        n0 = len(manager.rules)
+        manager.add_rule(original)
+        assert len(manager.rules) == n0 + 1, "sanity: first rule should append"
+        manager.add_rule(re_distilled)
+        # AC2: semantically identical rule must collapse — no second guard minted.
+        assert len(manager.rules) == n0 + 1, (
+            "semantically-duplicate rule (same triggers + condition stem) was added "
+            "despite the AC2 fingerprint check"
+        )
+
+    def test_add_rule_distinct_stem_is_kept_despite_shared_triggers(self, manager):
+        """GH-266 AC2 counter-example: same trigger keywords but a genuinely
+        different instructional clause is NOT a duplicate and must be kept.
+
+        Guards against an over-aggressive fingerprint that collapses unrelated rules.
+        """
+        from memchorus.prohibitions import Prohibition
+        shared_kw = ["venv", "site-packages"]
+        rule_a = Prohibition(
+            id="guard-a",
+            condition="Never delete the venv directory or its site-packages.",
+            trigger_keywords=shared_kw,
+        )
+        rule_b = Prohibition(
+            id="guard-b",
+            condition="Re-run the install before touching venv site-packages.",
+            trigger_keywords=shared_kw,  # identical trigger set
+        )
+        n0 = len(manager.rules)
+        manager.add_rule(rule_a)
+        manager.add_rule(rule_b)
+        assert len(manager.rules) == n0 + 2, (
+            "rules with different condition stems were collapsed into one"
+        )
+
     def test_remove_rule_by_id(self, manager):
         seed_ids = [r.id for r in manager.rules]
         target = seed_ids[0]
