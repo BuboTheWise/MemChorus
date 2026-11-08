@@ -383,10 +383,21 @@ class MemChorusHooks:
 
             # 0. Scan for behavioral guards BEFORE any other injection (hard gates)
             # Bypass if prohibitions.enabled is explicitly set to False
+            #
+            # Issue #264: the guard must see the RAW (punctuated) user text, not
+            # the tokenized keyword bag used for recall. Compiled patterns such
+            # as "pip install -e" or the regex "pip\\s+install\\s+-e\\s+.*hermes"
+            # can never match a bag of individual tokens, so we extract the raw
+            # message (and the trailing conversation as a fallback) and scan
+            # THAT, while recall keeps using the (filtered) search terms.
             prohib_cfg = orchestrator.config.get("prohibitions", {})
             guards_enabled = bool(prohib_cfg.get("enabled", True))
             if guards_enabled:
-                guard_blocks = self._try_guard_scan(input_text, orchestrator)
+                guard_input = _extract_raw_input_text(kwargs)
+                # Fall back to the search-term bag only when no raw text is
+                # available at all (e.g. pure metadata-driven pre-LLM calls).
+                guard_text = guard_input or input_text
+                guard_blocks = self._try_guard_scan(guard_text, orchestrator)
             else:
                 guard_blocks = []
 
@@ -680,6 +691,42 @@ class MemChorusHooks:
             logger.debug("hooks: guard scan failed silently: %s", e)
             return []
 
+    def _try_guard_scan_tool_call(self, command: str, orchestrator):
+        """Run the behavioral guard scan against a tool-call command/args string.
+
+        Issue #264: previously ``ProhibitionsManager.scan_tool_call`` was dead
+        code — no hook ever ran it because no ``pre_tool_call`` hook was
+        registered. This helper feeds the tool name + serialized args through
+        the same scan pipeline as user text and returns a ``GuardResult`` so
+        the caller can map the verdict onto a block/approve directive.
+
+        Returns ``None`` when the prohibitions module is unavailable (graceful
+        degradation — the tool call proceeds).
+        """
+        try:
+            from memchorus.prohibitions import ProhibitionsManager
+
+            pm = getattr(orchestrator, "_prohibitions_manager", None)
+            if pm is None:
+                pm = ProhibitionsManager()
+                count = pm.load()
+                orchestrator._prohibitions_manager = pm
+                logger.info("hooks: initialized ProhibitionsManager with %d rules", count)
+
+            result = pm.scan_tool_call(str(command)[:4096])
+            if result.triggered:
+                logger.info(
+                    "hooks: tool-call prohibition matched %d rule(s) (verdict=%s, %.1fms)",
+                    len(result.matched_rules), result.verdict.value, result.timing_ms,
+                )
+            return result
+        except ImportError:
+            logger.debug("hooks: ProhibitionsManager not available — skipping tool-call guard scan")
+            return None
+        except Exception as e:
+            logger.debug("hooks: tool-call guard scan failed silently: %s", e)
+            return None
+
     def on_post_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         """Fire after tool execution to auto-capture significant outcomes.
 
@@ -806,6 +853,96 @@ class MemChorusHooks:
 
         seeder = WorkingStateSeeder(source)
         return seeder.ensure(seed=seed, open_kanban=open_kanban)
+
+    # ------------------------------------------------------------------
+    # Issue #264 — tool-call guard scanning (pre_tool_call)
+    # ------------------------------------------------------------------
+
+    def on_pre_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """Fire before a tool call so behavioral guards can vet/veto the args.
+
+        Issue #264: tool payloads were never scanned — no ``pre_tool_call`` hook
+        existed, leaving ``ProhibitionsManager.scan_tool_call`` as dead code.
+        This hook now feeds the tool name + serialized args through the guard
+        pipeline and maps the verdict onto a Hermes directive:
+
+          - severity-3 (BLOCK)   -> ``{"action": "block",   "message": ..., "reason": ...}``
+                                     (the reason becomes the tool result; ``message`` is
+                                     Hermes-canonical, ``reason`` is the Claude-Code alias)
+          - severity-2 (WARNING) -> ``{"action": "approve", "message": ..., "reason": ...}``
+                                     (escalates to the human approval gate)
+          - severity-1 / no match -> ``None`` (observer-only; tool call proceeds)
+
+        Gracefully degrades to ``None`` when the orchestrator or prohibitions
+        module is unavailable, or when ``prohibitions.enabled`` is False.
+        """
+        logger.info("MemChorus on_pre_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
+        orchestrator = _get_orchestrator()
+        if orchestrator is None:
+            return None
+
+        try:
+            # Respect the same opt-out toggle as on_pre_llm_call.
+            prohib_cfg = orchestrator.config.get("prohibitions", {})
+            if not bool(prohib_cfg.get("enabled", True)):
+                return None
+
+            tool_name = str(kwargs.get("tool_name") or "").strip()
+            args = kwargs.get("args")
+
+            # Serialize args so regexes like "pip\\s+install\\s+-e" see the
+            # verbatim command text; keep the tool name as the ``command`` part
+            # so rules scoped to a specific tool still evaluate.
+            if args is None:
+                command = tool_name
+            elif isinstance(args, str):
+                command = f"{tool_name} {args}"
+            else:
+                try:
+                    command = f"{tool_name} {json.dumps(args)}"
+                except (TypeError, ValueError):
+                    command = f"{tool_name} {args!r}"
+
+            result = self._try_guard_scan_tool_call(command, orchestrator)
+            if result is None or not result.triggered:
+                return None
+
+            message = self._guard_block_message(result, tool_name)
+            # BLOCK (severity 3): hard veto — message becomes the tool result.
+            # ``message`` is the Hermes-canonical key (hermes_cli/plugins.py:
+            # a ``block`` directive with no ``message`` is silently dropped);
+            # ``reason`` is the Claude-Code-style alias and the literal key
+            # named in the GH-264 acceptance criteria. Both carry the same text
+            # so either consumer (plugin path or normalized shell-hook path)
+            # sees the veto reason.
+            if result.verdict.value == "block":
+                if len(result.matched_rules) > 1:
+                    message = f"{message} ({len(result.matched_rules)} behavioral guards matched.)"
+                return {"action": "block", "message": message, "reason": message}
+            # WARNING (severity 2): escalate to the human approval gate.
+            if result.verdict.value == "warning":
+                return {"action": "approve", "message": message, "reason": message}
+            return None
+        except Exception as exc:
+            # Observer semantics: never block a tool call because of an internal guard error.
+            logger.debug("on_pre_tool_call guard failed — allowing tool to proceed. %s", exc)
+            return None
+
+    @staticmethod
+    def _guard_block_message(result, tool_name: str) -> str:
+        """Build a human/model-readable veto message from a triggered GuardResult."""
+        top = result.matched_rules[0] if result.matched_rules else None
+        if top is None:
+            return "Blocked by a behavioral guard derived from a past mistake."
+        parts = [f"[Behavioral guard {top.id}]" + (f" (tool: {tool_name})" if tool_name else "")]
+        if top.condition:
+            parts.append(f"Rule: {top.condition}")
+        if top.block_action:
+            parts.append(f"Blocks: {top.block_action}")
+        if top.rationale:
+            parts.append(f"Reason: {top.rationale}")
+        parts.append("If you believe this is a false positive, please confirm with the human operator before retrying.")
+        return " ".join(parts)
 
     def on_session_start(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
         """Fire once when a new Hermes session begins (or task is picked up) to auto-orient the agent.
@@ -1117,6 +1254,37 @@ class MemChorusHooks:
         if checkpoint_key:
             result["checkpoint"] = checkpoint_key
         return result
+
+
+def _extract_raw_input_text(kwargs: Dict[str, Any]) -> str:
+    """Extract the RAW (punctuated) user text for behavioral guard scanning.
+
+    Issue #264: ``_build_search_terms()`` tokenizes, stop-words, stems and caps
+    input into a keyword bag, which is ideal for recall but destroys the
+    verbatim phrasing that compiled prohibition patterns rely on. Multi-word
+    triggers (``pip install -e``) and ``tool_call_check`` regexes
+    (``pip\\s+install\\s+-e\\s+.*hermes``) can only match the original text.
+
+    Priority (mirrors ``_build_search_terms`` but WITHOUT tokenization):
+        1. ``user_message`` — str / dict / object (str, dict.content, .content/.text)
+        2. ``conversation_history`` — trailing 4096 chars of joined visible text
+
+    Returns "" when nothing raw is available (caller falls back to the bag).
+    """
+    user_msg = kwargs.get("user_message")
+    if user_msg is not None:
+        text = _extract_text_from_message(user_msg)
+        if isinstance(text, str) and text.strip():
+            return text[:4096]
+
+    history = kwargs.get("conversation_history") or []
+    if isinstance(history, (list, tuple)):
+        parts = [_extract_text_from_message(m) for m in history]
+        joined = " ".join(p for p in parts if isinstance(p, str) and p.strip())
+        if joined.strip():
+            return joined[-4096:]
+
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -2615,8 +2783,9 @@ def register(ctx: Any) -> None:
     hooks = MemChorusHooks()
     _instance_holder[0] = hooks  # keep a reference so GC doesn't collect
 
-    # Register all four lifecycle hooks
+    # Register all lifecycle hooks
     ctx.register_hook("pre_llm_call", hooks.on_pre_llm_call)
+    ctx.register_hook("pre_tool_call", hooks.on_pre_tool_call)
     ctx.register_hook("post_tool_call", hooks.on_post_tool_call)
     ctx.register_hook("on_session_start", hooks.on_session_start)
     ctx.register_hook("on_session_end", hooks.on_session_end)
@@ -2628,7 +2797,7 @@ def register(ctx: Any) -> None:
         logger.warning("hooks: failed to register atexit fallback")
 
     logger.info(
-        "MemChorus v%s registered hooks: pre_llm_call, post_tool_call, on_session_start, on_session_end",
+        "MemChorus v%s registered hooks: pre_llm_call, pre_tool_call, post_tool_call, on_session_start, on_session_end",
         __import__('memchorus').__version__,
     )
 
@@ -2649,6 +2818,11 @@ def post_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
     return _get_module_hooks().on_post_tool_call(**kwargs)
 
 
+def pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias for on_pre_tool_call (Issue #264)."""
+    return _get_module_hooks().on_pre_tool_call(**kwargs)
+
+
 def on_pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
     """Module-level alias — delegates to MemChorusHooks.on_pre_llm_call."""
     return pre_llm_call(**kwargs)
@@ -2657,6 +2831,11 @@ def on_pre_llm_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
 def on_post_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
     """Module-level alias — delegates to MemChorusHooks.on_post_tool_call."""
     return post_tool_call(**kwargs)
+
+
+def on_pre_tool_call(**kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Module-level alias — delegates to MemChorusHooks.on_pre_tool_call (Issue #264)."""
+    return pre_tool_call(**kwargs)
 
 
 def on_session_start(**kwargs: Any) -> Optional[Dict[str, Any]]:
