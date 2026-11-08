@@ -28,6 +28,7 @@ import json
 import logging
 import re
 import os
+import shlex
 import threading
 import time
 from collections import OrderedDict
@@ -153,8 +154,11 @@ def _get_capture_batcher(orchestrator: Any) -> Optional[Any]:
         logger.error(
             "hooks: AutoStorageEngine/ToolCaptureBatcher import failed — %s\n"
             "All post-tool captures will fall back to direct orchestrator.save until restart.\n"
-            "This usually means a broken package install; try:\n"
-            "  pip install --no-deps 'memchorus[full]' from PyPI",
+            "This usually means a broken or partial package install; repair with one of "
+            "(an accurate extras name — 'memchorus[full]' does not exist; the real "
+            "optionals are [mcp] and [dev] — and WITH dependencies, not --no-deps):\n"
+            "  pip install --force-reinstall 'memchorus[mcp]'      # from PyPI\n"
+            "  pip install --force-reinstall '.[mcp]'             # from a local MemChorus clone (src layout)",
             ie,
         )
         return None
@@ -363,7 +367,7 @@ class MemChorusHooks:
         inject [[GUARD]] blocks blocking self-breaking actions (env corruption, data loss,
         toolchain breakage). Guards run first before any recall context is added.
         """
-        logger.info("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
+        logger.debug("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         orchestrator = _get_orchestrator()
         if orchestrator is None:
             return None
@@ -677,7 +681,6 @@ class MemChorusHooks:
             return []
 
     def on_post_tool_call(self, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        logger.info("MemChorus on_post_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         """Fire after tool execution to auto-capture significant outcomes.
 
         If the tool output contains important results, save them automatically
@@ -685,6 +688,7 @@ class MemChorusHooks:
 
         Returns dict with storage confirmation or None if nothing captured.
         """
+        logger.debug("MemChorus on_post_tool_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         orchestrator = _get_orchestrator()
         if orchestrator is None:
             return None
@@ -1321,6 +1325,68 @@ def _build_search_terms(kwargs: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Per-profile config.yaml parse cache (GH-270 L8)
+#
+# Three resolvers (_resolve_inline_threshold, _resolve_char_limit,
+# _resolve_suppression_settings) each re-read and yaml-parsed the same (or a
+# sibling) config.yaml on every call. During one render pass the file is
+# unchanged, so re-parsing it is pure waste — and each resolver did it even when
+# a previous resolver had just parsed the identical bytes. This helper memoises
+# the parsed mapping keyed on (absolute path, mtime_ns, size): an unchanged file
+# is parsed exactly once and re-used, and editing the file (mtime or size change)
+# automatically invalidates the entry so the next read re-parses fresh. A bounded
+# LRU keeps it capped across any number of profiles/files.
+# ---------------------------------------------------------------------------
+_PROFILE_CONFIG_CACHE_MAX = 32
+_profile_config_cache: "OrderedDict[Tuple[str, int, int], Tuple[str, Any]]" = OrderedDict()
+_profile_config_lock = threading.Lock()
+
+
+def _load_profile_config_yaml(path: str) -> Optional[dict]:
+    """Parse ``config.yaml`` at *path*, memoised by (path, mtime, size).
+
+    Repeated parses of an unchanged file return the cached mapping without
+    touching the disk again; editing the file (mtime/size change) invalidates
+    the entry so the next read re-parses fresh. Bounded LRU across any number
+    of profiles/files. Returns ``None`` when the file is missing or could not be
+    parsed.
+
+    Used by the per-profile resolvers so a single render pass parses the shared
+    config.yaml once instead of once per resolver (GH-270 L8). Callers keep
+    their own fallback/exists rules; this primitive is deliberately path-scoped
+    so it never introduces a fallback the caller did not ask for.
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    with _profile_config_lock:
+        hit = _profile_config_cache.get(key)
+        if hit is not None:
+            _profile_config_cache.move_to_end(key)
+            return hit[1]
+    # Miss — parse outside the lock so we don't hold it during file I/O.
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        parsed = None
+    else:
+        try:
+            parsed = _yml.safe_load(text)
+        except Exception:
+            parsed = None
+    data = parsed if isinstance(parsed, dict) else None
+    with _profile_config_lock:
+        _profile_config_cache[key] = ("data" if data is not None else "none", data)
+        _profile_config_cache.move_to_end(key)
+        while len(_profile_config_cache) > _PROFILE_CONFIG_CACHE_MAX:
+            _profile_config_cache.popitem(last=False)
+    return data
+
+
 def _resolve_inline_threshold() -> Optional[int]:
     """Return the per-entry inline threshold for recall injection (Issue #207).
 
@@ -1362,26 +1428,24 @@ def _resolve_inline_threshold() -> Optional[int]:
             except ValueError:
                 pass  # fall through to config
 
-    # Layer 2: per-profile config.yaml
+    # Layer 2: per-profile config.yaml (parsed once, memoised by mtime — GH-270 L8)
     try:
         from memchorus import _sanitize_profile
         profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
         cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
-        p = _Path(cfg_path)
-        if p.exists():
-            data = _yml.safe_load(p.read_text()) or {}
-            memchorus_cfg = data.get("memchorus", {})
-            if isinstance(memchorus_cfg, dict):
-                recall_cfg = memchorus_cfg.get("recall", None)
-                if isinstance(recall_cfg, dict):
-                    val = recall_cfg.get("inline_threshold")
-                    if val is None:
-                        return None
-                    if isinstance(val, bool):
-                        # bools are ints in Python — guard explicitly
-                        return 0 if val else None
-                    if isinstance(val, (int, float)) and not isinstance(val, bool):
-                        return int(max(0, min(int(val), 50000)))
+        data = _load_profile_config_yaml(cfg_path)
+        memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
+        if isinstance(memchorus_cfg, dict):
+            recall_cfg = memchorus_cfg.get("recall", None)
+            if isinstance(recall_cfg, dict):
+                val = recall_cfg.get("inline_threshold")
+                if val is None:
+                    return None
+                if isinstance(val, bool):
+                    # bools are ints in Python — guard explicitly
+                    return 0 if val else None
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    return int(max(0, min(int(val), 50000)))
     except Exception:
         pass
 
@@ -1409,28 +1473,26 @@ def _resolve_char_limit() -> int:
         except ValueError:
             pass
 
-    # Layer 2: per-profile config.yaml
+    # Layer 2: per-profile config.yaml (parsed once, memoised by mtime — GH-270 L8)
     try:
         profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
         cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
-        p = _Path(cfg_path)
-        if p.exists():
-            data = _yml.safe_load(p.read_text()) or {}
-            memchorus_cfg = data.get("memchorus", {})
+        data = _load_profile_config_yaml(cfg_path)
+        memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
 
-            # New key: recall.max_block_chars (nested under recall.)
-            if isinstance(memchorus_cfg, dict):
-                recall_cfg = memchorus_cfg.get("recall", None)
-                if isinstance(recall_cfg, dict):
-                    limit = recall_cfg.get("max_block_chars", None)
-                    if isinstance(limit, int):
-                        return max(200, min(limit, 10000))
-
-            # Legacy key: memchorus.hook_char_limit
-            if isinstance(memchorus_cfg, dict):
-                limit = memchorus_cfg.get("hook_char_limit", None)
+        # New key: recall.max_block_chars (nested under recall.)
+        if isinstance(memchorus_cfg, dict):
+            recall_cfg = memchorus_cfg.get("recall", None)
+            if isinstance(recall_cfg, dict):
+                limit = recall_cfg.get("max_block_chars", None)
                 if isinstance(limit, int):
                     return max(200, min(limit, 10000))
+
+        # Legacy key: memchorus.hook_char_limit
+        if isinstance(memchorus_cfg, dict):
+            limit = memchorus_cfg.get("hook_char_limit", None)
+            if isinstance(limit, int):
+                return max(200, min(limit, 10000))
     except Exception:
         pass
 
@@ -1535,22 +1597,24 @@ def _resolve_suppression_settings() -> "tuple[int, float]":
         cfg_path = hermes_home() / "profiles" / profile / "config.yaml"
         if not cfg_path.exists():
             cfg_path = hermes_home() / "config.yaml"
-        if cfg_path.exists():
-            data = _yml.safe_load(cfg_path.read_text()) or {}
-            memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
-            sup_cfg = memchorus_cfg.get("suppression", {}) if isinstance(memchorus_cfg, dict) else {}
-            if isinstance(sup_cfg, dict):
-                ws = sup_cfg.get("window_size")
-                if isinstance(ws, int) and ws > 0:
-                    window_size = ws
-                ts = sup_cfg.get("ttl_seconds")
-                if isinstance(ts, (int, float)) and ts >= 0:
-                    ttl = float(ts)
-            recall_cfg = memchorus_cfg.get("recall", {}) if isinstance(memchorus_cfg, dict) else {}
-            if isinstance(recall_cfg, dict):
-                ws = recall_cfg.get("suppression_window")
-                if isinstance(ws, int) and ws > 0 and window_size == _DEFAULT_SUPPRESSION_WINDOW:
-                    window_size = ws
+        # Parsed once, memoised by mtime (GH-270 L8): the profile config is
+        # re-read below on every suppression/char-limit/threshold resolve, so a
+        # shared cache turns those repeated parses into one.
+        data = _load_profile_config_yaml(str(cfg_path))
+        memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
+        sup_cfg = memchorus_cfg.get("suppression", {}) if isinstance(memchorus_cfg, dict) else {}
+        if isinstance(sup_cfg, dict):
+            ws = sup_cfg.get("window_size")
+            if isinstance(ws, int) and ws > 0:
+                window_size = ws
+            ts = sup_cfg.get("ttl_seconds")
+            if isinstance(ts, (int, float)) and ts >= 0:
+                ttl = float(ts)
+        recall_cfg = memchorus_cfg.get("recall", {}) if isinstance(memchorus_cfg, dict) else {}
+        if isinstance(recall_cfg, dict):
+            ws = recall_cfg.get("suppression_window")
+            if isinstance(ws, int) and ws > 0 and window_size == _DEFAULT_SUPPRESSION_WINDOW:
+                window_size = ws
     except Exception:
         pass  # config errors never break recall — fall back to defaults
 
@@ -2071,18 +2135,25 @@ def _build_context_entries(
             # the profile via the same sanitizer the registry uses so the flag
             # stays byte-identical to the store key. AC1: hermes_default → default.
             _profile = _profile_from_source_marker(item.get("source") or item.get("source_name"))
-            _profile_suffix = f" --profile {_profile}" if _profile else ""
+            # GH-270 L6: the key and --profile value are embedded in a copy-paste
+            # shell directive, so a value containing spaces or shell metacharacters
+            # would break it (e.g. a profile named "my agent" → "--profile my
+            # agent").  shlex.quote leaves already-safe tokens (letters/dash/hex)
+            # byte-identical and single-quotes the rest, so the directive stays
+            # a valid one-liner for every key/profile shape.
+            _profile_suffix = f" --profile {shlex.quote(_profile)}" if _profile else ""
+            _qkey = shlex.quote(key)
             if _m_ptr:
                 _ptr_cat = _m_ptr.group(1)
                 raw_content = (
-                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}{_profile_suffix}`. "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {_qkey}{_profile_suffix}`. "
                     f"ID-space mismatch: pointer key, not a mempalace drawer_id (get_drawer 404s) — "
                     f"scope mempalace_search by the pointer's category prefix '{_ptr_cat}'. "
                     f"If missing (cold/pruned), re-fetch the live source."
                 )
             else:
                 raw_content = (
-                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {key}{_profile_suffix}`. "
+                    f"source={_src}\u2014 read it: `memchorus-recall retrieve {_qkey}{_profile_suffix}`. "
                     f"If that key is missing (cold cache, never saved, or pruned), "
                     f"re-fetch the live source before treating it as absent."
                 )
@@ -2423,27 +2494,77 @@ def suppression_state() -> Dict[str, Any]:
     }
 
 
-# Plugin configuration loader — reads plugin.yaml save_triggers before bootstrap
+# Plugin configuration loader — reads plugin.yaml save_triggers before bootstrap.
+#
+# The manifest has historically shipped under several directory names depending
+# on how it was installed:
+#   - pip entry-point name:        plugins/memchorus/
+#   - legacy standalone install:   plugins/hermes-memchorus/   (currently live)
+#   - manifest "name:" field:      memchorus-integration
+# Hard-coding a single dir name (the original one-line path) meant save_triggers
+# silently failed to load whenever the install used a different name, so
+# register() never reached configure_save_triggers() (GH-270 L1). We now probe
+# every known alias and fall back to scanning the plugins directory for any
+# manifest that identifies MemChorus or carries the save_triggers section.
 import yaml as _yml  # Optional: skip if PyYAML not installed
 from pathlib import Path as _Path
 
-__PLUGIN_YAML_PATH = str(hermes_home() / "plugins" / "hermes-memchorus" / "plugin.yaml")
+# Canonical manifest path (kept for backward-compat) + every alias we accept.
+__PLUGIN_YAML_PATH = str(hermes_home() / "plugins" / "memchorus" / "plugin.yaml")
+__PLUGIN_YAML_ALIASES = (
+    "memchorus",
+    "hermes-memchorus",
+    "hermes_memchorus",
+    "memchorus-integration",
+    "memchorus_integration",
+)
+
+
+def _plugin_yaml_candidates() -> List[_Path]:
+    """Ordered candidate paths for the MemChorus plugin manifest.
+
+    Known alias dirs first (deterministic priority order), then any other
+    subdir of the Hermes plugins root that carries a plugin.yaml, as a
+    discovery fallback for future layout changes.
+    """
+    root = _Path(str(hermes_home())) / "plugins"
+    out: List[_Path] = [root / alias / "plugin.yaml" for alias in __PLUGIN_YAML_ALIASES]
+    try:
+        if root.is_dir():
+            known = {str(x) for x in out}
+            for sub in sorted(root.iterdir()):
+                if sub.is_dir():
+                    p = sub / "plugin.yaml"
+                    if str(p) not in known:
+                        out.append(p)
+    except Exception:
+        pass
+    return out
 
 
 def _load_plugin_config() -> dict:
-    """Read plugin.yaml from the default Hermes plugin path. Returns {} on failure."""
-    try:
-        p = _Path(__PLUGIN_YAML_PATH)
+    """Locate and read the MemChorus plugin.yaml across all known install dirs.
+
+    Probes known alias dirs (memchorus / hermes-memchorus / memchorus-integration)
+    first, then any other subdir of the Hermes plugins directory that has a
+    plugin.yaml. Returns the first manifest that identifies MemChorus (``name``
+    contains "memchorus") or that carries a ``save_triggers`` section — i.e.
+    anything that plausibly belongs to this plugin. Returns {} otherwise, so a
+    missing/unreadable manifest never blocks bootstrap.
+    """
+    for p in _plugin_yaml_candidates():
         if not p.exists():
-            return {}
-        raw = p.read_text()
-        cfg = _yml.safe_load(raw) or {}
+            continue
+        try:
+            cfg = _yml.safe_load(p.read_text()) or {}
+        except Exception:
+            continue
         if not isinstance(cfg, dict):
-            return {}
-        return cfg
-    except Exception:
-        # PyYAML missing or file unreadable — caller decides if that's fatal
-        return {}
+            continue
+        name = str(cfg.get("name", "")).lower()
+        if "memchorus" in name or isinstance(cfg.get("save_triggers"), (list, dict)):
+            return cfg
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -2459,13 +2580,28 @@ def register(ctx: Any) -> None:
     Called by the Hermes gateway when the plugin is discovered via entry points
     or directory scanning. Registers lifecycle hook callbacks with PluginContext.
     """
-    # Merge user-provided save_triggers BEFORE any BehavioralTrigger instance exists
+    # Merge user-provided save_triggers BEFORE any BehavioralTrigger instance exists.
+    # The triggers live in the standalone plugin.yaml (loaded by
+    # _load_plugin_config()). Apply them whenever that manifest provided them.
+    #
+    # The original ``hasattr(ctx, 'plugin_config')`` gate assumed the gateway
+    # always exposes the manifest as ctx.plugin_config. That only holds for
+    # standalone-style discovery; for pip entry-point installs there is no such
+    # attribute, so the branch was skipped and user save_triggers never reached
+    # configure_save_triggers() (GH-270 L1). Dropping the gate lets the already-
+    # loaded manifest drive the merge in BOTH discovery modes, and degrades to a
+    # no-op (empty list) when no manifest is present.
     plugin_cfg = _load_plugin_config()
     user_triggers = plugin_cfg.get("save_triggers", [])  # type: ignore[union-attr]
-    if user_triggers and hasattr(ctx, 'plugin_config'):
+    if user_triggers:
         try:
             from memchorus.behavioral_trigger import configure_save_triggers  # type: ignore[attr-defined]
-            configure_save_triggers(user_triggers)
+            # configure_save_triggers() expects a list of keyword strings; a
+            # YAML mapping (trigger: weight) is normalized to its keys.
+            if isinstance(user_triggers, dict):
+                user_triggers = list(user_triggers.keys())
+            if user_triggers:
+                configure_save_triggers(user_triggers)
         except Exception as exc:
             logger.warning("Failed to apply save_triggers: %s", exc)
 
