@@ -1,0 +1,7 @@
+name: memchorus
+version: 0.1.0
+description: "MemChorus — orientation and recall policy for Hermes. Wraps MemPalace (or the built-in memory store) as the backing store, injecting forced session-start context and providing background prefetch, on-demand recall, and durable remember tools."
+# No pip_dependencies: memchorus is a local source tree (src/memchorus) that
+# the provider resolves at runtime; it is not installed from PyPI.
+# The provider implements the full MemoryProvider ABC directly, including
+# on_session_end — no separate hook wiring is required.
