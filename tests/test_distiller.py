@@ -80,6 +80,42 @@ class TestIsWorthyOfGuard:
         assert result == MistakeSeverity.LOW
 
 
+class TestFailureSignalGateAC3:
+    """GH-266 AC3: a self-break DOMAIN mention only earns a CRITICAL guard when the
+    text ALSO carries an explicit failure signal.
+
+    Before the fix, any SELFBREAK keyword match immediately returned CRITICAL, so
+    benign success-path lines that merely named the domain (e.g. "pip install -e
+    ... completed successfully") were being promoted into hard behavioral guards —
+    the guard-explosion reported in the issue. These tests pin that gate.
+    """
+
+    def test_benign_selfbreak_domain_without_failure_signal_is_low(self):
+        from memchorus.prohibition_distiller import ProhibitionDistiller as D, MistakeSeverity
+        # Names a self-break domain ("pip install -e") but the outcome is a success —
+        # no failure signal present, so it must NOT be promoted to a hard guard.
+        text = "pip install -e into ~/.hermes completed successfully, no issues reported"
+        assert D.is_worthy_of_guard(text) == MistakeSeverity.LOW
+
+    def test_selfbreak_domain_with_failure_signal_stays_critical(self):
+        from memchorus.prohibition_distiller import ProhibitionDistiller as D, MistakeSeverity
+        # Same domain, but the line now carries an explicit failure signal —
+        # it IS worthy of a hard guard and must remain CRITICAL.
+        text = "pip install -e into ~/.hermes broke the venv with ModuleNotFoundError"
+        assert D.is_worthy_of_guard(text) == MistakeSeverity.CRITICAL
+
+    def test_has_failure_signal_detects_negative_markers(self):
+        from memchorus.prohibition_distiller import ProhibitionDistiller as D
+        assert D._has_failure_signal("the venv is broken") is True
+        assert D._has_failure_signal("traceback (most recent call last)") is True
+        assert D._has_failure_signal("the command failed") is True
+
+    def test_has_failure_signal_false_on_success_path(self):
+        from memchorus.prohibition_distiller import ProhibitionDistiller as D
+        assert D._has_failure_signal("install completed successfully") is False
+        assert D._has_failure_signal("venv created and working as expected") is False
+
+
 class TestProhibitionDistiller:
     @pytest.fixture
     def distiller(self):
