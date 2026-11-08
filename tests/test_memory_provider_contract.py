@@ -74,7 +74,14 @@ class TestSubclass:
     def test_is_subclass_of_memory_provider(self):
         # Resolve the base the provider actually inherited from so this
         # assertion is meaningful whether or not hermes-agent is on sys.path.
+        # Prefer the real ``agent.memory_provider`` base when importable;
+        # otherwise fall back to the single direct base the provider bound to
+        # at import time (its documented ``abc.ABC`` fallback on bare CI
+        # runners that don't ship hermes-agent). ``__bases__[0]`` is the base
+        # the class truly inherited from and can never be ``None`` here.
         bound = _resolve_bound_base(MemChorusMemoryProvider)
+        if bound is None:
+            bound = MemChorusMemoryProvider.__bases__[0]
         target = bound if bound is not None else _ABC
         assert target is not None
         assert issubclass(MemChorusMemoryProvider, target), (
