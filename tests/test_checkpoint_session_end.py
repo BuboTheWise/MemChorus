@@ -114,7 +114,7 @@ def test_write_checkpoint_persists_via_save_and_returns_key() -> None:
     key, value, source, category, metadata = orch.calls[0]
     assert key == "project:acme"
     assert source is None
-    assert category == "SESSION"
+    assert category == "RESULT"
     assert metadata and metadata.get("provenance")
     # The persisted value is valid and checkpoint-stamped.
     validate_project_record(value)

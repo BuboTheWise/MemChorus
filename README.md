@@ -288,6 +288,7 @@ MemChorus's engineering documents live in [`docs/`](docs/). The forward-looking 
 | [Architecture](docs/ARCHITECTURE.md) | System architecture, deployment map, process topology, fault modes |
 | [Memory Lifecycle](docs/memory-lifecycle-design.md) | How memory is written, recalled, deduplicated, and decayed |
 | [Integration Contract](docs/integration-contract-spec.md) | The hook/transport contract with the host agent runtime |
+| [Hermes MemoryProvider](docs/hermes-memory-provider.md) | MemChorus as a first-class Hermes memory provider — orientation/policy vs. MemPalace storage, background prefetch, the MemPalace-down fallback, and the two integration entry points |
 | [Lifecycle Analysis (GAP-017)](docs/lifecycle-analysis.md) | Analysis of the lifecycle gap and its resolution |
 | [Hook Registration Audit](docs/hook-registration-audit.md) | How hooks are registered and verified at bootstrap |
 | [Testing](docs/TESTING.md) · [Benchmarks](docs/BENCHMARKS.md) · [Auto-tuning](docs/AUTOTUNING.md) | Test strategy, benchmark harness, calibration pipeline |
@@ -507,6 +508,37 @@ If the server is unavailable at runtime, the MemPalace source falls back to a lo
 ```bash
 RUN_LIVE_MCP=1 pytest tests/test_mempalace_mcp_integration.py -v
 ```
+
+### Hermes MemoryProvider (issue #273)
+
+Beyond the blocking `pre_llm_call` hook plugin (`integrations/hermes/`, name
+`memchorus-integration`), MemChorus now also plugs into Hermes as a
+first-class **memory provider** — it implements the full
+`agent.memory_provider.MemoryProvider` ABC (`integrations/provider/`, name
+`memchorus`). From Hermes' perspective MemChorus is just another provider,
+like Honcho or Mem0.
+
+The split is deliberate:
+
+- **MemChorus owns orientation & policy** — forced session-start context,
+  recall depth, behavioural guards, provenance.
+- **MemPalace (or the Hermes built-in files) owns storage** — semantic
+  search, knowledge graph, wings, diary.
+
+Key properties (full detail in [docs/hermes-memory-provider.md](docs/hermes-memory-provider.md)):
+
+- **Background prefetch** replaces the blocking ~110 ms pre-decision read —
+  `queue_prefetch`/`on_turn_start` dispatch to a worker; `prefetch` only reads
+  the already-built slot, degrading to the cached fallback instead of
+  blocking the turn.
+- **MemPalace-down fallback** — orientation (`system_prompt_block`,
+  `prefetch`, `is_available()`) keeps working with MemPalace disabled; writes
+  route to whichever store is reachable, so nothing is dropped.
+- **Coexistence, not replacement** — MemPalace is never disabled; MemChorus
+  wraps it and degrades (not fails) when it is absent.
+- **Verified** — `tests/test_memory_provider_contract.py` (44 tests) runs
+  every ABC method against the *real* Hermes base class, including two full
+  session-lifecycle simulations.
 
 ## Usage Examples
 
