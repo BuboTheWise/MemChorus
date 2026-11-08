@@ -116,6 +116,10 @@ class ToolCaptureBuffer:
 
         Raises:
             RuntimeError: if called after close().
+
+        Note:
+            The flush (if any) is invoked OUTSIDE the queue lock so the callback
+            may re-enter add() without self-deadlock (GH-270 L4).
         """
         with self._lock:
             if self._closed:
@@ -127,18 +131,68 @@ class ToolCaptureBuffer:
             if len(self._queue) == 1 and self._timer is None:
                 self._arm_timer()
 
-            # Immediate flush if count threshold hit.
-            if len(self._queue) >= self.max_items:
-                self._flush_locked()
+            should_flush = len(self._queue) >= self.max_items
+        if should_flush:
+            # Deliberately outside the lock: flush() snapshots the queue under
+            # the lock, then invokes the callback without holding it.
+            self.flush()
 
     def flush(self) -> int:
         """Drain the buffer and deliver to callback. Thread-safe.
 
+        The snapshot of the queue happens under the lock, but the callback is
+        invoked WITHOUT the lock held (GH-270 L4). This means the callback may
+        synchronously call add(), flush(), or close() on the same buffer
+        without deadlock. If the callback raises, the batch is re-queued
+        ahead of any items added during the callback so the next flush retries
+        it first.
+
         Returns:
             Number of items flushed (0 when empty).
         """
+        # Snapshot (and clear) the queue under the lock; release before callback.
         with self._lock:
-            return self._flush_locked()
+            if not self._queue:
+                return 0
+            batch = self._queue[:]
+            self._queue.clear()
+            count = len(batch)
+            # Cancel the pending timer since we're flushing now.
+            self._cancel_timer()
+            callback = self.callback
+
+        # --- Callback fires with NO lock held ---------------------------------
+        if callback is None:
+            logger.warning(
+                "ToolCaptureBuffer: no callback set, discarding %d items", count
+            )
+            with self._lock:
+                self._stats.total_flushes += 1
+                self._stats.total_items_flushed += count
+                self._stats.last_flush_size = count
+            return count
+
+        try:
+            callback(batch)
+        except Exception as exc:
+            logger.error("ToolCaptureBuffer: callback failed — %s", exc)
+            with self._lock:
+                # Re-queue the failed batch ahead of any items that were added
+                # during the callback so the next add/flush retries them first
+                # (FIFO preserved).
+                self._queue = batch + self._queue
+            return count
+
+        with self._lock:
+            self._stats.total_flushes += 1
+            self._stats.total_items_flushed += count
+            self._stats.last_flush_size = count
+            logger.debug(
+                "ToolCaptureBuffer: flush #%d — %d items",
+                self._stats.total_flushes,
+                count,
+            )
+        return count
 
     def clear(self) -> None:
         """Discard all pending items without flushing. Use for reset/testing."""
@@ -149,11 +203,16 @@ class ToolCaptureBuffer:
                 logger.debug("ToolCaptureBuffer: cleared %d pending items", discarded)
 
     def close(self) -> None:
-        """Flush remaining items, cancel timer, mark buffer closed. No-op on subsequent calls."""
+        """Flush remaining items, cancel timer, mark buffer closed. Idempotent.
+
+        The flush (and thus the callback) runs OUTSIDE the queue lock so a
+        re-entrant close() is safe (GH-270 L4).
+        """
         with self._lock:
             if self._closed:
                 return
-            self._flush_locked()
+        self.flush()
+        with self._lock:
             self._cancel_timer()
             self._closed = True
 
@@ -165,43 +224,6 @@ class ToolCaptureBuffer:
         self.close()
 
     # --- Internal methods (caller MUST hold _lock) -----------------------------
-
-    def _flush_locked(self) -> int:
-        """Drain and deliver. Caller holds self._lock."""
-        if not self._queue:
-            return 0
-
-        batch = self._queue[:]
-        self._queue.clear()
-        count = len(batch)
-
-        # Cancel the pending timer since we're flushing now.
-        self._cancel_timer()
-
-        if self.callback is None:
-            logger.warning(
-                "ToolCaptureBuffer: no callback set, discarding %d items", count
-            )
-            self._stats.total_flushes += 1
-            self._stats.last_flush_size = count
-            return count
-
-        try:
-            self.callback(batch)
-            self._stats.total_flushes += 1
-            self._stats.total_items_flushed += count
-            self._stats.last_flush_size = count
-            logger.debug(
-                "ToolCaptureBuffer: flush #%d — %d items",
-                self._stats.total_flushes,
-                count,
-            )
-        except Exception as exc:
-            logger.error("ToolCaptureBuffer: callback failed — %s", exc)
-            # Re-queue the batch so it's not silently lost; next add or flush will retry.
-            self._queue = batch + self._queue
-
-        return count
 
     def _arm_timer(self) -> None:
         """Arm a timer for time-based flush. Called with _lock held."""

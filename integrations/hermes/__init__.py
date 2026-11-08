@@ -1,26 +1,29 @@
-"""MemChorus <-> Hermes Agent integration plugin.
+"""MemChorus <-> Hermes Agent integration plugin (LEGACY SHIM — GH-270 L2).
 
-Registers lifecycle hooks into the Hermes agent loop so that MemChorus
-pre-decision recall and autonomous storage capture fire at the right
-moments without any manual agent intervention:
+This package is the *old* standalone-plugin install path for MemChorus. Its
+implementation was moved into the canonical :mod:`memchorus.hooks` module and
+the Hermes entry point now points directly at it
+(``memchorus = "memchorus.hooks"`` in ``pyproject.toml``). Everything this
+module used to do — lazy bootstrap, hook handlers, ``register(ctx)`` — now
+lives there, and the save_triggers / lifecycle-hook wiring is driven from
+``integrations/hermes/plugin.yaml`` via the canonical loader.
 
-- **pre_llm_call**: Fires before every API call. Runs pre-decision recall
-  via ``BehavioralEnforcementManager.enforce()``, then injects relevant
-  memory into the turn context so the model sees it before reasoning begins.
-  Also evaluates feedback loop corrections from custom YAML definitions.
+This shim exists ONLY so existing installs / import sites that still reference
+``integrations.hermes`` keep working. It forwards each legacy symbol to its
+canonical counterpart:
 
-- **post_tool_call**: Fires after each tool execution. Captures meaningful
-  outcomes for autonomous storage via the enforcement pipeline.
+    register(ctx)            -> memchorus.hooks.register(ctx)
+    _bootstrap()             -> memchorus.get_orchestrator()
+    _on_pre_llm_call(**kw)   -> memchorus.hooks.pre_llm_call(**kw)
+    _on_post_tool_call(**kw) -> memchorus.hooks.post_tool_call(**kw)
+    __version__              -> memchorus.__version__
 
-Feedback loop extension: if ~/.hermes/custom_loops/ contains valid loop
-definitions, they are loaded once on first fire and evaluated alongside
-memory recall. Corrections merge into the same ``context`` string --
-soft nudges, never hard overrides. Malformed YAML entries log warnings
-and are silently skipped.
+It no longer builds its own orchestrator or wires its own handlers — doing so
+would double-register the hooks and double-fire the save_triggers merge that
+the canonical :func:`memchorus.hooks.register` already performs (GH-270 L1).
 
-This is a standalone plugin -- install by placing this directory under the
-Hermes plugins path (e.g. ~/.hermes/plugins/memchorus-integration/) or
-by enabling ``plugins.enabled`` in config.yaml when installed system-wide.
+Use ``memchorus.hooks`` directly in new code; this package is slated for
+removal once no external reference to ``integrations.hermes`` remains.
 """
 
 from __future__ import annotations
@@ -30,194 +33,128 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Feedback loop integration removed in v1.9.0.
+__all__ = [
+    "register",
+    "bootstrap",
+    "_bootstrap",
+    "_on_pre_llm_call",
+    "_on_post_tool_call",
+    "__version__",
+]
+
+# One-time notice so a legacy caller knows this path is a forwarder, not the
+# real implementation. Emitted the first time a legacy symbol is touched.
+_DEPRECATION_NOTE = (
+    "integrations.hermes is a legacy deprecation shim (GH-270). "
+    "Use memchorus.hooks (canonical) directly — this module only forwards."
+)
+_WARNED = {"flag": False}
 
 
-# ---------------------------------------------------------------------------
-# Lazy bootstrap: only import MemChorus on first hook fire so a missing
-# install doesn't break Hermes startup at all.
-# ---------------------------------------------------------------------------
-
-_orchestrator: "Optional[Any]" = None  # MemoryOrchestrator instance (singleton)
-_init_done: bool = False
+def _warn_deprecated(name: str) -> None:
+    if _WARNED["flag"]:
+        return
+    _WARNED["flag"] = True
+    logger.warning("%s (referenced legacy symbol: %s)", _DEPRECATION_NOTE, name)
 
 
-def _bootstrap() -> Optional["MemoryOrchestrator"]:  # noqa: F821
-    """Import and initialise the orchestrator exactly once."""
-    global _orchestrator, _init_done
+# Per-context registration guard so calling the legacy ``register(ctx)`` more
+# than once for the same plugin context is a no-op (the canonical register
+# itself does not track this, and double-wiring would double-fire hooks).
+_REGISTERED_CTX_IDS: "set[int]" = set()
 
-    if _init_done:
-        return _orchestrator
 
+def register(ctx: Any) -> None:  # noqa: ANN001
+    """Legacy ``register`` — delegates to the canonical ``memchorus.hooks.register``.
+
+    Idempotent per ``ctx``: a second call for the same plugin context is a
+    no-op so the canonical register's save_triggers merge / hook wiring /
+    atexit flush are applied exactly once.
+    """
+    _warn_deprecated("register")
+    ctx_id = id(ctx)
+    if ctx_id in _REGISTERED_CTX_IDS:
+        return
+    # Lazy-import the canonical module so this shim can still be imported
+    # before the pip install has completed.
     try:
-        from memchorus.orchestrator import MemoryOrchestrator  # noqa: F811
-        from memchorus.mempalace_memory_source import MemPalaceMemorySource  # noqa: F811
-        from memchorus.hermes_memory_source import HermesDefaultMemorySource  # noqa: F811
+        import memchorus.hooks as _hooks
     except ImportError as exc:
-        logger.warning("MemChorus lazy bootstrap failed (package not installed?): %s", exc)
-        return None
-    except Exception as exc:
-        logger.warning("MemChorus eager init error (non-fatal): %s", exc)
-        _init_done = True  # prevent infinite retry loops
-        return None
-
+        logger.warning(
+            "integrations.hermes.register: memchorus.hooks unavailable — %s", exc
+        )
+        return
     try:
-        # Config dict -- not keyword args! The orchestrator __init__ already
-        # registers 'hermes_default' + 'mempalace' sources, so we don't
-        # duplicate that work here.
-        config = {
-            "enforce_on_read": True,
-            "enforce_on_write": True,
-            "half_life_days": 30.0,
-        }
-        orch = MemoryOrchestrator(config=config)
-
-        sources = list(orch.memory_sources.keys())
-        logger.info("MemChorus hooked: orchestrator ready with sources %s", sources)
-
-        # Degrade gracefully if no available sources rather than breaking.
-        if not orch.is_available():
-            logger.warning(
-                "MemChorus orchestrator has no available sources."
-                " Hooks will fire but recall/storage is a no-op until"
-                " MemPalace or another source is connected."
-            )
-
-        _orchestrator = orch
-        _init_done = True
-        return orch
-
-    except Exception as exc:
-        logger.error("MemChorus bootstrap failed (non-fatal): %s", exc)
-        _init_done = True  # prevent infinite retries on broken config
-        return None
+        _hooks.register(ctx)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("integrations.hermes.register: canonical register failed: %s", exc)
+        raise
+    _REGISTERED_CTX_IDS.add(ctx_id)
 
 
-# ---------------------------------------------------------------------------
-# Feedback loop integration -- loads once on demand via lazy import
-# ---------------------------------------------------------------------------
-
-def _try_load_feedback_module() -> bool:
-    """Removed in v1.9.0 — feedback_loop module no longer exists."""
-    return False
+# --- Compatibility aliases -------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Hook handlers
-# ---------------------------------------------------------------------------
+def _bootstrap():
+    """Legacy orchestrator accessor — forwards to ``memchorus.get_orchestrator``.
 
-def _on_pre_llm_call(*, user_message: str = "", **_kwargs: Any) -> Optional[Dict[str, Any]]:
-    """Fire pre-decision recall and inject context before the LLM call.
-
-    Hermes expects a dict with ``context`` key or a string -- it appends this
-    to the user message (see turn_context.py). An empty result is silently dropped.
-
-    Additionally returns ``indicators`` so the gateway can render TUI icon
-    markers when MemChorus performs recall/storage on behalf of this plugin
-    without polluting conversation history with synthetic tool calls.
+    Returns the MemoryOrchestrator instance for the current profile, or ``None``
+    when bootstrap has not yet run / the package is not installed. Matches the
+    old return contract of the inline bootstrap that used to live here.
     """
-    orch = _bootstrap()
-    if orch is None:
-        return None
-
-    context_parts: List[str] = []
-
-    # --- Memory recall ---
+    _warn_deprecated("_bootstrap")
     try:
-        em = orch._get_enforcement_manager()
-        if em is None:
-            return None
-
-        result = em.enforce(user_message)
-        if result.recall_context:
-            seen_keys = set()
-            for hit in result.recall_context[:5]:
-                key = hit.get("key", "")
-                content = hit.get("content", "")
-                if key and content and key not in seen_keys:
-                    context_parts.append(f"[MEMORY:{key}] {str(content)[:300]}")
-                    seen_keys.add(key)
-
-    except Exception as exc:
-        logger.warning("pre_llm_call hook error (non-fatal): %s", exc)
-
-    if not context_parts:
+        import memchorus
+    except ImportError:
+        return None
+    getter = getattr(memchorus, "get_orchestrator", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:
         return None
 
-    # Build memory recall injection string
-    injected_lines: List[str] = []
-    indicators: List[Dict[str, str]] = []
 
-    injected_lines.append("-- Pre-decision Memory Recall --")
-    injected_lines.extend(context_parts)
-    indicators.append(
-        {
-            "name": "memory_search",
-            "label": "MemChorus recall",
-        }
-    )
-
-    return {
-        "context": "\n".join(injected_lines),
-        "indicators": indicators,
-    }
+def _on_pre_llm_call(*_args: Any, **kw: Any) -> Optional[Dict[str, Any]]:
+    """Legacy pre_llm_call handler — forwards to the canonical handler."""
+    _warn_deprecated("_on_pre_llm_call")
+    try:
+        import memchorus.hooks as _hooks
+    except ImportError:
+        return None
+    try:
+        return _hooks.pre_llm_call(**kw)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("integrations.hermes._on_pre_llm_call: %s", exc)
+        return None
 
 
-def _on_post_tool_call(*, tool_name: str = "", tool_result: Any = None, **_kwargs: Any) -> Optional[Dict[str, Any]]:
-    """Capture meaningful outcomes after every tool execution.
+def _on_post_tool_call(*_args: Any, **kw: Any) -> Optional[Dict[str, Any]]:
+    """Legacy post_tool_call handler — forwards to the canonical handler."""
+    _warn_deprecated("_on_post_tool_call")
+    try:
+        import memchorus.hooks as _hooks
+    except ImportError:
+        return None
+    try:
+        return _hooks.post_tool_call(**kw)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("integrations.hermes._on_post_tool_call: %s", exc)
+        return None
 
-    Observer hook -- returns indicators so the gateway can show a storage icon
-    when MemChorus autonomously captures memory after a tool call completes.
+
+def __getattr__(name: str) -> Any:  # PEP 562
+    """Expose ``__version__`` (and any other legacy names) as a passthrough.
+
+    Keeps ``from integrations.hermes import __version__`` working against the
+    canonical package version without re-hardcoding it here.
     """
-    orch = _bootstrap()
-    if orch is None:
-        return None
-
-    try:
-        em = orch._get_enforcement_manager()
-        if em is None:
-            return None
-
-        text_to_analyse = f"[TOOL:{tool_name}]"
-        if tool_result and isinstance(tool_result, dict):
-            output = tool_result.get("output", "") or tool_result.get("content", "")
-            if output:
-                text_to_analyse += f" {str(output)[:500]}"
-
-        # Post-action capture fires the enforcement pipeline
-        result = em.enforce(text_to_analyse)
-
-        # Announce storage activity to the TUI via indicators
-        stored = getattr(result, "stored_keys", [])
-        if stored:
-            return {
-                "indicators": [
-                    {
-                        "name": "memory_store",
-                        "label": f"MemChorus stored ({len(stored)} item{'s' if len(stored) != 1 else ''})"
-                    }
-                ],
-            }
-
-    except Exception as exc:
-        logger.warning("post_tool_call hook error (non-fatal): %s", exc)
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Plugin entry point -- called by the Hermes plugin loader on startup.
-# ---------------------------------------------------------------------------
-
-def register(ctx) -> None:  # noqa: ANN001
-    """Register MemChorus hooks with the Hermes plugin manager context."""
-    logger.info("MemChorus integration: register() called")
-
-    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
-    logger.debug("Registered pre_llm_call hook")
-
-    ctx.register_hook("post_tool_call", _on_post_tool_call)
-    logger.debug("Registered post_tool_call hook")
-
-    # Bootstrap once at registration -- not on every turn.
-    _bootstrap()
+    if name == "__version__":
+        try:
+            import memchorus
+        except ImportError:
+            # Fall back to the plugin.yaml version so the shim is always importable.
+            return "1.0.0"
+        return getattr(memchorus, "__version__", "1.0.0")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
