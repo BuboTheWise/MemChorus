@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from memchorus import palace_path
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import hermes_home, profile_home, profile_config_path
 
 # ---------------------------------------------------------------------------
 # PyYAML guard — it is in core install_requires so this should never fire,
@@ -176,7 +176,7 @@ def _resolve_config_path(profile: str) -> Path:
     """Return the target config path for *profile*."""
     if profile == "default":
         return hermes_home() / "memchorus.yaml"
-    dst = hermes_home() / "profiles" / profile / "memchorus.yaml"
+    dst = profile_home(profile) / "memchorus.yaml"
     return dst
 
 
@@ -222,7 +222,7 @@ def write_config(profile: Optional[str] = None,
 def _resolve_hermes_config(profile: str) -> Path:
     if profile == "default":
         return hermes_home() / "config.yaml"
-    return hermes_home() / "profiles" / profile / "config.yaml"
+    return profile_config_path(profile)
 
 
 def enable_plugin(profile: Optional[str] = None) -> bool:

@@ -58,13 +58,52 @@ _ACTIVE_PROFILE: str | None = None
 def _resolve_active_profile(profile_name: str | None = None) -> str:
     """Derive the active Hermes profile name for registry keying.
 
-    Priority chain (AC3):
+    Priority chain (AC3, updated for issue #267):
      1. Explicit ``profile_name`` argument (non-None, non-empty).
-     2. ``HERMES_PROFILE`` env var.
-     3. Fallback to ``"default"`` so there is always a stable key.
+     2. The canonical :func:`memchorus.hermes_home.active_profile_name`
+        resolver — a ``$HERMES_HOME`` that is already scoped to a per-profile
+        directory (the ``hermes -p <name>`` / Kanban-dispatcher case) wins,
+        then ``$HERMES_PROFILE``.
+     3. ``$HERMES_DEFAULT_PROFILE`` (a bootstrap-only fallback the canonical
+        resolver does not need, preserved here for backward compatibility).
+     4. ``"default"`` so there is always a stable key.
     """
     if profile_name:
         return str(profile_name)
+    effective = active_profile()
+    if effective != "default":
+        return effective
+    from_env = os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_DEFAULT_PROFILE")
+    if from_env:
+        return _sanitize_profile(str(from_env))
+    return "default"
+
+
+def active_profile() -> str:
+    """Canonical active-profile resolver (issue #267).
+
+    Single importable entry point every module and external caller should use
+    to learn *which profile this process runs in*. Delegates to
+    :func:`memchorus.hermes_home.active_profile_name` for the tricky parts so
+    the resolution logic lives in exactly one place, and additionally honours
+    ``$HERMES_DEFAULT_PROFILE`` before falling back to ``"default"``.
+
+    Precedence:
+      1. ``$HERMES_HOME`` when it points at a per-profile directory
+         (``.../profiles/<name>/``) — the ``hermes -p <name>`` case.
+      2. ``$HERMES_PROFILE`` (sanitised to ``"default"`` on an invalid value).
+      3. ``$HERMES_DEFAULT_PROFILE`` (bootstrap fallback only).
+      4. ``"default"``.
+
+    Always returns a string safe for use in filesystem paths.
+    """
+    try:
+        from memchorus.hermes_home import active_profile_name
+        name = active_profile_name()
+        if name and name != "default":
+            return name
+    except Exception:  # pragma: no cover - import failure is non-fatal
+        pass
     from_env = os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_DEFAULT_PROFILE")
     if from_env:
         return _sanitize_profile(str(from_env))
