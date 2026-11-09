@@ -1,0 +1,70 @@
+{
+  "report_kind": "memchorus_outcome_harness",
+  "profile": "harness",
+  "version": "2.0.73",
+  "timestamp": "2026-11-09T08:01:41Z",
+  "overall_passed": true,
+  "scenario_count": 5,
+  "scenarios": [
+    {
+      "scenario_id": "S1",
+      "name": "task-success",
+      "metric": "task_success",
+      "description": "Agent must find the correct deploy config in top-1. Calibration boost (\u00d73.0) lifts the signal above a higher-relevance noise fact that the baseline cannot distinguish.",
+      "direction": "higher_is_better",
+      "arm_a": 0.0,
+      "arm_b": 1.0,
+      "delta": 1.0,
+      "pass_line": 1.0,
+      "passed": true
+    },
+    {
+      "scenario_id": "S2",
+      "name": "re-ask-rate",
+      "metric": "re_ask_rate",
+      "description": "Agent must not need a second search to find the auth token. Calibration boost lifts the signal above a higher-relevance stale doc that the baseline surfaces first.",
+      "direction": "lower_is_better",
+      "arm_a": 1.0,
+      "arm_b": 0.0,
+      "delta": -1.0,
+      "pass_line": 1.0,
+      "passed": true
+    },
+    {
+      "scenario_id": "S3",
+      "name": "noise-injection",
+      "metric": "noise_injection",
+      "description": "Top-3 must contain at most 1 noise fact. The signal sits just under the recall floor in the baseline arm; the real \u00d73.0 useful-boost lifts it over while \u00d70.5 noise-demotions pull two confirmed-noise facts under the floor, cutting injection by 2.",
+      "direction": "lower_is_better",
+      "arm_a": 3.0,
+      "arm_b": 1.0,
+      "delta": -2.0,
+      "pass_line": 1.0,
+      "passed": true
+    },
+    {
+      "scenario_id": "S4",
+      "name": "stale-surface",
+      "metric": "stale_rate",
+      "description": "Expired config (valid_to 2025) must not appear in top-3. Stale-veto (\u00d70.5) is active in both arms; the extra confirmed-noise boost (\u00d70.5) compounds it below the recall floor only in the calibration arm, dropping the stale fact entirely.",
+      "direction": "lower_is_better",
+      "arm_a": 1.0,
+      "arm_b": 0.0,
+      "delta": -1.0,
+      "pass_line": 1.0,
+      "passed": true
+    },
+    {
+      "scenario_id": "S5",
+      "name": "recall-cost",
+      "metric": "recall_cost",
+      "description": "Recall-path cost (facts cleared floor and scored) must fall by at least 1 in the calibration arm. Calibration prunes confirmed-noise below the recall floor, so the useful fact is still cleared while less scoring work is done \u2014 the efficiency outcome issue #271 asks for.",
+      "direction": "lower_is_better",
+      "arm_a": 3.0,
+      "arm_b": 1.0,
+      "delta": -2.0,
+      "pass_line": 1.0,
+      "passed": true
+    }
+  ]
+}
