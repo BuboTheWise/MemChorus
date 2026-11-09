@@ -110,9 +110,33 @@ def _live_e2e_ready() -> bool:
         return False
 
 
+def _gh272_e2e_ready() -> bool:
+    # GH-272 pre_tool_call gate e2e suite: it drives the REAL Hermes host chain
+    # (hermes_cli.plugins / model_tools) and gates every test on
+    # ``hermes_plugins is None`` (@unittest.skipIf). On a bare CI runner the
+    # host chain is not importable, so all 9 tests marker-skip and the #183
+    # all-skipped gate flags the 100%-skipped module as an offender.
+    #
+    # Mirror the suite's OWN availability decision — import the sibling module
+    # (exactly the #197 _live_e2e_ready precedent) and read its ``hermes_plugins``
+    # flag. That flag is computed by the module with its own sys.path insert, so
+    # it is correct in every context (host present -> run; host absent ->
+    # deselect) and is immune to the #269 HOME redirection that would mislead a
+    # path-based check. When not ready, deselect at collection so the module
+    # contributes zero reports -> "not selected" -> #183 gate-exempt.
+    try:
+        import test_272_pre_tool_call_gate_e2e as _gh  # sibling in tests/ (on sys.path)
+        return bool(_gh.hermes_plugins)
+    except Exception:
+        # Module can't even load in this environment -> treat as not-ready so we
+        # deselect rather than let it marker-skip and trip the #183 gate.
+        return False
+
+
 def pytest_collection_modifyitems(config, items):
     battery = config.getoption("--recall-battery", default=False)
     live_ready = _live_e2e_ready() if not battery else True
+    gh272_ready = _gh272_e2e_ready()
 
     # #239 MCP coprocess-reap regression is POSIX-only (drives a REAL
     # os.killpg / start_new_session / signal.signal at a spawned pair). On
@@ -139,6 +163,14 @@ def pytest_collection_modifyitems(config, items):
         #     POSIX it stays collected and runs + gates normally.
         if module_base == "test_mcp_coprocess_reap_on_sigterm.py" and win32:
             continue  # deselected: POSIX process-group reap, not expressible on win32
+        # (d) #272 pre_tool_call gate e2e: the suite imports the Hermes host
+        #     chain from the host checkout (~/.hermes/hermes-agent). Bare CI
+        #     runners don't ship it, so every test would marker-skip and trip
+        #     the #183 all-skipped gate. Deselect at collection when the host
+        #     chain is absent -> "not selected" -> gate-exempt; on a machine
+        #     that HAS the host checkout the 9 tests are collected and run.
+        if module_base == "test_272_pre_tool_call_gate_e2e.py" and not gh272_ready:
+            continue  # deselected: Hermes host checkout not on this runner
         select.append(item)
     items[:] = select
 
