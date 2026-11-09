@@ -545,24 +545,123 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         t = threading.Thread(target=_run, name="memchorus-sync-turn", daemon=True)
         t.start()
 
+    def _extract_user_texts(self, messages: List[Dict[str, Any]]) -> List[str]:
+        """Pull user-role text out of a Hermes message list.
+
+        Accepts both the canonical ``{"role": "user", "content": "..."}`` shape
+        Hermes sends (via ``memory_manager.on_session_end``) and the looser
+        ``{"role": "human", ...}`` / bare-string forms the legacy hook used to
+        see. Returns a flat list of non-empty user strings, in order.
+        """
+        out: List[str] = []
+        for m in messages or []:
+            if isinstance(m, dict):
+                role = m.get("role", "")
+                if role in ("user", "human"):
+                    text = m.get("content") or m.get("text") or ""
+                    if text:
+                        out.append(str(text))
+            elif isinstance(m, str):
+                out.append(m)
+        return out
+
     def on_session_end(self, messages: List[Dict[str, Any]], **kwargs: Any) -> None:
-        """Persist a session checkpoint via the orchestrator (best-effort)."""
+        """Session-boundary hook: checkpoint + auto-tuning feedback (issue #262).
+
+        This is the *real* session-end path in a live Hermes run: it is called
+        by :class:`agent.memory_manager.MemoryManager` with the full
+        conversation history (a ``List[Dict]`` of ``{"role", "content"}``) at
+        the CLI's ``atexit`` boundary — unlike the generic ``on_session_end``
+        shell hook, which fires every turn and carries only
+        ``session_id/task_id/turn_id/completed/interrupted/model/platform``
+        (no message content).
+
+        Two responsibilities, both best-effort and never raising into
+        teardown:
+
+        1. **Checkpoint** — persist a session checkpoint via the
+           orchestrator (the pre-#273 behaviour, kept for project context).
+
+        2. **Auto-tuning feedback (AC-2)** — run the MistakeDetector over the
+           real user turns, then route the recalled-keys buffer through
+           :meth:`MemoryOrchestrator.mark_relevant_injected_as_stale` (user
+           pushed back on recall content → those keys were stale) or
+           :meth:`MemoryOrchestrator.mark_relevant_injected_as_useful` (clean
+           turn → the recall set was useful). This is what finally feeds the
+           :class:`HitRateTracker` with production signal and lets
+           ``boost_factor_for_key`` move off its 1.0 pin. Finally, fire a
+           throttled :meth:`MemoryOrchestrator.run_calibration_cycle` so the
+           tuned parameters are persisted (spec §10.2 step 3).
+        """
         orch = self._orchestrator
-        project = self._resolve_project()
-        if orch is None or project is None:
+        if orch is None:
             return
+
+        # ---- 1. Checkpoint (best-effort, needs a project) ---------------
+        project = self._resolve_project()
+        if project is not None:
+            try:
+                from memchorus.checkpoint import write_checkpoint
+                user_texts = self._extract_user_texts(messages)
+                key = write_checkpoint(orch, project_name=project, user_texts=user_texts)
+                if key:
+                    logger.debug("MemChorus provider: wrote session checkpoint %s", key)
+            except Exception as exc:  # pragma: no cover - checkpoint must never break teardown
+                logger.debug("MemChorus provider on_session_end checkpoint: %s", exc)
+
+        # ---- 2. Auto-tuning feedback (spec §10.2) -----------------------
         try:
-            from memchorus.checkpoint import write_checkpoint
-            user_texts = [
-                m.get("content", "")
-                for m in messages
-                if isinstance(m, dict) and m.get("role") == "user"
-            ]
-            key = write_checkpoint(orch, project_name=project, user_texts=user_texts)
-            if key:
-                logger.debug("MemChorus provider: wrote session checkpoint %s", key)
-        except Exception as exc:  # pragma: no cover
-            logger.debug("MemChorus provider on_session_end: %s", exc)
+            from memchorus.mistake_detector import MistakeDetector as _MD
+            detector = _MD.get_instance()
+            user_texts = self._extract_user_texts(messages)
+
+            total_noise = 0
+            total_useful = 0
+            for ut in user_texts:
+                noise, useful = detector.classify_and_flag(ut)
+                total_noise += noise
+                total_useful += useful
+
+            # Per-key recall feedback (spec §10.2 step 1, issue #138):
+            #   - user pushed back on recall content (noise) -> keys were stale
+            #   - clean turn (no pushback)                   -> recall set was useful
+            if total_noise > 0:
+                try:
+                    wired = orch.mark_relevant_injected_as_stale()
+                    logger.info(
+                        "MemChorus provider on_session_end — wired %d stale key(s) (noise=%d)",
+                        wired, total_noise,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # feedback bookkeeping must never break teardown
+            elif user_texts:
+                try:
+                    wired = orch.mark_relevant_injected_as_useful()
+                    logger.info(
+                        "MemChorus provider on_session_end — wired %d useful key(s) (clean turn, %d user msg(s))",
+                        wired, len(user_texts),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # feedback bookkeeping must never break teardown
+
+            if total_noise or total_useful:
+                logger.info(
+                    "MemChorus provider on_session_end — noise=%d useful=%d from %d user messages",
+                    total_noise, total_useful, len(user_texts),
+                )
+        except Exception:  # pragma: no cover - graceful degradation
+            pass  # tracking failures never interrupt session teardown
+
+        # ---- 3. Throttled calibration (spec §10.2 step 3, issue #138) ---
+        try:
+            result = orch.run_calibration_cycle(min_interval_hours=24.0, force=False)
+            if result.get("calibrated"):
+                logger.info(
+                    "MemChorus provider on_session_end — calibration profile=%r params=%s",
+                    result.get("profile"), result.get("params"),
+                )
+        except Exception:  # pragma: no cover - graceful degradation
+            pass  # calibration is bookkeeping and must not break teardown
 
     def on_pre_compress(self, messages: List[Dict[str, Any]], **kwargs: Any) -> str:
         """Before context compression: store a checkpoint so the gist survives,
