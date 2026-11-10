@@ -193,13 +193,17 @@ class TestRunnerPresence:
         assert callable(check_version_alignment)
         assert callable(check_test_suite)
 
-    def test_check_count_is_11(self):
-        """run_checks() returns 11 results (was 9 pre-#222, 10 post-#222)."""
+    def test_check_count_is_12(self):
+        """run_checks() returns 12 results.
+
+        Was 9 pre-#222, 10 post-#222 (version_alignment added), 11 after the
+        earlier 2.0.x growth, and 12 post-#286 (wing_isolation added, last).
+        """
         from memchorus.install_doctor import run_checks
 
         results = run_checks()
-        assert len(results) == 11, (
-            f"Expected 11 checks, got {len(results)}. "
+        assert len(results) == 12, (
+            f"Expected 12 checks, got {len(results)}. "
             f"Names: {[r.name for r in results]}"
         )
 
@@ -212,10 +216,22 @@ class TestRunnerPresence:
         )
 
     def test_version_alignment_is_last(self):
-        """The new check is added after check_test_suite (10th / last)."""
+        """#286 note: wing_isolation is now the last check.
+
+        Pre-#286, version_alignment (added by #222, post-``check_test_suite``)
+        was the final entry. #286 appended ``check_wing_isolation`` after it,
+        so the positional invariant we actually want to pin is:
+        (a) version_alignment still sits immediately after test_suite, and
+        (b) wing_isolation is now the last entry.
+        """
         from memchorus.install_doctor import run_checks
 
         names = [r.name for r in run_checks()]
-        assert names[-1] == "version_alignment", (
-            f"Expected version_alignment last, got order: {names}"
+        assert names[-1] == "wing_isolation", (
+            f"Expected wing_isolation last (added by #286), got order: {names}"
+        )
+        # The #222 positional invariant is preserved: version_alignment follows
+        # check_test_suite.
+        assert names[names.index("test_suite") + 1] == "version_alignment", (
+            f"Expected version_alignment immediately after test_suite, got: {names}"
         )
