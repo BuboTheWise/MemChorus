@@ -202,13 +202,14 @@ class TestCheckTestSuite:
 # ---------------------------------------------------------------------------
 
 class TestRunChecks:
-    def test_returns_11_results(self):
+    def test_returns_12_results(self):
         from memchorus.install_doctor import run_checks
         # IMPL #163.4 added the project-record resolution check (9th check);
         # #222 added the version-alignment restart-bridge check (10th check);
-        # #252 added the advertised bin-entrypoint integrity check (11th check).
+        # #252 added the advertised bin-entrypoint integrity check (11th check);
+        # #286 added the cross-profile wing-isolation check (12th check).
         results = run_checks()
-        assert len(results) == 11
+        assert len(results) == 12
 
     def test_project_record_check_present(self):
         from memchorus.install_doctor import run_checks
