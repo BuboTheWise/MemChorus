@@ -12,15 +12,41 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 from datetime import datetime, timezone
 
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import profile_home
+
+# Platform lock primitive: POSIX uses fcntl, Windows uses msvcrt. Neither is a
+# third-party dependency, so the guard stays dependency-free (see issue #268).
+if os.name == "nt":  # pragma: no cover - exercised on Windows hosts only
+    import msvcrt
+
+    def _lock_fd(fd: int, exclusive: bool = True) -> None:
+        # msvcrt.locking needs a byte count; locking a single leading byte is the
+        # canonical whole-file lock idiom on Windows. msvcrt constants
+        # (see CPython PC/msvcrtmodule.c — the CRT header names LK_UNL/LK_NLCK
+        # do NOT exist in the Python API): LK_UNLCK (unlock), LK_LOCK
+        # (blocking exclusive), LK_RLCK (shared/read).
+        msvcrt.locking(fd, msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK, 1)
+
+    def _unlock_fd(fd: int) -> None:
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+else:
+    import fcntl
+
+    def _lock_fd(fd: int, exclusive: bool = True) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    def _unlock_fd(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 logger = logging.getLogger(__name__)
 
@@ -235,34 +261,85 @@ class ProhibitionsManager:
 
     @property
     def file_path(self) -> Path:
-        """Resolve prohibitions.jsonl path. Returns data/memchorus/ subpath."""
+        """Resolve prohibitions.jsonl path (issue #268).
+
+        Resolution order:
+
+        1. ``data_dir`` override — ``<data_dir>/prohibitions.jsonl`` when the
+           caller pinned a directory (tests, explicit injection).
+        2. **Per-profile default** (issue #268) — resolved through the canonical
+           :func:`~memchorus.hermes_home.profile_home` resolver from issue #267,
+           i.e. ``<profile_home>/data/memchorus/prohibitions.jsonl``. The default
+           profile lands under the base Hermes tree; a named profile (``hermes -p <name>``
+           / Kanban dispatcher) lands under ``<base>/profiles/<name>/``. Neither
+           path embeds an absolute dev-checkout location, so the suite and the
+           operator's real home are never polluted regardless of which profile is
+           active.
+
+        The first resolved value is cached on the instance so a given manager
+        stays bound to one path for its lifetime (env changes mid-run do not
+        silently relocate it), which is what makes the path testable and stable.
+        """
         if self._file_path is not None:
             return self._file_path
         if self._data_dir:
             self._file_path = self._data_dir / "prohibitions.jsonl"
         else:
-            # Default next to the package data directory if available, else use ~/.memchorus-data/
-            base = hermes_home()
-            candidate = base / "workspace" / "Code" / "MemChorus" / "data" / "prohibitions.jsonl"
-            if not candidate.exists():
-                fallback_dir = Path.home() / ".memchorus-data"
-                fallback_dir.mkdir(exist_ok=True, parents=True)
-                self._file_path = fallback_dir / "prohibitions.jsonl"
-            else:
-                self._file_path = candidate
+            # Per-profile default (issue #268): build from the canonical
+            # profile_home() resolver (issue #267) so every profile owns its
+            # prohibitions file. No dev-checkout absolute path and no legacy
+            # dot-dir home fallback remain in the default — the location is
+            # derived purely from the active profile.
+            self._file_path = profile_home() / "data" / "memchorus" / "prohibitions.jsonl"
         return self._file_path
+
+    @contextmanager
+    def _file_lock(self, exclusive: bool = True) -> Iterator[None]:
+        """Acquire an advisory file lock scoped to this manager's target (issue #268).
+
+        The lock is held on a sibling ``<target>.lock`` file — *not* the data
+        file itself — so the atomic ``os.replace()`` in :meth:`save` swaps the
+        data inode without disturbing the lock inode. Backed by ``fcntl.flock``
+        on POSIX and ``msvcrt.locking`` on Windows; both are stdlib, so no new
+        dependency is introduced.
+
+        ``exclusive`` is the writer lock (held by :meth:`save`); a ``shared``
+        lock guards the read in :meth:`load`. Callers must not nest one lock
+        inside another on the same manager — :meth:`load` releases its shared
+        lock before calling :meth:`_seed_defaults`/ :meth:`save`, which take the
+        exclusive lock. This keeps the single-threaded path deadlock-free.
+        """
+        fpath = self.file_path
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = fpath.with_name(fpath.name + ".lock")
+        handle = open(lock_path, "a+b")
+        try:
+            _lock_fd(handle.fileno(), exclusive=exclusive)
+            yield
+        finally:
+            try:
+                _unlock_fd(handle.fileno())
+            finally:
+                handle.close()
 
     def load(self) -> int:
         """Load rules from disk. If file does not exist yet, seed with defaults.
 
         Returns the count of loaded/seeded rules so the caller knows we have something.
+
+        Reads under a *shared* advisory lock, but releases it before any write
+        path (:meth:`_seed_defaults` → :meth:`save`) acquires the *exclusive*
+        lock, so the two never nest on one manager (see :meth:`_file_lock`).
         """
         fpath = self.file_path
         fpath.parent.mkdir(parents=True, exist_ok=True)
 
-        if fpath.exists():
+        with self._file_lock(exclusive=False):
+            exists = fpath.exists()
+            text = fpath.read_text(encoding="utf-8") if exists else ""
+
+        if exists:
             try:
-                text = fpath.read_text(encoding="utf-8")
                 for line in text.strip().splitlines():
                     if not line or line.startswith("#"):
                         continue
@@ -279,11 +356,22 @@ class ProhibitionsManager:
         return len(self._rules)
 
     def save(self) -> None:
-        """Persist all rules back to disk as JSONL."""
+        """Persist all rules back to disk as JSONL, atomically (issue #268).
+
+        The payload is written to a sibling ``.tmp`` file, then moved onto the
+        target with ``os.replace()``. On the same filesystem that is a rename —
+        so a crash or a second reader mid-write observes either the *previous*
+        complete file or the *new* complete file, never a partial one. An
+        advisory exclusive lock (see :meth:`_file_lock`) serialises concurrent
+        writers so one process's rules are not silently lost to another's.
+        """
         fpath = self.file_path
         fpath.parent.mkdir(parents=True, exist_ok=True)
-        lines = [json.dumps(r.to_dict()) for r in self._rules]
-        fpath.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        payload = "\n".join(json.dumps(r.to_dict()) for r in self._rules) + "\n"
+        tmp = fpath.with_name(fpath.name + ".tmp")
+        with self._file_lock(exclusive=True):
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(fpath)
 
     # -- Scanning ---------------------------------------------------------
 

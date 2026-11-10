@@ -2,6 +2,33 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.78] - 2026-11-09
+
+### Fixed
+- **Windows `msvcrt` unlock constant (Issue #268):** the Windows branch of the advisory-lock helper now calls `msvcrt.LK_UNLCK` (see CPython `PC/msvcrtmodule.c`) to unlock. The previous two attempts — `LK_UNL` and `LK_NLCK` — both raised `AttributeError` on Windows CI because those names are the CRT header identifiers, not the `msvcrt` Python API. `LK_LOCK`, `LK_RLCK`, `LK_NBRLCK`, `LK_NBLCK` were the acquire-path constants and already resolved, which is why the failure only surfaced on the unlock path and only on Windows.
+
+## [2.0.77] - 2026-11-09
+
+### Changed
+- **Per-profile prohibitions default path (Issue #268):** with no `data_dir` override, `ProhibitionsManager.file_path` now resolves through the canonical `profile_home()` resolver (Issue #267) to `profile_home() / "data" / "memchorus" / "prohibitions.jsonl"`, so every profile owns its own file. The default profile lives under the base Hermes tree; named profiles nest under `profiles/<name>/`.
+
+### Added
+- **Atomic replace + advisory lock for `ProhibitionsManager.save()`/`load()` (Issue #268):** `save()` now writes a sibling `.tmp` then `os.replace()`s it (a same-filesystem rename — no torn/partial file on crash, inode swapped, no stray `.tmp` after clean save). `save()` takes an exclusive advisory lock, `load()` a shared one, serialising concurrent writes via a thin `fcntl.flock` (POSIX) / `msvcrt.locking` (Windows) contextmanager with **no new runtime dependency** and a non-reentrant design (the `load() → _seed_defaults() → save()` seed path releases the shared lock before the nested exclusive save, so it cannot self-deadlock).
+- **Windows `msvcrt` lock constants pinned to the real CPython API (Issue #268):** the Windows branch now uses `LK_LOCK` / `LK_RLCK` / `LK_UNLCK` (see CPython `PC/msvcrtmodule.c`) — the CRT header names `LK_UNL` and `LK_NLCK` do not exist as `msvcrt` attributes and were the cause of the initial Windows CI failures (both the `LK_UNL` and `LK_NLCK` runs).
+
+### Removed
+- **Dev-checkout + legacy dot-dir default fallbacks (Issue #268):** the absolute developer-checkout path (`…/workspace/Code/MemChorus/data/…`) and the legacy `~/.memchoris-data` / `~/.memchorus-data` dot-dir fallbacks are removed from the default path resolution; the location is derived purely from the active profile, so running the suite and the operator's real home are never polluted. An explicit `data_dir` still wins.
+
+### Tests
+- New suite `tests/test_prohibitions_per_profile.py` (15 tests): per-profile default-path resolution (default + named, non-colliding), no dev-checkout fragment / legacy dot-dir fallback in the default or source, save-atomicity (no `.tmp`, inode change, valid JSONL, round-trip), and concurrent-writer completeness.
+
+Bumps `__version__` 2.0.76 → 2.0.77 (dual-digit patch per X.Y.ZZ convention; version-sync `__init__.py` / README / `setup.py` / `pyproject.toml` passes).
+
+## [2.0.76] - 2026-11-09
+
+### Added
+- **Single canonical per-profile config resolver (Issue #267):** see `README.md` `v2.0.76` changelog entry.
+
 ## [2.0.52] - 2026-09-10
 
 ### Added
