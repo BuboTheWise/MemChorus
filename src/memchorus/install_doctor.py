@@ -1923,6 +1923,420 @@ def _provenance_exit_code(report: Dict[str, Any]) -> int:
 
 
 # ---------------------------------------------------------------------------
+# --migration — read-only pre-flight for host migration (issue #283 item 6)
+#
+# Run on the *source* host BEFORE ``hermes backup``.  It is strictly
+# read-only (it never moves, rewrites, or deletes anything) and reports the
+# state a Hermes-native backup / profile export will and will not carry over:
+#
+#   * outside-home state that ``backup_paths()`` does NOT cover (data loss);
+#   * paths outside ``$HOME`` (Hermes cannot preserve them);
+#   * symlinked state / plugin directories (Hermes skips these on copy);
+#   * a running MemPalace/MCP process holding ``*.sqlite3`` open (stop first);
+#   * which state survives each of the item-5 mechanisms.
+#
+# It prints no secrets, supports ``--json``, and returns a non-zero exit code
+# ONLY when there is a genuine data-loss finding (outside-$HOME state, or a
+# symlinked dir in use).  A running sqlite holder is a data-loss *risk* and is
+# also reported as non-zero, because copying an open VACUUM-ed WAL can
+# truncate.  Pure information (the survival table, in-home state) is exit 0.
+# ---------------------------------------------------------------------------
+
+
+def _migration_sqlite_roots(profile: str, home: Path, hh: Optional[Path]) -> List[Path]:
+    """Best-effort set of directories to scan for ``*.sqlite3`` files."""
+    roots: List[Path] = []
+    seen = set()
+
+    def _add(p: Optional[Path]) -> None:
+        if p is None:
+            return
+        try:
+            rp = p.resolve()
+        except (OSError, RuntimeError):
+            rp = p
+        if rp not in seen:
+            seen.add(rp)
+            roots.append(rp)
+
+    from memchorus.hermes_home import profile_home
+
+    _add(profile_home(profile))
+    _add(hh)
+    _add(home / ".mempalace")
+    return roots
+
+
+def _find_sqlite_files(roots: List[Path], limit: int = 200) -> List[Path]:
+    """Recursively collect ``*.sqlite3`` / ``*.sqlite`` / ``*.db`` under roots."""
+    out: List[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            for path in root.rglob("*"):
+                try:
+                    if not path.is_file():
+                        continue
+                    if path.suffix in (".sqlite3", ".sqlite", ".db"):
+                        out.append(path)
+                        if len(out) >= limit:
+                            return out
+                except OSError:
+                    continue
+        except (OSError, RuntimeError):
+            continue
+    return out
+
+
+def _open_sqlite_holders(sqlite_files: List[Path]) -> List[Dict[str, Any]]:
+    """Find processes with an open fd on any of the given sqlite files.
+
+    Linux ``/proc`` scan; returns ``[]`` on non-Linux or any error. Never
+    raises.
+    """
+    if not sqlite_files:
+        return []
+    try:
+        targets = {str(f) for f in sqlite_files}
+    except Exception:
+        return []
+
+    holders: List[Dict[str, Any]] = []
+    seen_keys = set()
+    try:
+        entries = os.scandir("/proc")
+    except OSError:
+        return []
+    with entries:
+        for pid_dir in entries:
+            if not pid_dir.name.isdigit():
+                continue
+            fd_dir = os.path.join("/proc", pid_dir.name, "fd")
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                try:
+                    link = os.readlink(os.path.join(fd_dir, fd))
+                except OSError:
+                    continue
+                if link not in targets:
+                    continue
+                key = (link, pid_dir.name)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                cmd = "?"
+                try:
+                    with open(os.path.join("/proc", pid_dir.name, "cmdline"), "rb") as fh:
+                        cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+                except OSError:
+                    pass
+                holders.append({"file": link, "pid": int(pid_dir.name), "cmd": cmd})
+    return holders
+
+
+def _symlinked_state_dirs(profile: str, home: Path, hh: Optional[Path]) -> List[Dict[str, Any]]:
+    """Report symlinked state / plugin directories that Hermes skips on copy.
+
+    Scans the profile home and HERMES_HOME top-level (plus the ``plugins``
+    subdir if present) for directories that are symlinks.
+    """
+    out: List[Dict[str, Any]] = []
+    try:
+        from memchorus.hermes_home import profile_home
+        roots = [profile_home(profile)]
+        if hh is not None:
+            roots.append(hh)
+    except Exception:
+        roots = []
+
+    for root in roots:
+        if root is None or not root.exists():
+            continue
+        scan_dirs = [root]
+        plugins = root / "plugins"
+        if plugins.exists():
+            scan_dirs.append(plugins)
+        for sd in scan_dirs:
+            try:
+                items = os.listdir(sd)
+            except OSError:
+                continue
+            for name in items:
+                full = Path(sd) / name
+                try:
+                    if full.is_symlink() and full.is_dir():
+                        out.append({"path": str(full), "name": name})
+                except OSError:
+                    continue
+    # de-dupe by resolved path
+    dedup = []
+    seen = set()
+    for entry in out:
+        k = entry["path"]
+        if k not in seen:
+            seen.add(k)
+            dedup.append(entry)
+    return dedup
+
+
+def _mechanism_survival(profile: str) -> Dict[str, Any]:
+    """Classify each inventoried state entry by whether it survives each
+    item-5 mechanism. Informational only (never a data-loss finding by itself).
+    """
+    try:
+        from memchorus import state_inventory as inv
+    except Exception:
+        inv = None
+
+    home: Optional[Path] = None
+    hh: Optional[Path] = None
+    p_home: Optional[Path] = None
+    if inv is not None:
+        try:
+            home = inv._home()
+            hh = inv._hermes_home()
+            p_home = inv._profile_home(profile)
+        except Exception:
+            pass
+
+    def _under(parent: Optional[Path], child: Path) -> bool:
+        if parent is None:
+            return False
+        try:
+            child.relative_to(parent)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    mechanisms = {
+        "full_backup": {"survives": [], "dropped": []},
+        "named_profile_export": {"survives": [], "dropped": []},
+        "default_profile_export": {"survives": [], "dropped": []},
+    }
+
+    entries = []
+    if inv is not None:
+        try:
+            entries = inv.inventory_for_profile(profile)
+        except Exception:
+            entries = []
+
+    for e in entries:
+        name = getattr(e, "name", "unknown")
+        try:
+            path = Path(getattr(e, "path"))
+        except Exception:
+            path = None
+        # full backup: survives iff under $HOME
+        if path is not None and _under(home, path):
+            mechanisms["full_backup"]["survives"].append(name)
+        else:
+            mechanisms["full_backup"]["dropped"].append(name)
+        # named-profile export: survives iff under the named profile home
+        if path is not None and _under(p_home, path):
+            mechanisms["named_profile_export"]["survives"].append(name)
+        else:
+            mechanisms["named_profile_export"]["dropped"].append(name)
+        # default-profile export: Hermes allow-list drops memchorus.yaml, data/,
+        # .mempalace/ — treat all MemChorus-owned state as lossy here.
+        mechanisms["default_profile_export"]["dropped"].append(name)
+
+    return mechanisms
+
+
+def _migration_report() -> Dict[str, Any]:
+    """Build the read-only --migration pre-flight report."""
+    try:
+        from memchorus import state_inventory as inv
+        profile = inv._active_profile()
+        home = inv._home()
+        hh = inv._hermes_home()
+    except Exception:
+        profile = "default"
+        home = Path.home()
+        hh = None
+
+    backup_paths: List[str] = []
+    outside_home: List[Dict[str, Any]] = []
+    uncovered: List[Dict[str, Any]] = []
+
+    try:
+        from memchorus import state_inventory as inv
+        backup_paths = inv.backup_paths_for_profile(profile)
+    except Exception:
+        pass
+
+    backup_set = {p for p in backup_paths}
+
+    # outside-$HOME entries (data-loss if Hermes can't preserve them)
+    try:
+        from memchorus import state_inventory as inv
+        for e in inv.outside_home_entries(profile):
+            item = {
+                "name": getattr(e, "name", "unknown"),
+                "path": str(getattr(e, "path")),
+                "category": str(getattr(e, "category", "")),
+            }
+            outside_home.append(item)
+            # is it covered by backup_paths? (shouldn't be, since outside $HOME)
+            if item["path"] not in backup_set and str(Path(item["path"]).resolve()) not in {
+                str(Path(b).resolve()) for b in backup_paths
+            }:
+                uncovered.append(item)
+    except Exception:
+        pass
+
+    # sqlite holders + symlinked dirs
+    try:
+        from memchorus.hermes_home import profile_home
+        p_home = profile_home(profile)
+    except Exception:
+        p_home = None
+    roots = _migration_sqlite_roots(profile, home, hh)
+    sqlite_files = _find_sqlite_files(roots)
+    open_holders = _open_sqlite_holders(sqlite_files)
+    symlinked = _symlinked_state_dirs(profile, home, hh)
+
+    mechanisms = _mechanism_survival(profile)
+
+    # secret files present (informational — never a data-loss finding, but we
+    # surface them so a reviewer can confirm they stay out of the archive).
+    secrets: List[str] = []
+    try:
+        from memchorus import state_inventory as inv
+        for e in inv.inventory_for_profile(profile):
+            if getattr(e, "contains_secrets", False):
+                secrets.append(getattr(e, "name", "unknown"))
+    except Exception:
+        pass
+
+    # Data-loss findings: state outside $HOME, or symlinked dirs in use, or a
+    # live sqlite holder (copy risk). WARN for anything else.
+    data_loss = [
+        {
+            "severity": "data_loss",
+            "message": f"state outside $HOME: {u['path']} ({u['name']}) — Hermes cannot "
+                       "preserve it; move it under the profile home before backup.",
+        }
+        for u in uncovered
+    ]
+    data_loss += [
+        {
+            "severity": "data_loss",
+            "message": f"symlinked state dir: {s['path']} — Hermes skips symlinked dirs "
+                       "on copy; resolve the link before backup.",
+        }
+        for s in symlinked
+    ]
+    data_loss += [
+        {
+            "severity": "data_loss",
+            "message": f"sqlite file open by pid {h['pid']} ({h['cmd']}): {h['file']} — "
+                       "stop the MemPalace/MCP process before copying.",
+        }
+        for h in open_holders
+    ]
+
+    status = "data_loss" if data_loss else "clean"
+
+    return {
+        "profile": profile,
+        "home": str(home),
+        "hermes_home": str(hh) if hh else None,
+        "status": status,
+        "backup_paths": backup_paths,
+        "outside_home": outside_home,
+        "outside_home_uncovered": uncovered,
+        "symlinked_dirs": symlinked,
+        "open_sqlite": open_holders,
+        "sqlite_files_scanned": len(sqlite_files),
+        "mechanisms": mechanisms,
+        "secrets_present": secrets,
+        "findings": data_loss,
+    }
+
+
+def _render_migration_human(report: Dict[str, Any]) -> None:
+    """Human-readable --migration output (no secrets)."""
+    print()
+    print("MemChorus Migration Pre-flight".center(72, "="))
+    print()
+    print(f"Profile       : {report.get('profile')}")
+    print(f"Home          : {report.get('home')}")
+    hh = report.get("hermes_home")
+    print(f"HERMES_HOME   : {hh if hh else '(unset)'}")
+    print()
+
+    covered = report.get("backup_paths", [])
+    print(f"backup_paths() covers {len(covered)} path(s):")
+    for p in covered:
+        print(f"  - {p}")
+    print()
+
+    unc = report.get("outside_home_uncovered", [])
+    if unc:
+        print(f"OUTSIDE-$HOME state NOT covered by backup_paths() ({len(unc)}):")
+        for u in unc:
+            print(f"  - {u['name']}: {u['path']}")
+        print()
+    else:
+        print("All MemChorus state is under $HOME and covered by backup_paths().")
+        print()
+
+    syms = report.get("symlinked_dirs", [])
+    if syms:
+        print(f"Symlinked state directories (Hermes skips these) ({len(syms)}):")
+        for s in syms:
+            print(f"  - {s['path']}")
+        print()
+
+    holders = report.get("open_sqlite", [])
+    if holders:
+        print(f"Open *.sqlite3 handles ({len(holders)}) — stop before backup:")
+        for h in holders:
+            print(f"  - pid {h['pid']}: {h['file']}")
+            print(f"      cmd: {h['cmd']}")
+        print()
+
+    mech = report.get("mechanisms", {})
+    print("Per-mechanism survival (item-5 table):")
+    for mname in ("full_backup", "named_profile_export", "default_profile_export"):
+        block = mech.get(mname, {})
+        surv = block.get("survives", [])
+        dropped = block.get("dropped", [])
+        print(f"  {mname}:")
+        print(f"    survives ({len(surv)}): {', '.join(surv) if surv else '-'}")
+        print(f"    dropped  ({len(dropped)}): {', '.join(dropped) if dropped else '-'}")
+    print()
+
+    findings = report.get("findings", [])
+    if findings:
+        print(f"DATA-LOSS findings ({len(findings)}) — resolve before `hermes backup`:")
+        for f in findings:
+            print(f"  [{f['severity']}] {f['message']}")
+        print()
+    else:
+        print("No data-loss findings. State is safe for `hermes backup`.")
+        print()
+
+
+def _render_migration_json(report: Dict[str, Any]) -> None:
+    """Machine-readable --migration output."""
+    print(json.dumps(report, indent=2, sort_keys=True, default=str))
+
+
+def _migration_exit_code(report: Dict[str, Any]) -> int:
+    """Non-zero ONLY for data-loss findings (issue #283 item 6)."""
+    if report.get("status") == "data_loss":
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -2144,6 +2558,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             _render_project_report_human(report)
         return _project_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --migration — read-only pre-flight for host migration (#283 item 6)  #
+    # ------------------------------------------------------------------ #
+    if "--migration" in args:
+        report = _migration_report()
+        if as_json:
+            _render_migration_json(report)
+        else:
+            _render_migration_human(report)
+        return _migration_exit_code(report)
 
     # ------------------------------------------------------------------ #
     # --palace-layout / --deps-check / full install-health report          #

@@ -230,6 +230,35 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         except Exception as exc:  # pragma: no cover
             logger.debug("MemChorus provider shutdown: %s", exc)
 
+    def backup_paths(self) -> List[str]:
+        """Declare MemChorus state that lives outside ``HERMES_HOME``.
+
+        Implements the ``MemoryProvider.backup_paths()`` contract
+        (issue #283, scope item 3):
+
+        - Returns only paths **in ``$HOME``** and **outside
+          ``HERMES_HOME``** — the set Hermes cannot preserve through
+          its native backup / profile tools without us declaring it.
+        - **No ``initialize()``, no network, no MCP spawn.**  The
+          method reads config files and the filesystem only.
+        - **Missing paths are skipped** — only existing state is
+          declared.
+        - **Nothing that contains credentials** (``.env``,
+          ``auth.json``) is returned.
+        - Paths **outside ``$HOME``** are *not* returned; the
+          ``--migration`` preflight reports them.
+        - **Never raises.**  Any internal error yields ``[]``.
+        """
+        try:
+            from memchorus.state_inventory import (
+                backup_paths_for_profile as _bp,
+            )
+
+            return _bp()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("MemChorus provider backup_paths: %s", exc)
+            return []
+
     # ------------------------------------------------------------------
     # Orientation — the "woke up" forced context
     # ------------------------------------------------------------------
