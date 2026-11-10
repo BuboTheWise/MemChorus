@@ -24,9 +24,10 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from memchorus.memory_source import MemorySource
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import hermes_home, active_profile_name
 import memchorus.palace_path as palace_path
 from memchorus.mempalace_persistent_session import summarize_exception_group
+import memchorus.wing_isolation as wing_isolation
 
 logger = logging.getLogger(__name__)
 
@@ -1208,6 +1209,31 @@ class _McpClient:
             args["source_file"] = source_file
         if project:
             args["project"] = project
+
+        # --- write-boundary scope warning (issue #286) --------------------
+        # The add_drawer MCP tool forwards ``wing`` to the server verbatim, so
+        # this client is the only in-process surface that can observe a foreign
+        # write landing in a *named* profile's palace.  Classify the wing against
+        # the active profile; if it is not in-namespace (cross-profile or a bare
+        # project slug), log a warning so operators can see the leak at the
+        # moment it happens.  Detection only — we never block the write.  On the
+        # shared ``default`` profile this resolves to ``None`` and is silent.
+        try:
+            _active_profile = active_profile_name()
+            _issue = wing_isolation.classify_wing(wing, active_profile=_active_profile)
+            if _issue is not None:
+                logger.warning(
+                    "add_drawer boundary: wing '%s' is %s for profile '%s'%s — "
+                    "writing anyway (detection only, issue #286). %s",
+                    wing,
+                    _issue.kind,
+                    _active_profile,
+                    f" (owned by {getattr(_issue, 'owner', None)})" if getattr(_issue, "owner", None) else "",
+                    _issue.detail,
+                )
+        except Exception as exc:  # pragma: no cover - guard must never break the write
+            logger.debug("add_drawer boundary check skipped: %s", exc)
+
         result = self.call_tool("mempalace_add_drawer", args)
         if result is None:
             return False

@@ -42,9 +42,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import (
+    hermes_home,
+    active_profile_name,
+    profile_home,
+)
 from memchorus import palace_path as palace_path_mod
 from memchorus.palace_path import classify as palace_path_classify
+from memchorus import wing_isolation as _wing_isolation
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +549,150 @@ def check_data_directory() -> CheckResult:
         name="data_directory",
         status=PASS,
         message=f"{data_dir} readable and writable",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wing-namespace isolation (issue #286)
+# ---------------------------------------------------------------------------
+
+def _known_profile_names() -> set:
+    """Return the set of Hermes profile names that exist on this host.
+
+    Reads ``<base_home>/profiles/`` for named profiles and always includes
+    ``"default"``.  Used to distinguish a cross-profile misroute from an
+    out-of-namespace wing in :func:`check_wing_isolation`.
+    """
+    import memchorus.hermes_home as _hh
+    base = _hh._base_home()
+    profiles_dir = base / "profiles"
+    names = {"default"}
+    if profiles_dir.is_dir():
+        for child in sorted(profiles_dir.iterdir()):
+            if child.is_dir() and child.name != "default":
+                names.add(child.name)
+    return names
+
+
+def _list_palace_wings(data_dir: Path) -> Optional[List[str]]:
+    """Return distinct ``wing`` values stored in the palace at *data_dir*.
+
+    Opens ``chroma.sqlite3`` read-only and queries ``embedding_metadata`` for
+    distinct ``string_value`` rows where ``key='wing'``.  Returns ``None`` when
+    the palace file is missing or unreadable (fresh install / no data yet).
+    """
+    import sqlite3
+    chroma = data_dir / "chroma.sqlite3"
+    if not chroma.exists():
+        # Legacy-leaf split: real data may be one level down
+        chroma = data_dir / "palace" / "chroma.sqlite3"
+    if not chroma.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{chroma}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT string_value FROM embedding_metadata WHERE key='wing'"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    return sorted(r[0] for r in rows if r[0])
+
+
+def _active_palace_dir() -> Path:
+    """Resolve the active profile's palace data directory.
+
+    Uses the same resolver chain as :func:`check_data_directory` so the wing
+    audit inspects the same store the reader/writer use.
+    """
+    root = _palace_layout_root(None)
+    try:
+        return Path(palace_path_mod.palace_data_dir(root))
+    except Exception:
+        return root
+
+
+def check_wing_isolation(strict: bool = False) -> CheckResult:
+    """Audit the active profile's palace for foreign (misrouted) wings.
+
+    Delegates to :func:`memchorus.wing_isolation.audit_palace_wings` (the pure
+    classifier) and translates the result into a :class:`CheckResult`:
+
+    * **default** profile (shared) → PASS (no scoping — expected).
+    * Named profile, **no foreign wings** → PASS.
+    * Named profile, **foreign wings present** → WARN (human review).
+      Under ``--strict``, cross-profile misroutes are promoted to FAIL.
+      Out-of-namespace wings (bare slugs / other-tool wings) stay WARN even
+      under ``--strict`` because they cannot be distinguished from legitimate
+      shared wings by string shape alone (issue #286 locked scope).
+
+    The check is **detection / observability only** — it never moves or deletes
+    data.  It runs by default in :func:`run_checks` and is also available as a
+    focused single-check via ``--wing-isolation``.
+    """
+    profile = active_profile_name()
+    data_dir = _active_palace_dir()
+    wings = _list_palace_wings(data_dir)
+
+    if wings is None:
+        return CheckResult(
+            name="wing_isolation",
+            status=PASS,
+            message=f"{data_dir}: no palace data found (fresh install — nothing to audit)",
+        )
+
+    known = _known_profile_names()
+    audit = _wing_isolation.audit_palace_wings(
+        wings,
+        active_profile=profile,
+        known_profiles=known,
+    )
+
+    if not audit.scoped:
+        return CheckResult(
+            name="wing_isolation",
+            status=PASS,
+            message=f"{profile}: shared profile — {audit.total_wings} wing(s) observed, "
+                    f"all expected (no scoping applied)",
+        )
+
+    if audit.is_clean:
+        return CheckResult(
+            name="wing_isolation",
+            status=PASS,
+            message=f"{profile}: all {audit.total_wings} wing(s) are in-namespace — no foreign wings",
+        )
+
+    # Foreign wings present.  Decide WARN vs FAIL based on severity + strict.
+    has_cross_profile = audit.cross_profile_count > 0
+    has_out_of_ns = audit.out_of_namespace_count > 0
+
+    # Under --strict, cross-profile misroutes are unambiguous (we know which
+    # profile owns the wing) and are promoted to FAIL.  Out-of-namespace wings
+    # stay WARN — they may be legitimate shared wings owned by another tool.
+    if strict and has_cross_profile:
+        status = FAIL
+    else:
+        status = WARN
+
+    foreign_list = "; ".join(
+        f"'{i.wing}' ({i.kind}" + (f", owned by {i.owner}" if i.owner else "") + ")"
+        for i in audit.issues
+    )
+    message = (
+        f"{profile}: {len(audit.issues)} foreign wing(s) detected — {foreign_list}"
+    )
+    hint = audit.suggested_fix or ""
+    if strict and has_cross_profile:
+        hint = (hint or "") + " Under --strict, cross-profile misroutes are treated as failures."
+
+    return CheckResult(
+        name="wing_isolation",
+        status=status,
+        message=message,
+        hint=hint,
     )
 
 
@@ -1780,11 +1929,12 @@ def _provenance_exit_code(report: Dict[str, Any]) -> int:
 def run_checks(strict: bool = False) -> List[CheckResult]:
     """Execute every check and return results.
 
-    ``strict`` threads through to :func:`check_bin_entrypoints` (and the
-    ``--palace-layout`` path is handled separately in :func:`main`) so a
-    ``--strict`` invocation promotes a broken advertised bin entrypoint from
-    WARN to FAIL (#252 / AC2). It defaults to ``False`` so existing callers
-    that invoke ``run_checks()`` positionally are unaffected.
+    ``strict`` threads through to :func:`check_bin_entrypoints` (and
+    :func:`check_wing_isolation`, #286 — cross-profile misroutes promoted from
+    WARN to FAIL) and the ``--palace-layout`` path is handled separately in
+    :func:`main` so a ``--strict`` invocation promotes a broken advertised bin
+    entrypoint from WARN to FAIL (#252 / AC2). It defaults to ``False`` so
+    existing callers that invoke ``run_checks()`` positionally are unaffected.
     """
     checks = [
         check_python_version,
@@ -1798,6 +1948,7 @@ def run_checks(strict: bool = False) -> List[CheckResult]:
         check_project_record_resolution,
         check_test_suite,
         check_version_alignment,
+        lambda: check_wing_isolation(strict=strict),
     ]
     return [fn() for fn in checks]
 
@@ -1898,6 +2049,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         memchorus-doctor --palace-root <root>
                                          classify this specific root rather
                                          than ``~/.mempalace``
+        memchorus-doctor --wing-isolation audit the active profile's palace for
+                                         foreign (misrouted) wings (#286).
+                                         Out-of-namespace wings are WARN; under
+                                         ``--strict`` cross-profile misroutes
+                                         are promoted to FAIL (non-zero exit).
         memchorus-doctor --project <name>  resolve the keyed ``project:<name>``
                                          record (IMPL #163.4 / spec §4.7) and
                                          print its location / standard /
@@ -2006,6 +2162,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # ------------------------------------------------------------------ #
     deps_only = "--deps-check" in args
     palace_layout = "--palace-layout" in args
+    wing_iso = "--wing-isolation" in args
     strict = "--strict" in args
 
     def _value(flag: str) -> Optional[str]:
@@ -2017,7 +2174,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     explicit_root = _value("--palace-root")
 
-    if palace_layout:
+    if wing_iso:
+        results = [check_wing_isolation(strict=strict)]
+    elif palace_layout:
         results = palace_layout_report(strict=strict, explicit_root=explicit_root)
     elif deps_only:
         results = deps_check_report()
