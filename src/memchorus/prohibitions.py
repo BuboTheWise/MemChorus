@@ -31,12 +31,14 @@ if os.name == "nt":  # pragma: no cover - exercised on Windows hosts only
 
     def _lock_fd(fd: int, exclusive: bool = True) -> None:
         # msvcrt.locking needs a byte count; locking a single leading byte is the
-        # canonical whole-file lock idiom on Windows. msvcrt constants:
-        # LK_NLCK (unlock), LK_LOCK (exclusive), LK_RLCK (shared/read).
+        # canonical whole-file lock idiom on Windows. msvcrt constants
+        # (see CPython PC/msvcrtmodule.c — the CRT header names LK_UNL/LK_NLCK
+        # do NOT exist in the Python API): LK_UNLCK (unlock), LK_LOCK
+        # (blocking exclusive), LK_RLCK (shared/read).
         msvcrt.locking(fd, msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK, 1)
 
     def _unlock_fd(fd: int) -> None:
-        msvcrt.locking(fd, msvcrt.LK_NLCK, 1)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 else:
     import fcntl
 
