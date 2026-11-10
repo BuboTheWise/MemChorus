@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import hermes_home, profile_home
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +63,16 @@ _DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
 # --- helpers ----------------------------------------------------------------
 
 def _resolve_hermes_profile() -> str:
-    """Return the active Hermes profile name.
+    """Return the active Hermes profile name, sanitised.
 
-    Resolution order:
-      1. HERMES_PROFILE env var (set by dispatcher at spawn time) — sanitized
-      2. Fall back to 'default' when not running under Hermes Kanban
+    Delegates to :func:`memchorus.active_profile` (issue #267) so a
+    ``$HERMES_HOME`` that is already scoped to a per-profile directory wins
+    over a possibly-stale ``$HERMES_PROFILE``.
 
-    Returns a sanitized profile string safe for use in filesystem paths.
+    Returns a string safe for use in filesystem paths.
     """
-    from memchorus import _sanitize_profile
-    return _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
+    from memchorus import active_profile
+    return active_profile()
 
 
 def _load_yaml_config() -> Dict[str, Any]:
@@ -117,7 +117,7 @@ def _load_profile_yaml_config(profile: str) -> Dict[str, Any]:
     if not _HAS_YAML:
         return {}
 
-    candidate = str(hermes_home() / "profiles" / profile / "memchorus.yaml")
+    candidate = str(profile_home(profile) / "memchorus.yaml")
     if not os.path.isfile(candidate):
         logger.debug("No profile-specific config at %s — skipping.", candidate)
         return {}

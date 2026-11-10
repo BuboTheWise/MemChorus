@@ -18,7 +18,13 @@ from pathlib import Path
 
 import pytest
 
-from memchorus.hermes_home import hermes_home, hermes_home_str
+from memchorus.hermes_home import (
+    active_profile_name,
+    hermes_home,
+    hermes_home_str,
+    profile_config_path,
+    profile_home,
+)
 import memchorus.hermes_home as _hh_mod
 from memchorus.hermes_memory_source import (
     _looks_like_data_dir,
@@ -208,3 +214,110 @@ def test_profile_sanitized_on_resolution(posix, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_PROFILE", "a/b/c")  # fails [A-Za-z0-9_-]
     result = _resolve_hermes_memory_dir()
     assert Path(result) == tmp_path / "memories"
+
+
+# ---------------------------------------------------------------------------
+# active_profile_name() — resolution precedence (issue #267)
+# ---------------------------------------------------------------------------
+# Every test sets $HERMES_HOME to an *existing* directory (tier-1 of
+# hermes_home()), so results are platform-independent and need no os.name /
+# sys.platform patching (the global-platform AST guard is satisfied).
+
+
+def test_active_profile_from_hermes_home_path(monkeypatch, tmp_path):
+    """Tier 1: $HERMES_HOME at profiles/<name>/ yields <name> (hermes -p case)."""
+    prof_dir = tmp_path / "profiles" / "work"
+    prof_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(prof_dir))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    assert active_profile_name() == "work"
+
+
+def test_active_profile_hermes_home_beats_stale_env(monkeypatch, tmp_path):
+    """A stale HERMES_PROFILE must not override the profile in $HERMES_HOME."""
+    prof_dir = tmp_path / "profiles" / "work"
+    prof_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(prof_dir))
+    monkeypatch.setenv("HERMES_PROFILE", "cthugha")
+    assert active_profile_name() == "work"
+
+
+def test_active_profile_from_env_var(monkeypatch, tmp_path):
+    """Tier 2: base $HERMES_HOME + HERMES_PROFILE=<name> yields <name>."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.setenv("HERMES_PROFILE", "cthugha")
+    assert active_profile_name() == "cthugha"
+
+
+def test_active_profile_env_sanitised(monkeypatch, tmp_path):
+    """Tier 2: an invalid HERMES_PROFILE value collapses to 'default'."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.setenv("HERMES_PROFILE", "a/b/c")
+    assert active_profile_name() == "default"
+
+
+def test_active_profile_default_fallback(monkeypatch, tmp_path):
+    """Tier 3: base $HERMES_HOME with no HERMES_PROFILE -> 'default'."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    assert active_profile_name() == "default"
+
+
+# ---------------------------------------------------------------------------
+# profile_home() / profile_config_path() — no double-nesting (issue #267 core)
+# ---------------------------------------------------------------------------
+
+def test_profile_home_default_is_base(monkeypatch, tmp_path):
+    """The default profile lives at the base tree, not under profiles/default/."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.setenv("HERMES_PROFILE", "default")
+    assert profile_home() == base
+    assert profile_config_path() == base / "config.yaml"
+
+
+def test_profile_home_named_under_profiles(monkeypatch, tmp_path):
+    """A named profile lives at <base>/profiles/<name>/."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.setenv("HERMES_PROFILE", "cthugha")
+    expected = base / "profiles" / "cthugha"
+    assert profile_home() == expected
+    assert profile_config_path() == expected / "config.yaml"
+
+
+def test_profile_home_explicit_name(monkeypatch, tmp_path):
+    """Calling profile_home() with an explicit name uses that name."""
+    base = tmp_path / "hermes"
+    base.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(base))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    assert profile_home("grok-reasoner") == base / "profiles" / "grok-reasoner"
+
+
+def test_hermes_p_case_does_not_double_nest(monkeypatch, tmp_path):
+    """THE regression: hermes -p <name> must not double-nest (issue #267).
+
+    With $HERMES_HOME already pointing at .../profiles/work/, the active
+    profile is work and resolving its home must return that same directory.
+    """
+    prof_dir = tmp_path / "profiles" / "work"
+    prof_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(prof_dir))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+    name = active_profile_name()
+    assert name == "work"
+    assert profile_home() == prof_dir
+    assert profile_home(name) == prof_dir
+    assert profile_config_path() == prof_dir / "config.yaml"
+    resolved = str(profile_home()).replace(chr(92), "/")
+    assert "work/profiles/work" not in resolved

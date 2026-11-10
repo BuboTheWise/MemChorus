@@ -44,9 +44,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from typing import Any, Dict, List, Optional
+
+from memchorus import active_profile
 
 
 def _resolve_source() -> Optional[Any]:
@@ -431,7 +432,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Output JSON instead of human-readable text",
     )
     kg_p.add_argument(
-        "--profile", default=os.environ.get("HERMES_PROFILE") or "default",
+        "--profile", default=active_profile(),
         help="Hermes profile name (default: $HERMES_PROFILE or 'default')",
     )
 
@@ -448,7 +449,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Output the raw record as JSON (pipeable to jq)",
     )
     proj_p.add_argument(
-        "--profile", default=os.environ.get("HERMES_PROFILE") or "default",
+        "--profile", default=active_profile(),
         help="Hermes profile name (default: $HERMES_PROFILE or 'default')",
     )
 
@@ -465,7 +466,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Output the body as JSON (dicts as-is, other types wrapped)",
     )
     ret_p.add_argument(
-        "--profile", default=os.environ.get("HERMES_PROFILE") or "default",
+        "--profile", default=active_profile(),
         help="Hermes profile name (default: $HERMES_PROFILE or 'default')",
     )
 
