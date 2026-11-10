@@ -10,6 +10,7 @@ what exists and what the inventory reports.
 """
 from __future__ import annotations
 
+import os
 import textwrap
 from pathlib import Path
 
@@ -79,9 +80,28 @@ def fake_home(tmp_path, monkeypatch):
     (home / ".mempalace" / "default" / "palace").mkdir(parents=True)
     (home / ".mempalace" / "default" / "palace" / "chroma.sqlite3").write_bytes(b"")
 
+    import os
+    import os.path
+
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HERMES_HOME", str(hh))
+
+    # Windows: Path.home() and os.path.expanduser("~") resolve via
+    # USERPROFILE, not $HOME, so the fake home above would be invisible to
+    # them and the resolvers would read the runner's real home. Pin both to
+    # the tmp home so the suite is hermetic on every platform.
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home), raising=False)
+    monkeypatch.setattr(
+        os.path,
+        "expanduser",
+        lambda p: (
+            str(home / p[2:])
+            if isinstance(p, str) and p.startswith("~/")
+            else (str(home) if p == "~" else p)
+        ),
+        raising=False,
+    )
 
     return home
 
@@ -289,9 +309,19 @@ def test_expand_portable_path_hermes_env_syntax(tmp_path, monkeypatch):
 
 
 def test_expand_portable_path_tilde(tmp_path, monkeypatch):
-    home = str(tmp_path / "h")
-    monkeypatch.setenv("HOME", home)
-    assert expand_portable_path("~/data") == f"{home}/data"
+    home = tmp_path / "h"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    # Pin the resolvers so the fake home is honored on every platform
+    # (Windows resolves ~ via USERPROFILE, not $HOME).
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home), raising=False)
+    monkeypatch.setattr(
+        os.path, "expanduser",
+        lambda p: str(home / p[2:]) if isinstance(p, str) and p.startswith("~/") else p,
+        raising=False,
+    )
+    out = expand_portable_path("~/data")
+    assert Path(out) == home / "data"
 
 
 def test_expand_portable_path_returns_input_on_error(tmp_path, monkeypatch):
