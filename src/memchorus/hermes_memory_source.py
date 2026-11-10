@@ -52,13 +52,12 @@ def _resolve_hermes_memory_dir(default: str = "~/.hermes/memories") -> str:
     The caller can always override via ``config['data_dir']`` — this function
     only supplies the default path.
     """
-    from memchorus import _sanitize_profile
-    from memchorus.hermes_home import hermes_home
+    from memchorus import active_profile
+    from memchorus.hermes_home import hermes_home, profile_home
     base = str(hermes_home())
-    raw = os.environ.get("HERMES_PROFILE")
-    profile = _sanitize_profile(raw or "default")
+    profile = active_profile()
     if profile != "default":
-        return os.path.join(base, "profiles", profile, "memories")
+        return str(profile_home(profile) / "memories")
     return os.path.join(base, "memories")
 
 
@@ -205,9 +204,9 @@ class HermesDefaultMemorySource(MemorySource):
 
         # Consult the auto-tuned value for this profile (issue #138).
         try:
-            import os as _os
+            from memchorus import active_profile
             from memchorus.calibration_engine import CalibrationEngine
-            profile = _os.environ.get('HERMES_PROFILE') or 'default'
+            profile = active_profile()
             tuned = CalibrationEngine.get_adjusted_params(profile)
             tuned_value = tuned.get('min_relevance_score')
             if isinstance(tuned_value, (int, float)):

@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import hermes_home, profile_home
 
 logger = logging.getLogger(__name__)
 
@@ -112,15 +112,17 @@ class HitRateTracker:
     def _default_memory_dir(cls) -> str:
         """Resolve the hit-rate index directory for the *current* profile.
 
-        Re-reads ``HERMES_PROFILE`` on every call so that a process that
+        Re-reads the active profile on every call (via the canonical
+        :func:`memchorus.active_profile` resolver) so that a process that
         switches profiles in-process (multi-profile nightly analyzer) gets a
         distinct tracker per profile instead of the first profile's tracker
         being pinned forever. See MemChorus #171 (cross-profile state bleed).
         """
         try:
-            raw_profile = os.environ.get("HERMES_PROFILE", "default")
+            from memchorus import active_profile
+            raw_profile = active_profile()
             if raw_profile != "default":
-                return str(hermes_home() / "profiles" / raw_profile / "memories")
+                return str(profile_home(raw_profile) / "memories")
             return str(hermes_home() / "memories")
         except Exception:
             return str(hermes_home() / "memories")

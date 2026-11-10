@@ -1751,12 +1751,12 @@ class MemoryOrchestrator:
         every skip/failure path. Never raises — calibration is bookkeeping and
         must not break session teardown.
         """
+        from memchorus import active_profile
         from memchorus.calibration_engine import CalibrationEngine
-        import os as _os
 
         summary: Dict[str, Any] = {"calibrated": False, "profile": "default"}
         try:
-            profile = _os.environ.get("HERMES_PROFILE") or "default"
+            profile = active_profile()
             summary["profile"] = profile
 
             tracker = None

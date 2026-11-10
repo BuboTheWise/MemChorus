@@ -34,7 +34,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
-from memchorus.hermes_home import hermes_home
+from memchorus.hermes_home import hermes_home, active_profile_name, profile_config_path
 from memchorus import _sanitize_profile as _sanitize_profile
 
 logger = logging.getLogger(__name__)
@@ -1598,9 +1598,8 @@ def _resolve_inline_threshold() -> Optional[int]:
 
     # Layer 2: per-profile config.yaml (parsed once, memoised by mtime — GH-270 L8)
     try:
-        from memchorus import _sanitize_profile
-        profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
-        cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
+        profile = active_profile_name()
+        cfg_path = str(profile_config_path())
         data = _load_profile_config_yaml(cfg_path)
         memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
         if isinstance(memchorus_cfg, dict):
@@ -1643,8 +1642,7 @@ def _resolve_char_limit() -> int:
 
     # Layer 2: per-profile config.yaml (parsed once, memoised by mtime — GH-270 L8)
     try:
-        profile = _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
-        cfg_path = str(hermes_home() / "profiles" / profile / "config.yaml")
+        cfg_path = str(profile_config_path())
         data = _load_profile_config_yaml(cfg_path)
         memchorus_cfg = data.get("memchorus", {}) if isinstance(data, dict) else {}
 
@@ -1744,10 +1742,15 @@ _suppression_windows_lock = threading.Lock()
 
 
 def _resolve_profile_name() -> str:
-    """Hermes profile identifier used to scope the suppression window."""
+    """Hermes profile identifier used to scope the suppression window.
+
+    Delegates to the canonical :func:`memchorus.active_profile` resolver
+    (issue #267) so a ``$HERMES_HOME`` already scoped to a per-profile
+    directory wins over a possibly-stale ``$HERMES_PROFILE``.
+    """
     try:
-        from memchorus import _sanitize_profile
-        return _sanitize_profile(os.environ.get("HERMES_PROFILE", "default"))
+        from memchorus import active_profile
+        return active_profile()
     except Exception:
         return os.environ.get("HERMES_PROFILE", "default") or "default"
 
@@ -1760,9 +1763,8 @@ def _resolve_suppression_settings() -> "tuple[int, float]":
     Returns defaults when unset.
     """
     window_size, ttl = _DEFAULT_SUPPRESSION_WINDOW, _DEFAULT_SUPPRESSION_TTL_S
-    profile = _resolve_profile_name()
     try:
-        cfg_path = hermes_home() / "profiles" / profile / "config.yaml"
+        cfg_path = profile_config_path()
         if not cfg_path.exists():
             cfg_path = hermes_home() / "config.yaml"
         # Parsed once, memoised by mtime (GH-270 L8): the profile config is

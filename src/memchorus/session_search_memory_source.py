@@ -159,9 +159,9 @@ class SessionSearchMemorySource(MemorySource):
 
         # Consult the auto-tuned value for this profile (issue #138).
         try:
-            import os as _os
+            from memchorus import active_profile
             from memchorus.calibration_engine import CalibrationEngine
-            profile = _os.environ.get('HERMES_PROFILE') or 'default'
+            profile = active_profile()
             tuned = CalibrationEngine.get_adjusted_params(profile)
             tuned_value = tuned.get('min_relevance_score')
             if isinstance(tuned_value, (int, float)):

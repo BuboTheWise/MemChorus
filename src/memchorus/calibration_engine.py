@@ -12,7 +12,6 @@ See docs/AUTOTUNING.md for the full auto-tuning framework spec.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -303,12 +302,14 @@ def main() -> None:
     """CLI entry point for `memchorus recalibrate`."""
     import argparse
 
+    from memchorus import active_profile
+
     parser = argparse.ArgumentParser(
         prog="memchorus-recalibrate",
         description="Run a manual calibration cycle for MemChorus auto-tuning.",
     )
     parser.add_argument(
-        "--profile", default=os.environ.get("HERMES_PROFILE") or "default",
+        "--profile", default=active_profile(),
         help="Hermes profile name (default: from env or 'default')",
     )
     args = parser.parse_args()
