@@ -13,6 +13,8 @@ and ``_canonical_in_home("default")`` is ``HERMES_HOME/mempalace``.
 from __future__ import annotations
 
 import json
+import os
+import os.path
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,26 @@ from memchorus.state_migrate import (
     read_marker,
     write_marker,
 )
+
+
+def _pin_home(home: Path, monkeypatch) -> None:
+    """Force Path.home() and os.path.expanduser to the fake home.
+
+    On Windows these resolve via USERPROFILE, not $HOME, so setting env vars
+    alone leaves the resolvers reading the runner's real home. This is
+    harmless on Linux (already honored) and required for Windows hermeticity.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home), raising=False)
+    monkeypatch.setattr(
+        os.path,
+        "expanduser",
+        lambda p: (
+            str(home / p[2:])
+            if isinstance(p, str) and p.startswith("~/")
+            else (str(home) if p == "~" else p)
+        ),
+        raising=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +81,7 @@ def legacy_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("HERMES_HOME", str(hh))
+    _pin_home(home, monkeypatch)
     return home
 
 
@@ -138,8 +161,12 @@ def test_migrate_moves_legacy_palace_into_home(legacy_home):
     assert canonical.exists()
     assert (canonical / "palace" / "chroma.sqlite3").exists()
 
-    # Moved pairs recorded.
-    assert any("/.mempalace/default" in s[0] for s in res.moved)
+    # Moved pairs recorded.  (Separator-agnostic: on Windows the legacy path
+    # uses backslashes, so a literal "/.mempalace/default" never matches.)
+    assert any(
+        s[0].replace("\\", "/").endswith("/.mempalace/default")
+        for s in res.moved
+    )
     # Marker written.
     assert res.marker_written is not None
     assert Path(res.marker_written).is_file()
