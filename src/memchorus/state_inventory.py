@@ -208,17 +208,54 @@ def _resolve_data_dir(profile: str) -> Optional[Path]:
             cfg = yaml.safe_load(cfg_path.read_text()) or {}
             if not isinstance(cfg, dict):
                 continue
-            dd = cfg.get("data_dir")
-            if not dd:
-                rt = cfg.get("runtime", {})
-                if isinstance(rt, dict):
-                    dd = rt.get("mempalace_home")
+            dd = _data_dir_from_cfg(cfg)
             if dd and isinstance(dd, str):
                 return Path(dd).expanduser()
         except Exception as exc:
             logger.debug(
                 "state_inventory: failed to read %s: %s", cfg_path, exc
             )
+    return None
+
+
+def _data_dir_from_cfg(cfg: object) -> Optional[str]:
+    """Extract the MemPalace data directory from a loaded config mapping.
+
+    The canonical writer (``auto_init.generate_config``) nests the value
+    under ``mempalace_config``:
+
+    - ``mempalace_config.data_dir``
+    - ``mempalace_config.runtime.mempalace_home``
+
+    which is the shape the runtime reader (``state_migrate``) honours. The
+    top-level ``data_dir`` / ``runtime.mempalace_home`` keys are accepted as
+    a legacy fallback so hand-written configs (and the unit fixtures) that
+    predate the nesting still resolve. Nested form wins when present.
+    """
+    if not isinstance(cfg, dict):
+        return None
+
+    # 1. Canonical nested form (what generate_config writes).
+    mp = cfg.get("mempalace_config")
+    if isinstance(mp, dict):
+        dd = mp.get("data_dir")
+        if dd and isinstance(dd, str):
+            return dd
+        rt = mp.get("runtime")
+        if isinstance(rt, dict):
+            mh = rt.get("mempalace_home")
+            if mh and isinstance(mh, str):
+                return mh
+
+    # 2. Legacy top-level form (fixtures / older configs).
+    dd = cfg.get("data_dir")
+    if dd and isinstance(dd, str):
+        return dd
+    rt = cfg.get("runtime")
+    if isinstance(rt, dict):
+        mh = rt.get("mempalace_home")
+        if mh and isinstance(mh, str):
+            return mh
     return None
 
 
