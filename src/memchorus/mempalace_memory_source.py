@@ -408,7 +408,7 @@ class _McpTransportDetector:
         if not goto_fallback and cfg_args is not None:
             # Shape B: command is a path, args is already split.
             assert isinstance(command_raw, str)  # narrowed above
-            parts.append(os.path.expanduser(command_raw))
+            parts.append(command_raw)
             parts.extend(cfg_args)
         elif not goto_fallback:
             # Shape A (legacy): split the command string into argv parts.
@@ -441,9 +441,13 @@ class _McpTransportDetector:
         if not goto_fallback and not parts:
             goto_fallback = True
 
-        # Expand tilde paths for Shape A (already expanded for Shape B above).
-        if not goto_fallback and cfg_args is None:
-            parts[0] = os.path.expanduser(parts[0])
+        # Uniform expansion pass (both shapes, command + every arg).
+        if not goto_fallback and parts:
+            try:
+                from memchorus.state_inventory import expand_portable_path
+            except Exception:
+                expand_portable_path = os.path.expanduser
+            parts = [expand_portable_path(x) for x in parts]
 
         # Validate the resolved command actually exists on disk before trusting
         # the config override. If it doesn't, fall through to PATH discovery so

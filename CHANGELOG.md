@@ -2,6 +2,23 @@
 
 All notable changes to MemChorus will be documented in this file.
 
+## [2.0.80] - 2026-11-10
+
+### Added
+- **Per-profile state inventory & one-time migration (Issue #283):** two new import-safe, never-raising modules:
+  - `memchorus.state_inventory` — `inventory_for_profile()`, `backup_paths_for_profile()`, `outside_home_entries()`, `in_home_outside_hermes_entries()`, `expand_portable_path()`. A single source of truth for every file/directory a profile reads or writes, gated to in-`$HOME`, out-of-`HERMES_HOME`, non-secret, existing paths, with parent/child dedup. `backup_paths_for_profile()` is the `MemoryProvider.backup_paths()` implementation, so the detector no longer double-walks the filesystem. `outside_home_entries()` feeds the `--migration` preflight with the paths Hermes cannot preserve. `expand_portable_path()` gives `${env:VAR}` / `${VAR}` / `~` parity with Hermes's config loader so a portable `--palace ${HERMES_HOME}/.mempalace/palace` resolves identically in both (acceptance criterion A7).
+  - `memchorus.state_migrate` — `migrate_profile_state()` (idempotent, dry-run capable, preserves the source as `.bak` when the in-home destination is already authoritative), `legacy_sources()`, and a migration marker (`state_migrated.json`) so re-runs are no-ops. Moves `~/.mempalace/<profile>`, `~/.memchorus.yaml`, and `~/.memchorus-data/prohibitions.jsonl` into the profile home and rewrites the config's `data_dir`/`mempalace_home` to the in-home canonical dir.
+- **`--migration` preflight wiring** in `auto_init`, `install_doctor`, and the provider integration: a one-time migration step and a portable-`--palace` resolution path that reports (rather than silently drops) state outside `$HOME`.
+
+### Changed
+- The tuning/calibration inventory entry now points at the real `data/memchorus/_tuning/` directory (YAML) rather than a non-existent `tuning.json`.
+- `state_migrate` removes the now-empty legacy container directory (e.g. `~/.memchorus-data/`) after moving the file it held, so migration leaves no residue.
+
+### Tests
+- New `tests/test_state_inventory.py` (16 tests) and `tests/test_state_migrate.py` (18 tests): hermetic fake-`$HOME` trees covering the inventory categories, the secret / in-home / out-of-HERMES_HOME / existing-only / dedup filters of `backup_paths`, the `--migration` preflight reporting, `expand_portable_path` syntax, and the migrate happy-path / idempotency / dry-run / preserve-on-conflict / config-rewrite / never-raises contracts.
+
+Bumps `__version__` 2.0.79 → 2.0.80 (dual-digit patch per X.Y.ZZ convention; version-sync `__init__.py` / README / `setup.py` / `pyproject.toml` passes).
+
 ## [2.0.78] - 2026-11-09
 
 ### Fixed
