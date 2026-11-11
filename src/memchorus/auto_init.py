@@ -43,7 +43,11 @@ except ImportError:  # pragma: no cover - install_requires guarantees pyyaml
 # Constants — sensible defaults that work for 95 % of agents out of the box.
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = os.path.join(os.path.expanduser("~"), ".mempalace")
+# Issue #283 item 2: fresh installs default state to live *inside the profile
+# home* rather than a sibling ~/.mempalace tree. This constant equals the
+# default-profile canonical dir (``profile_home("default") / "mempalace"``);
+# named profiles are scoped per-profile in generate_config() below.
+DEFAULT_DATA_DIR = str(Path(hermes_home()) / "mempalace")
 
 _WING_MAP_TEMPLATE: dict[str, list[str]] = {
     "DECISION": ["project", "design", "architecture"],
@@ -102,8 +106,11 @@ def generate_config(profile: Optional[str] = None,
                or os.environ.get("HERMES_KANBAN_PROFILE")
                or "default")
 
-    data_dir = (data_dir
-                or os.path.join(DEFAULT_DATA_DIR, profile))
+    # Issue #283 item 2: scope state per profile *inside* that profile's home
+    # (``profile_home(profile) / "mempalace"``). The default profile lands at the
+    # same dir as the DEFAULT_DATA_DIR constant above; named profiles are isolated
+    # under their own ``profiles/<name>`` tree.
+    data_dir = (data_dir or str(profile_home(profile) / "mempalace"))
     data_dir = str(os.path.expanduser(data_dir)) if "~" in str(data_dir) else str(data_dir)
     # Single decision point: resolve parent-vs-leaf through the shared
     # resolver so the recorded config and the reader's own resolution can
@@ -360,6 +367,28 @@ def cli_main() -> int:
                 else:
                     print(f"[skip] {root} is already canonical — nothing to re-point")
         return 0
+
+    # ── Issue #283 item 2: one-time move of legacy out-of-home state ──────
+    # Runs before write_config so the canonical dir is populated first,
+    # then the new config is written pointing at the same dir.
+    from memchorus.state_migrate import migrate_profile_state
+    try:
+        migration = migrate_profile_state(profile=profile, dry_run=args.dry_run)
+        if migration.already_migrated:
+            print("[info] state already migrated — nothing to move")
+        if migration.moved:
+            for src, dst in migration.moved:
+                prefix = "[dry-run] would move " if args.dry_run else "[ok] moved "
+                print(f"{prefix}{src} → {dst}")
+        if migration.config_rewritten:
+            for cfg in migration.config_rewritten:
+                print(f"[ok] legacy config re-pointed: {cfg}")
+        if migration.preserved:
+            for item in migration.preserved:
+                print(f"[warn] preserved (not moved): {item}")
+    except Exception as exc:
+        # Migration is best-effort on first run — never block config write.
+        print(f"[warn] state migration skipped: {exc}", file=sys.stderr)
 
     if not args.dry_run:
         write_config(profile=profile, data_dir=args.data_dir)
