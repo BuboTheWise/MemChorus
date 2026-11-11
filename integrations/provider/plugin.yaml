@@ -1,7 +1,75 @@
 name: memchorus
 version: 0.1.0
 description: "MemChorus — orientation and recall policy for Hermes. Wraps MemPalace (or the built-in memory store) as the backing store, injecting forced session-start context and providing background prefetch, on-demand recall, and durable remember tools."
-# No pip_dependencies: memchorus is a local source tree (src/memchorus) that
-# the provider resolves at runtime; it is not installed from PyPI.
+
+# ---------------------------------------------------------------------------
+# Auto-installed, index-resolvable hard dependencies.
+#
+# `hermes memory setup memchorus` installs these from PyPI automatically
+# (hermes_cli.memory_setup._install_dependencies -> uv pip install). These are
+# exactly the core deps `import memchorus` needs — see pyproject.toml
+# [project].dependencies. The provider is a thin adapter over the SDK, so the
+# SDK's own runtime deps must be present for the first turn to orient.
+# ---------------------------------------------------------------------------
+pip_dependencies:
+  - "pydantic>=2.0,<3.0"
+  - "pyyaml>=5.4"
+  - "opentelemetry-api>=1.2.0,<2.0"
+  - "opentelemetry-sdk>=1.2.0,<2.0"
+  - "opentelemetry-exporter-otlp-proto-grpc>=1.2.0,<2.0"
+  - "opentelemetry-instrumentation>=0.41b0,<1.0"
+  - "packaging>=21.0"
+
+# ---------------------------------------------------------------------------
+# The MemChorus SDK itself — source tree, not on PyPI.
+#
+# The setup framework runs `check` (import probe) and, on a fresh host where it
+# fails, PRINTS `install` as the one-line remediation. The SDK ships as a
+# buildable source tree (pyproject.toml build-system -> setuptools, dynamic
+# version derived from src/memchorus/__init__.py), so a git direct-reference
+# install is the canonical self-describing recipe.
+# ---------------------------------------------------------------------------
+external_dependencies:
+  - name: memchorus
+    check: "python -c 'import memchorus'"
+    install: "pip install \"memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master\""
+
 # The provider implements the full MemoryProvider ABC directly, including
 # on_session_end — no separate hook wiring is required.
+# See after-install.md for the optional [mcp] extra (recall/remember tools).
+
+# ---------------------------------------------------------------------------
+# First turn (recorded) — scope 5 (hook parity) + scope 6 (no duplicate
+# background activity).  This section is the self-documenting contract for
+# the imported copy and must stay in sync with the provider implementation.
+# ---------------------------------------------------------------------------
+
+# Scope 5 — parity with the direct adapter (tests/test_orientation.py, #262/PR#281):
+#   The imported provider injects the SAME session-start orientation block that
+#   the in-tree direct-adapter path injects, with the SAME forced-orient
+#   semantics (forced before the model's first reasoning step), the SAME
+#   recall/remember tool surface, and the SAME on_session_end durable write.
+#   It implements the full MemoryProvider ABC directly (on_session_end
+#   included), so there is NO separate hook registration: the plugin.yaml is
+#   the single source of truth and no second hook path can double-inject.
+#
+# Scope 6 — exactly one background prefetch worker per provider instance:
+#   * MemChorusMemoryProvider holds a single _worker thread + _slot
+#     (_PrefetchSlot), guarded by _slot_lock / _worker_lock.
+#   * queue_prefetch() refuses to start a second worker while one is
+#     in-flight (worker.is_alive() check), so a repeated prefetch query on the
+#     same session never spawns two threads — no duplicate background activity.
+#   * A prefetch timeout (default 3.0s) only degrades the block to
+#     orientation-only; it never blocks the caller and never leaks a thread.
+#   * on_session_end (and provider teardown) joins the worker with a bounded
+#     wait so a background prefetch never outlives the session.
+#
+# The "recorded" first-turn fixture (acceptance B1) is asserted in
+# tests/test_284b_scope4_orientation_states.py::TestOrientationBlockNonEmpty:
+# the block is non-empty, carries the store-state classification when
+# degraded, and is produced with exactly one in-flight worker.
+first_turn:
+  record: tests/test_284b_scope4_orientation_states.py
+  parity_with: tests/test_orientation.py   # #262 / PR #281 direct-adapter contract
+  background_workers: 1                    # exactly one prefetch thread per instance
+  hooks: inline                            # full ABC incl. on_session_end; no separate hook

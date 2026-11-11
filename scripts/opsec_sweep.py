@@ -146,7 +146,16 @@ ALLOW: List[Tuple[str, str, str]] = [
     ("CHANGELOG.md", "bubo_at", "names the pattern the gate catches (self-referential doc)"),
     ("CHANGELOG.md", "at_bubo", "names the pattern the gate catches (self-referential doc)"),
     ("docs/REQUIREMENTS.md", "abs_home",
-     "``--palace /home/x/...`` example — ``x`` is a placeholder username, not operator PII"),
+     "--palace /home/x/... example — x is a placeholder username, not operator PII"),
+    # Issue #284 scope-2 contract test: the symlink/stale-plugin fixtures point the
+    # plugin dir at a synthetic /home/someuser/... (a placeholder any-user, not an
+    # operator's machine) so the diagnostic is forced to name a path, and the
+    # TestNoHomeLeak helper ASSERTS the ABSENCE of the "bubo@" needle — that string
+    # must literally appear in the assertion source or the test has nothing to check.
+    ("tests/test_284b_scope2_unavailable_reason.py", "abs_home",
+     "synthetic symlink fixture (/home/someuser/...) — placeholder any-user, not operator PII"),
+    ("tests/test_284b_scope2_unavailable_reason.py", "bubo_at",
+     'test asserts ABSENCE of the "bubo@" needle; the string is intentionally present in the assertion source'),
     # The gate script itself: it must NAME its pattern catalog and its own allow-reasons
     # (bubo@, @bubo, @gmail, cthugha, /home/user, the file paths in ALLOW) to describe what
     # it searches for. Allowing its self-references is not a leak — it is the tool talking

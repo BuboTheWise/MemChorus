@@ -47,12 +47,91 @@ try:
 except Exception:  # pragma: no cover - isolated-test fallback (no Hermes installed)
     from abc import ABC as _MemoryProviderBase  # type: ignore[assignment,unused-ignore]
 
+from integrations.provider._availability_diagnostics import (  # noqa: E402
+    unavailable_reason as _unavailable_reason,
+)
+from integrations.provider._version_gate import (  # noqa: E402
+    EXPECTED_SDK_VERSION,  # re-exported below — single source of truth
+    VersionGateStatus as _VersionGateStatus,
+    status_for_current_environment as _version_gate_status,
+)
+
+
+def unavailable_reason(
+    hermes_home: Optional[str] = None,
+    expected_version: Optional[str] = None,
+) -> Optional[str]:
+    """Module-level wrapper — delegates to the provider method.
+
+    Convenience for callers (setup wizard, dashboard, tests) that don't
+    need a full ``MemChorusMemoryProvider`` instance.  Equivalent to
+    ``MemChorusMemoryProvider().unavailable_reason(...)``.
+    """
+    return _unavailable_reason(
+        hermes_home=hermes_home,
+        expected_version=expected_version or EXPECTED_SDK_VERSION,
+    )
+
 
 __all__ = [
     "MemChorusMemoryProvider",
     "register",
+    "unavailable_reason",
+    "EXPECTED_SDK_VERSION",
 ]
 
+# The SDK version this provider manifest was built against.  The declared
+# minimum lives in :mod:`integrations.provider._version_gate` (the import-safe
+# leaf) and is re-exported here so the two surfaces cannot drift from each
+# other — equal-by-construction, not a second literal to keep in sync.  That
+# leaf in turn mirrors ``src/memchorus/__init__.py::__version__``; the
+# ``scripts/check_version_sync.py`` gate and the scope-2 contract test keep
+# the leaf honest against the canonical runtime version.
+
+
+# ---------------------------------------------------------------------------
+# Setup-framework hook (``hermes memory setup memchorus``)
+# ---------------------------------------------------------------------------
+
+def _post_setup(hermes_home: str, config: dict) -> None:
+    """Called by ``hermes memory setup memchorus`` after dependency install.
+
+    The setup framework (``hermes_cli.memory_setup``) invokes this and then
+    ``return``s immediately — it does NOT run the generic
+    ``config["memory"]["provider"] = name; save_config(config)`` fallback for
+    providers that define ``post_setup``. This function therefore owns the
+    whole persistence step.
+
+    It does three things:
+
+      1. Pins the MemChorus provider in ``config.yaml``.
+      2. Saves the config (the wizard will not do it for us).
+      3. Verifies the MemChorus SDK is importable and, if not, prints the
+         one-line install recipe so a fresh host can finish provisioning
+         without guessing — the re-provisioning path (#284 Issue B, Scope 1).
+    """
+    from hermes_cli.config import save_config
+
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
+
+    # 1 + 2: pin and persist.
+    config["memory"]["provider"] = "memchorus"
+    save_config(config)
+    print("\n  Memory provider: memchorus")
+    print("  Activation saved to config.yaml")
+
+    # 3: SDK availability check + remediation hint.
+    try:
+        import memchorus  # noqa: F401
+    except Exception as exc:
+        print("  \u26a0 MemChorus SDK not importable yet: %s" % exc)
+        print('  Run: pip install "memchorus @ git+https://github.com/BuboTheWise/MemChorus.git@master"')
+    else:
+        try:
+            print("  \u2713 MemChorus SDK %s ready" % getattr(memchorus, "__version__", "unknown"))
+        except Exception:  # pragma: no cover
+            print("  \u2713 MemChorus SDK ready")
 
 # ---------------------------------------------------------------------------
 # Background prefetch plumbing
@@ -136,6 +215,13 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         self._worker_started_at = 0.0
         self._initialized = False
 
+        # Version / schema gate cache (issue #284 scope 3).  Lazily evaluated
+        # and cached for the process lifetime: the gate depends only on the
+        # installed SDK version and the on-disk schema marker, both of which
+        # are stable within a single provider instance's life.  ``None`` means
+        # "not yet evaluated"; :meth:`_version_gate` fills it on first use.
+        self._version_gate_status: Optional[_VersionGateStatus] = None
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -195,6 +281,79 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
             logger.debug("MemChorus provider unavailable: %s", exc)
             return False
 
+    def unavailable_reason(
+        self,
+        hermes_home: Optional[str] = None,
+        expected_version: Optional[str] = None,
+    ) -> Optional[str]:
+        """Precise, secret-free cause + fix when the provider is unavailable.
+
+        Scope 2 of GH-284 (issue #284, "after restore").  Before this, a
+        failed :meth:`is_available` only surfaced a generic "check
+        credentials" hint because the swallowed exception lived in a
+        ``debug`` log line.  This method classifies the failure into a named
+        cause (``missing-package`` / ``version-mismatch`` /
+        ``stale-plugin-dir`` / ``store-path`` / ``unknown``) and pairs it
+        with the exact remediation command for the current interpreter.
+
+        Parameters
+        ----------
+        hermes_home:
+            Root of the Hermes home directory.  When omitted, the
+            ``HERMES_HOME`` env var is consulted, then the plugin-dir and
+            store-path checks are skipped (the caller has no home to
+            inspect).  Callers that know their home (the setup wizard, the
+            dashboard) should pass it explicitly.
+        expected_version:
+            The SDK version the provider manifest was built against.  When
+            omitted, :data:`EXPECTED_SDK_VERSION` is used.
+
+        Returns
+        -------
+        str or None
+            A one-line, secret-free diagnostic when the provider is
+            unavailable for a classifiable reason, or ``None`` when every
+            check passes.  Callers should treat a non-``None`` return as
+            authoritative and surface it verbatim.
+        """
+        version = expected_version or EXPECTED_SDK_VERSION
+        try:
+            return _unavailable_reason(
+                hermes_home=hermes_home,
+                expected_version=version,
+            )
+        except Exception as exc:  # pragma: no cover - diagnostics must not raise
+            logger.debug("MemChorus provider unavailable_reason: %s", exc)
+            return (
+                "unknown: an internal error prevented the MemChorus "
+                "availability diagnostic from completing — run `hermes doctor` "
+                "for the full log."
+            )
+
+    def _version_gate(self) -> _VersionGateStatus:
+        """Return the cached version / schema gate status (issue #284 scope 3).
+
+        Lazily evaluated on first access and cached for the instance's life —
+        the gate depends only on the installed SDK version and the on-disk
+        schema marker, both stable within a single run.  Never raises: on any
+        internal error it falls back to the conservative ``no-sdk`` block so
+        that an un-evaluable gate refuses unsafe writes rather than guessing.
+        """
+        if self._version_gate_status is None:
+            try:
+                self._version_gate_status = _version_gate_status()
+            except Exception as exc:  # pragma: no cover - gate must not raise
+                logger.debug("MemChorus provider _version_gate: %s", exc)
+                self._version_gate_status = _VersionGateStatus(
+                    installed=None,
+                    expected=EXPECTED_SDK_VERSION,
+                    safe_for_reads=True,
+                    safe_for_writes=False,
+                    reason="Version-gate evaluation failed (internal error) — writes refused by default.",
+                    blocked_by="no-sdk",
+                )
+        return self._version_gate_status
+
     def initialize(self, session_id, **kwargs: Any) -> None:
         """Capture session scoping and kick a background orientation prefetch.
 
@@ -218,6 +377,14 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
             self.queue_prefetch(seed)
 
         logger.debug("MemChorus provider initialized (session=%s)", self._session_id)
+
+    def post_setup(self, hermes_home: str, config: dict) -> None:
+        """Setup-framework hook (``hermes memory setup memchorus``).
+
+        The wizard calls this and then returns immediately, so the module-level
+        :func:`_post_setup` owns the config pin + save + SDK check.
+        """
+        _post_setup(hermes_home, config)
 
     def shutdown(self) -> None:
         """Join any in-flight background prefetch (bounded)."""
@@ -313,6 +480,23 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         lines.append(f"Active task:    {task or '—'}")
         lines.append(f"Agent:          {self._agent_identity or 'default'}")
 
+        # Issue #284 scope 3 — surface the version / schema gate state in the
+        # orientation header so the agent sees *why* writes may be refused,
+        # not just that they were refused.  Always shown (even when green) so
+        # the provenance is transparent and the gate can never fail silently.
+        gate = self._version_gate()
+        if gate.safe_for_writes:
+            gate_line = (
+                f"Version gate:   ok — installed {gate.installed} meets the "
+                f"declared minimum {gate.expected}; reads and writes allowed."
+            )
+        else:
+            gate_line = (
+                f"Version gate:   BLOCKED ({gate.blocked_by}) — "
+                f"{gate.reason} Reads remain available."
+            )
+        lines.append(gate_line)
+
         if hits:
             lines.append(f"Live recall ({len(hits)} hit{'s' if len(hits) != 1 else ''}):")
             for hit in hits[: self._orientation_limit]:
@@ -321,10 +505,25 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
                 source = hit.get("source", "")
                 lines.append(f"  - [{key}] {content}" + (f"  (src:{source})" if source else ""))
         else:
-            lines.append(
-                "Live recall: degraded — no source reachable. "
-                "MemPalace/Hermes store is down; orientation-only mode is active."
-            )
+            # Issue #284 scope 4 — the post-restore orientation guarantee:
+            # when live recall is empty, classify *why* (store reachable but
+            # no match, store down, store missing/empty after restore, or
+            # config pointing at a foreign path) and name the exact next step.
+            try:
+                from memchorus.store_state import classify_store_state
+                state = classify_store_state(self._orchestrator)
+            except Exception as exc:  # pragma: no cover - must not raise
+                logger.debug("MemChorus provider store_state classify: %s", exc)
+                state = None
+            if state is not None and state.code != "store-reachable":
+                lines.append(
+                    f"Store state:      {state.label} — {state.detail}"
+                )
+            else:
+                lines.append(
+                    "Live recall: degraded — no source reachable. "
+                    "MemPalace/Hermes store is down; orientation-only mode is active."
+                )
 
         if self._session_title:
             lines.append(f"Session focus: {self._session_title}")
@@ -528,6 +727,25 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
                 key = args.get("key", "")
                 content = args.get("content", "")
                 category = args.get("category") or "LEARNING"
+                gate = self._version_gate()
+                if not gate.safe_for_writes:
+                    # Issue #284 scope 3 — refuse unsafe writes on version/schema
+                    # mismatch (reads stay available).  Return a structured
+                    # refusal, never a raise, so the agent can surface it.
+                    logger.warning(
+                        "MemChorus provider: write refused by version gate "
+                        "(blocked_by=%s, installed=%s, expected=%s)",
+                        gate.blocked_by, gate.installed, gate.expected,
+                    )
+                    return json.dumps({
+                        "saved": False,
+                        "key": key,
+                        "refused_by": "version_gate",
+                        "blocked_by": gate.blocked_by,
+                        "installed_version": gate.installed,
+                        "expected_version": gate.expected,
+                        "detail": gate.reason,
+                    })
                 ok = orch.save(
                     key=key,
                     value=content,
@@ -561,6 +779,19 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
             return
         text = f"{user_content}\n{assistant_content}".strip()
         if not text:
+            return
+        # Issue #284 scope 3 — the enforcement pipeline both recalls (read) and
+        # captures storage (write).  On a blocked gate we still want the read
+        # half, but the storage half is the "unsafe write" the gate exists to
+        # refuse; skip enforcement entirely in that case so nothing new is
+        # written to a version-mismatched store.
+        gate = self._version_gate()
+        if not gate.safe_for_writes:
+            logger.warning(
+                "MemChorus provider: sync_turn storage skipped by version gate "
+                "(blocked_by=%s)",
+                gate.blocked_by,
+            )
             return
 
         def _run() -> None:
@@ -624,6 +855,20 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         """
         orch = self._orchestrator
         if orch is None:
+            return
+
+        # Issue #284 scope 3 — everything below (checkpoint write, stale/useful
+        # recall feedback, throttled calibration) is a *write* into the store.
+        # On a version/schema mismatch the gate refuses unsafe writes, so we
+        # skip all of it here.  Recall reads already happened earlier in the
+        # session and are unaffected — only the persist-at-teardown is held.
+        gate = self._version_gate()
+        if not gate.safe_for_writes:
+            logger.warning(
+                "MemChorus provider: on_session_end writes skipped by version "
+                "gate (blocked_by=%s)",
+                gate.blocked_by,
+            )
             return
 
         # ---- 1. Checkpoint (best-effort, needs a project) ---------------
@@ -703,6 +948,14 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         orch = self._orchestrator
         project = self._resolve_project()
         if orch is None or project is None:
+            return contribution
+        # Issue #284 scope 3 — the checkpoint write below is an unsafe write on
+        # a blocked gate; hold it (the orientation contribution still returns).
+        if not self._version_gate().safe_for_writes:
+            logger.debug(
+                "MemChorus provider: on_pre_compress checkpoint skipped by "
+                "version gate"
+            )
             return contribution
         try:
             from memchorus.checkpoint import write_checkpoint
