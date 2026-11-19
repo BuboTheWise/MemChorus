@@ -389,13 +389,28 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
 
 
 def check_memory_source_registration() -> CheckResult:
-    """MemorySource base class is importable and has _registry."""
+    """MemorySource base class is importable and at least one concrete
+    source subclass is registered.
+
+    Registration in MemChorus is *explicit*, not a class-level table: the
+    orchestrator (``MemChorusOrchestrator._initialize_default_sources``)
+    instantiates the concrete sources directly — ``HermesDefaultMemorySource``
+    always, ``MemPalaceMemorySource`` and ``SessionSearchMemorySource`` on a
+    best-effort basis — and exposes ``register_source()`` for custom ones.
+    The ``MemorySource`` ABC carries no ``_registry`` attribute (the probe in
+    v2.0.80 checked for one and warned on every healthy install — GH-#299).
+
+    The meaningful probe is therefore the standard Python subclass registry,
+    ``MemorySource.__subclasses__()``, populated once the concrete source
+    modules are imported. We import the known concrete modules first, then
+    assert at least one concrete source is importable. Best-effort sources
+    that fail to import (e.g. ``mcp`` missing) are tolerated, mirroring the
+    orchestrator's degraded-but-operational behavior — the orchestrator's
+    resilient core (``hermes_default``) only depends on the local filesystem,
+    so a healthy install always yields a non-empty registry.
+    """
     try:
         from memchorus.memory_source import MemorySource  # noqa: F401
-
-        ok = hasattr(MemorySource, "_registry") or hasattr(
-            MemorySource, "subclasses"
-        )
     except ImportError as exc:
         return CheckResult(
             name="memory_source_registration",
@@ -404,18 +419,36 @@ def check_memory_source_registration() -> CheckResult:
             hint="pip install --force-reinstall memchorus",
         )
 
-    if not ok:
+    # Import the concrete source modules so their subclasses register in the
+    # standard registry. Tolerate failures of optional/best-effort sources —
+    # the orchestrator tolerates the same failures at init time.
+    for module_name in (
+        "memchorus.hermes_memory_source",
+        "memchorus.mempalace_memory_source",
+        "memchorus.session_search_memory_source",
+    ):
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            pass
+
+    subclasses = MemorySource.__subclasses__()
+    if not subclasses:
         return CheckResult(
             name="memory_source_registration",
             status=WARN,
-            message="MemorySource exists but subclass registry missing",
-            hint="Some sources may not be auto-discoverable.",
+            message="MemorySource base class present, but no concrete "
+            "source subclass is importable",
+            hint="The orchestrator would have no sources to register. "
+            "Reinstall: pip install --force-reinstall memchorus",
         )
 
+    names = ", ".join(cls.__name__ for cls in subclasses)
     return CheckResult(
         name="memory_source_registration",
         status=PASS,
-        message="Memory source base class and registry present",
+        message=f"Memory source base class present; {len(subclasses)} "
+        f"concrete source(s) registered ({names})",
     )
 
 
