@@ -66,6 +66,14 @@ def _build_wing_map(profile_name: str) -> dict[str, list[str]]:
 
     The ``default`` profile keeps the canonical un-prefixed wing keys for
     backward-compatibility; every other profile gets ``<slug>_PREFIXED`` keys.
+
+    Reader-side contract (GH-297): ``MemPalaceMemorySource._resolve_wing()``
+    resolves the prefixed keys when constructed with the matching
+    ``profile_name`` config (injected by ``auto_bootstrap``).  Values are room
+    *lists* — the reader normalises them to the canonical shared writer wings
+    (``memchorus_decisions`` / ``memchorus_learning`` / ``memchorus_general``)
+    before the MCP save call, so drawers land in the shared ``memchorus_*``
+    namespace that ``wing_isolation`` audits.
     """
     wmap: dict[str, list[str]] = {}
     prefix = "" if profile_name == "default" else f"{profile_name}_"

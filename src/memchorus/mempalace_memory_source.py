@@ -1471,6 +1471,12 @@ class MemPalaceMemorySource(MemorySource):
         self._name = name
         self.config = config or {}
 
+        # GH-297: the active Hermes profile name (injected by auto_bootstrap).
+        # auto_init._build_wing_map() writes *profile-prefixed* wing_map keys
+        # (e.g. ``cthugha_DECISION``); _resolve_wing() needs this to try the
+        # prefixed form when the bare category misses.
+        self._profile_name: str = str(self.config.get("profile_name") or "").strip()
+
         # --- Routing configuration (§1 + §3) ---------------------------------
         routing_cfg = self.config.get("mempalace_routing", None)
         if isinstance(routing_cfg, dict) and routing_cfg:
@@ -2102,8 +2108,12 @@ class MemPalaceMemorySource(MemorySource):
         if raw_cat:
             upper = str(raw_cat).upper()
             slug = lookup.get(upper)
+            if isinstance(slug, (list, tuple)):
+                # GH-297: room maps may carry room *lists* (auto_init template
+                # shape) — use the first room as the canonical slug.
+                slug = slug[0] if slug else None
             if slug:
-                return slug
+                return str(slug).strip().lower()
 
         # Unknown category or no category → DEFAULT / general
         return lookup.get("DEFAULT", "general")
@@ -2144,7 +2154,22 @@ class MemPalaceMemorySource(MemorySource):
         Look up *category* (case-insensitive) in ``self._wing_map``.  When the
         category is not found — or it was ``None``/empty — fall through to the
         map's ``DEFAULT`` entry, and if that doesn't exist either, return the
-        original hard-coded fallback ``\"memchorus"`` for backward compat (AC-R1.2).
+        original hard-coded fallback ``"memchorus"`` for backward compat (AC-R1.2).
+
+        GH-297 (profile-prefixed wing maps):
+        ``auto_init._build_wing_map()`` writes profile-prefixed keys such as
+        ``cthugha_DECISION`` (values are room lists).  Resolution therefore:
+
+        1. tries the bare category (``DECISION``) first — user/custom maps and
+           the built-in defaults use bare keys;
+        2. then the profile-prefixed form (``CTHUGHA_DECISION``) when a
+           profile name was injected via config (``profile_name``);
+        3. a *list* value (the auto_init room-list template shape) is not a
+           wing name — it is normalised to the canonical shared writer wing
+           for that category (``memchorus_decisions`` /
+           ``memchorus_learning`` / ``memchorus_general`` /
+           ``memchorus_workspace``), matching the ``_DEFAULT_WING_MAP`` table
+           and the ``wing_isolation`` namespace.
 
         Parameters
         ----------
@@ -2163,11 +2188,26 @@ class MemPalaceMemorySource(MemorySource):
                 "memchorus",  # AC-R1.2 final safety fallback
             )
 
-        hit = self._wing_map.get(category.upper(), None)
+        upper = str(category).strip().upper()
+
+        hit = self._wing_map.get(upper, None)
+        if hit is None and self._profile_name:
+            # GH-297: profile-prefixed key from auto_init._build_wing_map().
+            hit = self._wing_map.get(f"{self._profile_name.upper()}_{upper}", None)
         if not hit:
             # AC-R3.3: unknown key → default mapping, not crash.
             return self._wing_map.get("DEFAULT", "memchorus")
-        return hit
+
+        if isinstance(hit, (list, tuple)):
+            # GH-297: auto_init template values are room lists, not wing
+            # names — normalise to the canonical shared writer wing for the
+            # category (same table as the built-in defaults).
+            canonical = self._WING_MAP_DEFAULT.get(
+                upper,
+                self._WING_MAP_DEFAULT.get("DEFAULT", "memchorus"),
+            )
+            return canonical
+        return str(hit)
 
     _CACHE_WRAPPER_MARKER = "_memchorus_project_mark"
 

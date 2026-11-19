@@ -316,6 +316,16 @@ def _bootstrap() -> Optional[Any]:
     )
 
     # --- Step 4: Source wiring (build orchestrator config) ---
+    # GH-297: expose the active Hermes profile name so the memory source can
+    # resolve the profile-prefixed wing_map keys that auto_init._build_wing_map()
+    # writes (e.g. ``cthugha_DECISION``) instead of falling through to the
+    # hard-coded ``"memchorus"`` fallback.
+    try:
+        from memchorus import active_profile as _active_profile
+        _profile_name = str(_active_profile() or "").strip()
+    except Exception:
+        _profile_name = ""
+
     orchestrator_cfg: Dict[str, Any] = {
         "default_source": default_source,
         "half_life_days": half_life_days,
@@ -324,6 +334,7 @@ def _bootstrap() -> Optional[Any]:
         "enforce_on_write": enforce_on_write,
         "mempalace_config": {
             "skip_mcp": not mp_available,
+            "profile_name": _profile_name,
             "mempalace_routing": yaml_cfg.get("mempalace_routing", _DEFAULT_MEMPALACE_ROUTING),
         },
     }

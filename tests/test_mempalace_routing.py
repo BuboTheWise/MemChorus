@@ -597,3 +597,123 @@ class TestEndToEndRouting:
         for key, expected in payloads:
             result = src.retrieve(key)
             assert result == expected
+
+
+# =========================================================================== #
+#  SECTION 12 — GH-297: profile-prefixed wing_map keys (writer→reader)        #
+# =========================================================================== #
+
+class TestProfilePrefixedWingMap:
+    """GH-297: ``auto_init._build_wing_map()`` writes profile-prefixed keys
+    (``cthugha_DECISION`` ...) whose values are *room lists*, and the runtime
+    category passed by AutoStorageEngine is the *bare* name (``DECISION``).
+
+    These tests run the real writer output through the real reader
+    (``MemPalaceMemorySource._resolve_wing``) — the cross-function integration
+    check whose absence let the mismatch ship.
+    """
+
+    @staticmethod
+    def _source(profile: str, wing_map):
+        return MemPalaceMemorySource(
+            config={
+                "skip_mcp": True,
+                "cache_dir": tempfile.mkdtemp(),
+                "profile_name": profile,
+                "mempalace_routing": {"wing_map": wing_map},
+            }
+        )
+
+    def test_writer_output_resolves_to_canonical_wings(self):
+        from memchorus.auto_init import _build_wing_map
+
+        wm = _build_wing_map("cthugha")  # real writer output: prefixed keys
+        assert "cthugha_DECISION" in wm and isinstance(wm["cthugha_DECISION"], list)
+
+        src = self._source("cthugha", wm)
+        assert src._resolve_wing("DECISION") == "memchorus_decisions"
+        assert src._resolve_wing("LEARNING") == "memchorus_learning"
+        assert src._resolve_wing("MISTAKE") == "memchorus_learning"
+        assert src._resolve_wing("RESULT") == "memchorus_general"
+
+    def test_prefixed_lookup_is_case_insensitive(self):
+        from memchorus.auto_init import _build_wing_map
+
+        src = self._source("nyarlathotep", _build_wing_map("nyarlathotep"))
+        assert src._resolve_wing("decision") == "memchorus_decisions"
+        assert src._resolve_wing("Learning") == "memchorus_learning"
+        assert src._resolve_wing("mistake") == "memchorus_learning"
+        assert src._resolve_wing("Result") == "memchorus_general"
+
+    def test_prefixed_map_without_profile_name_still_safe(self):
+        """No profile_name injected → prefixed keys miss, but nothing crashes:
+        falls through to the AC-R1.2 safety fallback."""
+        from memchorus.auto_init import _build_wing_map
+
+        src = self._source("", _build_wing_map("cthugha"))  # empty profile name
+        assert src._resolve_wing("DECISION") == "memchorus"
+        assert src._resolve_wing(None) == "memchorus"
+
+    def test_bare_key_takes_precedence_over_prefixed(self):
+        """A user's explicit bare-category entry wins over the prefixed one."""
+        from memchorus.auto_init import _build_wing_map
+
+        wm = _build_wing_map("cthugha")
+        # A user's explicit bare-category entry (string = wing name) takes
+        # precedence over the prefixed room-list entry.
+        custom: dict = {**wm, "DECISION": "my_explicit_decisions"}
+        src = self._source("cthugha", custom)
+        assert src._resolve_wing("DECISION") == "my_explicit_decisions"
+
+    def test_wrong_profile_name_misses_cleanly(self):
+        """Profile name not matching the map's prefix → no false positive,
+        falls through to the safety fallback instead of a random wing."""
+        from memchorus.auto_init import _build_wing_map
+
+        src = self._source("bubo", _build_wing_map("cthugha"))
+        assert src._resolve_wing("DECISION") == "memchorus"
+
+    def test_list_room_values_normalize_in_categorize_room(self):
+        """Secondary fix: room maps carrying room lists resolve to the first
+        room slug instead of leaking a list into the MCP call."""
+        src = MemPalaceMemorySource(
+            config={
+                "skip_mcp": True,
+                "cache_dir": tempfile.mkdtemp(),
+                "mempalace_routing": {
+                    "room_map": {"DECISION": ["project", "design", "architecture"]}
+                },
+            }
+        )
+        assert (
+            MemPalaceMemorySource._categorize_room(
+                {"category": "DECISION"}, room_map=src._room_map
+            )
+            == "project"
+        )
+
+    def test_save_routes_prefixed_profile_to_canonical_wing(self):
+        """End-to-end: save() with a prefixed profile map + profile_name must
+        route the DECISION payload into the memchorus_decisions wing, not the
+        hard-coded 'memchorus' fallback (the exact failure in GH-297)."""
+        from memchorus.auto_init import _build_wing_map
+
+        src = self._source("cthugha", _build_wing_map("cthugha"))
+        assert src.save(
+            "gh297_decision", {"text": "Use reader-side resolution", "category": "DECISION"}
+        )
+        assert src.save(
+            "gh297_learning", {"text": "List values are room lists", "category": "LEARNING"}
+        )
+        assert src.save(
+            "gh297_mistake", {"text": "Mistake routed too", "category": "MISTAKE"}
+        )
+        assert src.save(
+            "gh297_result", {"text": "Result routed too", "category": "RESULT"}
+        )
+
+        # Retrieve must come back with the categories intact.
+        for key in ("gh297_decision", "gh297_learning", "gh297_mistake", "gh297_result"):
+            result = src.retrieve(key)
+            assert result, f"payload lost for {key}"
+            assert result["text"], f"empty payload for {key}"
