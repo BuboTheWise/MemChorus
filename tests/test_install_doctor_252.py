@@ -31,6 +31,8 @@ import below raises and the whole module is RED; after the fix it is GREEN.
 from __future__ import annotations
 
 import sys
+import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -48,10 +50,36 @@ import memchorus.install_doctor as doctor
 # fixtures
 # ---------------------------------------------------------------------------
 
+def _clean_root() -> Path:
+    """A writable root whose path has no ``profiles``/``profile`` segment.
+
+    ``_base_home()`` returns the prefix up to (but excluding) the first such
+    segment in ``$HERMES_HOME`` (see GH-#298). Building our scratch tree under a
+    clean root guarantees ``_base_home()`` resolves to *our* base, not the real
+    ``~/.hermes`` — otherwise the probe would also check the real (possibly
+    dangling) ``~/.hermes/bin``. On this fleet pytest's ``tmp_path`` is nested
+    under ``~/.hermes/profiles/cthugha/cache/scratch`` and leaks.
+    """
+    def _clean(p: Path) -> bool:
+        return not any(seg in ("profiles", "profile") for seg in p.parts)
+
+    for cand in ("/tmp", "/var/tmp", tempfile.gettempdir()):
+        p = Path(cand)
+        if p.exists() and _clean(p):
+            return p
+    return Path("/tmp")
+
+
 @pytest.fixture
-def bin_home(tmp_path, monkeypatch):
-    """A scratch HERMES_HOME with an empty bin/ dir, wired into the doctor."""
-    home = tmp_path / "home"
+def bin_home(request, monkeypatch):
+    """A scratch HERMES_HOME with an empty bin/ dir, wired into the doctor.
+
+    Built under a clean root (see ``_clean_root``) so the GH-#298 probe — which
+    now also checks ``_base_home() / "bin"`` — stays isolated from the real tree.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="memchorus252_", dir=str(_clean_root())))
+    request.addfinalizer(lambda: shutil.rmtree(scratch, ignore_errors=True))
+    home = scratch / "home"
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))

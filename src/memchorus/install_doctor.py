@@ -46,6 +46,7 @@ from memchorus.hermes_home import (
     hermes_home,
     active_profile_name,
     profile_home,
+    _base_home,  # package-private: used for base-home bin probing (GH-#298)
 )
 from memchorus import palace_path as palace_path_mod
 from memchorus.palace_path import classify as palace_path_classify
@@ -268,10 +269,40 @@ def _entry_interpreter(link: Path) -> Optional[Path]:
     return _interpreter_of(target)
 
 
+def _bin_search_dirs() -> List[Path]:
+    """Ordered, de-duplicated bin dirs to probe for advertised entrypoints.
+
+    The canonical install location is the **base** home's ``bin``
+    (``~/.hermes/bin``) — that is where console-script symlinks live even when
+    doctor runs under a *named* profile (``hermes -p <name>`` / the Kanban
+    dispatcher), because ``hermes_home()`` is already profile-scoped in that
+    case. Probing only ``hermes_home() / "bin"`` meant a named-profile run
+    looked in ``~/.hermes/profiles/<name>/bin`` (absent), producing a permanent
+    false warning and hiding genuinely dangling links in the base ``bin``
+    (GH-#298).
+
+    So we probe the base-home bin first, then also the profile-scoped bin as a
+    fallback (a no-op for the default profile, where the two are the same
+    directory). Checking both keeps an install that places links under a
+    profile bin from being missed, and keeps dangling links in the base bin
+    detectable. Order matters: the first directory in which an entry exists
+    wins, and the base bin is preferred.
+    """
+    dirs: List[Path] = []
+    for candidate in (_base_home() / "bin", hermes_home() / "bin"):
+        if candidate not in dirs:
+            dirs.append(candidate)
+    return dirs
+
+
 def check_bin_entrypoints(strict: bool = False) -> CheckResult:
     """Verify the advertised bin entrypoints are actually usable (#252).
 
-    For each advertised link under ``~/.hermes/bin/``:
+    For each advertised link — probed under the **base** Hermes home's ``bin``
+    first, then the profile-scoped ``bin`` as a fallback (``_bin_search_dirs``;
+    under a named profile ``hermes_home()`` is already the profile dir, so the
+    symlinks that live in ``~/.hermes/bin`` would otherwise be invisible,
+    GH-#298):
       (a) the symlink target still exists — it survives even after the venv
           it pointed into was re-provisioned, which is precisely the silent
           dangling state #252 describes; and
@@ -283,40 +314,48 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
       * any broken/dangling entrypoint -> ``FAIL`` under ``--strict`` (so a
         gate blocks), otherwise ``WARN`` — the normal report still names every
         broken link (AC2, and per-entrypoint so the #252 case is not hidden).
-      * no advertised bin dir / no links to check -> ``WARN`` (informational:
+      * no advertised bin entry in any probed dir -> ``WARN`` (informational:
         nothing to verify on this machine).
       * every advertised entrypoint intact and importable -> ``PASS``.
     """
-    bin_dir: Path = Path(hermes_home()) / "bin"
+    bin_dirs: List[Path] = _bin_search_dirs()
 
     dangling: List[str] = []
     unimportable: List[str] = []
     checked: List[str] = []
 
-    if bin_dir.is_dir():
-        for name, package in _ADVERTISED_BIN_ENTRIES:
-            link = bin_dir / name
-            if not link.is_symlink() and not link.exists():
-                continue  # not advertised on this machine -> not checked
-            checked.append(name)
+    for name, package in _ADVERTISED_BIN_ENTRIES:
+        # The first dir (in probe order) that actually contains this entry is
+        # the one we verify. Normally the base bin (GH-#298); a profile bin is
+        # only consulted for an install that places links there.
+        link: Optional[Path] = None
+        for d in bin_dirs:
+            candidate = d / name
+            if candidate.is_symlink() or candidate.exists():
+                link = candidate
+                break
+        if link is None:
+            continue  # not advertised on this machine -> not checked
+        checked.append(name)
 
-            interpreter = _entry_interpreter(link)
-            if interpreter is None:
-                dangling.append(f"{name} -> target missing")
-                continue
+        interpreter = _entry_interpreter(link)
+        if interpreter is None:
+            dangling.append(f"{name} -> target missing")
+            continue
 
-            if not _import_ok(interpreter, package):
-                unimportable.append(
-                    f"{name} -> {interpreter} cannot import {package}"
-                )
+        if not _import_ok(interpreter, package):
+            unimportable.append(
+                f"{name} -> {interpreter} cannot import {package}"
+            )
 
     if not checked:
+        dirs_txt = ", ".join(str(d) for d in bin_dirs)
         return CheckResult(
             name="bin_entrypoints",
             status=WARN,
             message=(
-                f"no advertised bin entrypoints found under {bin_dir} — nothing "
-                f"to verify (fresh/non-installed machine?)"
+                f"no advertised bin entrypoints found under {dirs_txt} — "
+                f"nothing to verify (fresh/non-installed machine?)"
             ),
             hint="nothing to fix; the advertised bin entries are not present here",
         )
