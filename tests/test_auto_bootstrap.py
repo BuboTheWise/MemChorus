@@ -194,14 +194,27 @@ class TestConfigPrecedence(unittest.TestCase):
 
     def setUp(self):
         _reset_bootstrap_state()
-        # Clear relevant env vars
-        for k in ("MEMCHORUS_AUTO_ENABLED", "MEMCHORUS_DEFAULT_SOURCE",
-                   "MEMCHORUS_HALF_LIFE_DAYS", "MEMCHORUS_CACHE_TTL_SECS"):
-            self._orig = os.environ.pop(k, None)
+        # Clear relevant env vars, saving each original for restoration.
+        # (Saving into a single self._orig in a loop overwrote itself, so
+        # only the last key's value was ever restorable — the others leaked
+        # into later tests, e.g. MEMCHORUS_CACHE_TTL_SECS=120 breaking
+        # TestTTLPropagation.test_ttl_default_when_no_override.)
+        self._saved_env = {
+            k: os.environ.pop(k, None)
+            for k in ("MEMCHORUS_AUTO_ENABLED", "MEMCHORUS_DEFAULT_SOURCE",
+                      "MEMCHORUS_HALF_LIFE_DAYS", "MEMCHORUS_CACHE_TTL_SECS")
+        }
 
     def tearDown(self):
-        if self._orig is not None:
-            os.environ["MEMCHORUS_AUTO_ENABLED"] = self._orig  # only restore AUTO_ENABLED key
+        # Restore pre-test values where there were any; otherwise *remove* the
+        # key so values the test body set (e.g. MEMCHORUS_CACHE_TTL_SECS=120 in
+        # test_env_overrides_cache_ttl) don't leak into later tests in the same
+        # process and break TestTTLPropagation.test_ttl_default_when_no_override.
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
         _reset_bootstrap_state()
 
     def test_defaults_apply_when_no_override(self):
