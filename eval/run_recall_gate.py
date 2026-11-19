@@ -220,7 +220,7 @@ def run(k_list: List[int], baseline: str,
     # ---- Build LIVE source (real, not a mock) ----
     sys.path.insert(0, str(_SRC))
     from memchorus.mempalace_memory_source import MemPalaceMemorySource  # type: ignore
-    src: Any = MemPalaceMemorySource("mempalace", {"mcp_timeout": 30})
+    src: Any = MemPalaceMemorySource(name="mempalace", config={"mcp_timeout": 30})
 
     if not (src._ensure_connected() and src._client.is_alive):
         return ({"live_ok": False, "reason": "mcp_not_alive"}, 2)

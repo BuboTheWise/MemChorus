@@ -1464,10 +1464,10 @@ class MemPalaceMemorySource(MemorySource):
 
     def __init__(
         self,
-        name: str = "mempalace",
         config: Optional[Dict[str, Any]] = None,
+        name: str = "mempalace",
     ):
-        super().__init__(name, config)
+        super().__init__(name=name, config=config)
         self._name = name
         self.config = config or {}
 
@@ -1502,10 +1502,19 @@ class MemPalaceMemorySource(MemorySource):
         else:
             self._room_map = dict(self._ROOM_MAP_DEFAULT)
 
-        # Fallback local cache.
-        self._cache_dir = Path(
-            self.config.get("cache_dir", str(hermes_home() / "mempalace_cache"))
-        )
+        # Fallback local cache — profile-scoped when possible.
+        if "cache_dir" in self.config:
+            cache_path = str(self.config["cache_dir"])
+        elif self._profile_name:
+            # Use the profile's own home so each Hermes agent stores to its
+            # own directory and never cross-contaminates another's cache.
+            from memchorus.hermes_home import profile_home
+
+            _ph = profile_home(self._profile_name)
+            cache_path = str(_ph / "mempalace_cache")
+        else:
+            cache_path = str(hermes_home() / "mempalace_cache")
+        self._cache_dir = Path(cache_path)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         # MCP client — created eagerly but does *not* attempt a connection yet.

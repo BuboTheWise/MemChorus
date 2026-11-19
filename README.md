@@ -422,7 +422,7 @@ Steps:
      from memchorus.mempalace_memory_source import MemPalaceMemorySource
      orch = MemoryOrchestrator()
      try:
-         orch.register_source(MemPalaceMemorySource('mempalace'))
+         orch.register_source(MemPalaceMemorySource(name='mempalace'))
          print('MemPalace source registered OK')
      except Exception as e:
          print(f'MemPalace registration failed (expected if not configured): {e}')
@@ -569,7 +569,7 @@ orch = MemoryOrchestrator()
 orch.register_source(HermesDefaultMemorySource('hermes_default'))
 mp_ready = True
 try:
-    orch.register_source(MemPalaceMemorySource('mempalace'))
+    orch.register_source(MemPalaceMemorySource(name='mempalace'))
 except Exception:
     mp_ready = False  # graceful fallback — MemPalace is optional
 
@@ -702,7 +702,7 @@ from memchorus.hermes_memory_source import HermesDefaultMemorySource
 orch = MemoryOrchestrator()
 orch.register_source(HermesDefaultMemorySource('hermes_default'))
 # Add more sources as needed:
-# orch.register_source(MemPalaceMemorySource('mempalace'))
+# orch.register_source(MemPalaceMemorySource(name='mempalace'))
 ```
 
 ## Status
