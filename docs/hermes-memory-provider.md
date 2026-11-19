@@ -30,6 +30,14 @@ MemChorus **owns orientation and policy, not storage.** It wraps whatever
 store is reachable and decides *when* and *what* to surface, never
 *where the bytes physically live* beyond routing.
 
+> **The knowledge graph is opt-in, not auto-populated.** MemChorus does not
+> extract `subject → predicate → object` facts from `save()`. A KG fact is
+> written only when the agent records it via the MemPalace `mempalace_kg_add`
+> MCP tool (`kg_supersede` to change a value, `kg_invalidate` to retire one).
+> An empty `memchorus-recall kg <entity>` ("no facts recorded for … yet") is
+> therefore the expected default, distinct from an *unreachable* KG (Issue
+> #184, which exits non-zero). See `docs/pointer-model.md` §1 / §6.5.
+
 ---
 
 ## 2. The provider contract (what the ABC demands)

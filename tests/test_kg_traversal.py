@@ -385,11 +385,24 @@ class TestRecallCli:
         assert "boom" in err
 
     def test_run_recall_kg_empty_list(self, capsys):
-        # An empty list is still a valid (reachable) response.
+        # An empty list is still a valid (reachable) response, but it must no
+        # longer be a silent no-op (GH-#300): it explains that the KG is
+        # opt-in / agent-driven and names the exact trigger.
         src = RecallingSource(result=[])
         assert _run_recall_kg(src, "A", 1, 10, None, as_json=False) == 0
         out = capsys.readouterr().out
-        assert "no relations found" in out
+        assert "no facts recorded" in out
+        assert "opt-in" in out
+        assert "mempalace_kg_add" in out
+        # ...and it is NOT the old opaque "(no relations found)" one-liner.
+        assert "(no relations found)" not in out
+
+    def test_run_recall_kg_empty_list_json_is_just_empty_array(self, capsys):
+        # Machine consumers keep the raw empty shape on the JSON path.
+        src = RecallingSource(result=[])
+        assert _run_recall_kg(src, "A", 1, 10, None, as_json=True) == 0
+        out = capsys.readouterr().out
+        assert json.loads(out) == []
 
     def test_render_text(self):
         rows = [

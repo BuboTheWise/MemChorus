@@ -189,9 +189,31 @@ def _run_recall_kg(
         return 1
 
     if as_json:
+        # Machine consumers keep the raw (possibly empty) shape — an empty
+        # list is still a valid, reachable response.
         print(json.dumps(results, indent=2, default=str))
-    else:
-        print(_render_text(results))
+        return 0
+
+    if not results:
+        # Present-but-empty: the KG is reachable but has no facts for this
+        # entity yet. KG population is opt-in / agent-driven
+        # (docs/pointer-model.md §6.5) — MemChorus does *not* auto-extract
+        # subject→predicate→object facts on save() — so the empty state must
+        # be self-explanatory rather than a silent "(no relations found)"
+        # no-op (GH-#300). This is the reachable-but-empty case, distinct
+        # from the unreachable one above (Issue #184).
+        print(
+            "knowledge graph: no facts recorded for '{e}' yet.\n"
+            "KG population is opt-in — MemChorus does not auto-extract facts "
+            "into the graph.\n"
+            "Record one with the `mempalace_kg_add` MCP tool "
+            "(subject --predicate--> object); the MemPalace recall protocol "
+            "decides when to add vs supersede vs invalidate.\n"
+            "Then re-run `memchorus-recall kg {e}` to query it.".format(e=entity)
+        )
+        return 0
+
+    print(_render_text(results))
     return 0
 
 

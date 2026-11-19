@@ -40,6 +40,19 @@ The surface names above are the canonical identifiers (`MEMORY` / `DRAWER` /
 on it as `routing_kind` so a reader can tell *why* it is on its surface
 (§5).
 
+> **The KG surface is populated on demand, not automatically.** Unlike MEMORY
+> (injected every turn) and DRAWER (the default sink on `save()`), a KG fact
+> is written **only when the agent records it**, via the MemPalace
+> `mempalace_kg_add` MCP tool — `kg_supersede` to change a value,
+> `kg_invalidate` to retire one. MemChorus does *not* extract
+> `subject → predicate → object` facts from `save()`: a KG is worth querying
+> only if its facts were deliberately recorded, not auto-extracted from every
+> write. This is a **declared, opt-in routing policy** — "on demand" is a
+> valid choice per §6.5, and *this note is where that policy is declared*.
+> Consequence: an empty KG (`memchorus-recall kg <entity>` → "no facts
+> recorded for … yet") is the **expected default state**, and is deliberately
+> distinct from an *unreachable* KG (Issue #184), which exits non-zero.
+
 > **Relationship to the README "Storage Routing Matrix".** The matrix in the
 > README (`MemoryProfile` → backend) is the **coarse pre-existing heuristic**
 > that already routes some profiles to the right surface by accident of design

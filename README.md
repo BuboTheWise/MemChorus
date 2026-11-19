@@ -224,6 +224,20 @@ time — not interchangeable, and not a storage layout.
 | **DRAWER** — MemPalace drawer layer (the default sink) | verbatim artefacts: tool output, benchmark runs, decisions, long prose | a body in a recall block — inlined if short/relevant, else collapsed to a `retrieve(key=…)` pointer |
 | **KG** — MemPalace knowledge graph | rules of state (version pins, conventions, "current X") that change over time | a current value you can query with `as-of` scope and a timeline |
 
+> **The KG surface is opt-in — nothing auto-populates it.** Unlike MEMORY
+> (injected every turn) and DRAWER (the default sink on `save()`), the KG is
+> written **only on demand, by the agent**, via the MemPalace
+> `mempalace_kg_add` MCP tool — `kg_supersede` when a value changes,
+> `kg_invalidate` when a fact stops being true. MemChorus does *not* extract
+> `subject → predicate → object` facts from `save()`: a KG is worth querying
+> only if its facts were deliberately recorded, not auto-extracted from every
+> write. This is a **declared design policy** (see
+> [`docs/pointer-model.md`](docs/pointer-model.md) §6.5), not an oversight.
+> Consequence: an empty `memchorus-recall kg <entity>` — "no facts recorded
+> for … yet" — is the **expected default state**, not a broken connection.
+> It is deliberately distinct from the *unreachable* KG (which exits `1`),
+> per Issue #184.
+
 The pointer model: **a collapsed body is a pointer, not a promise.** Recall
 returns a compact locator or a `retrieve(key=…)` pointer rather than inlining
 whole bodies, so the full content stays reachable on demand and the token
