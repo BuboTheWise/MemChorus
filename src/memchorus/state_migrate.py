@@ -84,14 +84,17 @@ def _profile_home(profile: str) -> Path:
 def _canonical_in_home(profile: str) -> Path:
     """Return the in-home canonical data dir for *profile*.
 
-    Issue #283 item 2: state lives *inside the profile home* for every profile —
-    ``profile_home(profile) / "mempalace"``. The default profile resolves to
-    ``<hermes_home>/mempalace``; a named profile to ``<hermes_home>/profiles/<name>/mempalace``.
+    Issue #283 item 2 + wing_isolation convention (commit 86995b5): state lives
+    inside the profile home at ``.mempalace/palace`` — not a flat ``mempalace``
+    leaf that ignores the wing isolation protocol.
+
+    The default profile resolves to ``<hermes_home>/.mempalace/palace``; named
+    profiles to ``<hermes_home>/profiles/<name>/.mempalace/palace``.
     This matches the writer (``auto_init.generate_config``) exactly, so
     one-time-moved state and freshly-written state always land in the same dir.
     """
     ph = _profile_home(profile)
-    return ph / "mempalace"
+    return ph / ".mempalace" / "palace"
 
 
 # ---------------------------------------------------------------------------

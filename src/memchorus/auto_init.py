@@ -44,10 +44,10 @@ except ImportError:  # pragma: no cover - install_requires guarantees pyyaml
 # ---------------------------------------------------------------------------
 
 # Issue #283 item 2: fresh installs default state to live *inside the profile
-# home* rather than a sibling ~/.mempalace tree. This constant equals the
-# default-profile canonical dir (``profile_home("default") / "mempalace"``);
-# named profiles are scoped per-profile in generate_config() below.
-DEFAULT_DATA_DIR = str(Path(hermes_home()) / "mempalace")
+# home* rather than a sibling ~/.mempalace tree. The wing_isolation convention
+# (commit 86995b5) established ``.mempalace/palace`` as the per-profile leaf;
+# all profiles use this layout for data isolation.
+DEFAULT_DATA_DIR = str(Path(hermes_home()) / ".mempalace" / "palace")
 
 _WING_MAP_TEMPLATE: dict[str, list[str]] = {
     "DECISION": ["project", "design", "architecture"],
@@ -114,11 +114,12 @@ def generate_config(profile: Optional[str] = None,
                or os.environ.get("HERMES_KANBAN_PROFILE")
                or "default")
 
-    # Issue #283 item 2: scope state per profile *inside* that profile's home
-    # (``profile_home(profile) / "mempalace"``). The default profile lands at the
-    # same dir as the DEFAULT_DATA_DIR constant above; named profiles are isolated
-    # under their own ``profiles/<name>`` tree.
-    data_dir = (data_dir or str(profile_home(profile) / "mempalace"))
+    # Issue #283 item 2 + wing_isolation convention: scope state per profile
+    # inside that profile's home at ``.mempalace/palace`` (the per-profile
+    # leaf established by commit 86995b5). The default profile lands at the
+    # same dir as the DEFAULT_DATA_DIR constant above; named profiles are
+    # isolated under their own ``profiles/<name>/.mempalace/palace`` tree.
+    data_dir = (data_dir or str(profile_home(profile) / ".mempalace" / "palace"))
     data_dir = str(os.path.expanduser(data_dir)) if "~" in str(data_dir) else str(data_dir)
     # Single decision point: resolve parent-vs-leaf through the shared
     # resolver so the recorded config and the reader's own resolution can

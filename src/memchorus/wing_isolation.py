@@ -102,8 +102,14 @@ def expected_wings(profile: Optional[str]) -> FrozenSet[str]:
     ``self-improvement`` wing, and the legacy category keys (for palaces
     written by a pre-#268 install).  In addition a named profile legitimately
     owns ``wing_<profile>`` — its own cross-profile wing — so that is in
-    namespace for that profile and *only* that profile.  ``default`` is the
-    shared profile and simply owns the shared set.
+    namespace for that profile and *only* that profile.
+
+    #297 introduced profile-prefixed category keys (e.g. ``cthugha_DECISION``)
+    via ``auto_init._build_wing_map``.  Those keys are also in-namespace for
+    the owning profile, so ``expected_wings()`` includes them so the auditor
+    doesn't flag them as ``out-of-namespace`` (issue #304).
+
+    ``default`` is the shared profile and simply owns the shared set.
 
     Mirrors :data:`memchorus.auto_bootstrap._DEFAULT_MEMPALACE_ROUTING` and
     :data:`memchorus.corpus_balancer.DEFAULT_SETTLED_WINGS` so the audit's
@@ -113,6 +119,9 @@ def expected_wings(profile: Optional[str]) -> FrozenSet[str]:
     wings = set(NATIVE_WINGS)
     if name != "default":
         wings.add(f"wing_{name}")
+        # Profile-prefixed legacy keys written by auto_init._build_wing_map()
+        for cat in LEGACY_CATEGORY_WINGS:
+            wings.add(f"{name}_{cat}")
     return frozenset(wings)
 
 
