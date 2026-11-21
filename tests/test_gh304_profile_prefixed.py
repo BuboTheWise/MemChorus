@@ -135,6 +135,58 @@ class TestProfilePrefixedCategoriesGH304(unittest.TestCase):
         self.assertEqual(issue.kind, "cross-profile")
         self.assertEqual(issue.owner, "grok")
 
+    # ------------------------------------------------------------------
+    # 6. Bare profile name (GH-304 residual): own → in-namespace,
+    #    foreign → cross-profile
+    # ------------------------------------------------------------------
+    def test_bare_own_profile_name_is_in_namespace(self):
+        """GH-304: a wing named exactly after the owning profile (bare, no
+        prefix/suffix) is that profile's own wing and must not be flagged.
+
+        Older installs may have written the bare profile name directly. All
+        three canonical own-wing forms (bare name, wing_ prefix,
+        profile-prefixed) must be in-namespace together.
+        """
+        audit = audit_palace_wings(
+            wings=["memchorus_decisions",
+                   "cthugha",                    # bare own name (GH-304)
+                   "cthugha_DECISION", "cthugha_LEARNING",
+                   "wing_cthugha"],
+            active_profile="cthugha",
+            known_profiles=self.KNOWN,
+        )
+        self.assertTrue(audit.is_clean,
+                        f"cthugha palace with bare own wing should be clean — "
+                        f"issues: {[i.wing for i in audit.issues]}")
+        self.assertEqual(audit.cross_profile_count, 0)
+        self.assertEqual(audit.out_of_namespace_count, 0)
+        self.assertIn("cthugha", audit.own_wings)
+
+    def test_bare_foreign_profile_name_still_cross_profile(self):
+        """GH-304: a bare wing named after a *sibling* profile is that
+        sibling's own wing — a cross-profile misroute in this profile's store."""
+        audit = audit_palace_wings(
+            wings=["memchorus_decisions", "wing_cthugha", "grok"],
+            active_profile="cthugha",
+            known_profiles=self.KNOWN,
+        )
+        self.assertTrue(audit.has_leaks)
+        self.assertEqual(audit.cross_profile_count, 1)
+        self.assertEqual(audit.out_of_namespace_count, 0)
+        self.assertEqual(audit.issues[0].wing, "grok")
+        self.assertEqual(audit.issues[0].owner, "grok")
+
+    def test_classify_wing_bare_own_profile_clean(self):
+        """classify_wing (write-side guard) returns None for the bare own
+        profile name — the writer emitting its own bare name is expected."""
+        issue = classify_wing(
+            "cthugha",
+            active_profile="cthugha",
+            known_profiles=self.KNOWN,
+        )
+        self.assertIsNone(issue,
+                          "classify_wing should return None for bare own name")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=True)

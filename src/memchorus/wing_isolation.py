@@ -104,6 +104,12 @@ def expected_wings(profile: Optional[str]) -> FrozenSet[str]:
     owns ``wing_<profile>`` — its own cross-profile wing — so that is in
     namespace for that profile and *only* that profile.
 
+    #304: older installs (or a legacy wing) may have written the *bare*
+    profile name directly (e.g. a wing literally named ``cthugha``).  That is
+    the owning profile's own wing and must be in-namespace for that profile —
+    and, when it lands in a *sibling* profile's store, it is unambiguously that
+    profile's own, so the sibling audit flags it as a cross-profile misroute.
+
     #297 introduced profile-prefixed category keys (e.g. ``cthugha_DECISION``)
     via ``auto_init._build_wing_map``.  Those keys are also in-namespace for
     the owning profile, so ``expected_wings()`` includes them so the auditor
@@ -118,6 +124,12 @@ def expected_wings(profile: Optional[str]) -> FrozenSet[str]:
     name = _norm_profile(profile)
     wings = set(NATIVE_WINGS)
     if name != "default":
+        # A named profile's own wing(s), in every canonical form the writer
+        # produces — so the auditor can never flag the owner's own wings:
+        #   bare name          — cthugha          (GH-304: older writer form)
+        #   wing_ prefix       — wing_cthugha     (GH-286 canonical form)
+        #   profile-prefixed   — cthugha_DECISION (GH-297 writer, _build_wing_map)
+        wings.add(name)
         wings.add(f"wing_{name}")
         # Profile-prefixed legacy keys written by auto_init._build_wing_map()
         for cat in LEGACY_CATEGORY_WINGS:
