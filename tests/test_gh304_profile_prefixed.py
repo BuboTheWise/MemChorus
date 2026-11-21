@@ -7,7 +7,9 @@ These three tests verify:
   3. regression guard that #286 cross-profile detection is intact.
 """
 import sys
-sys.path.insert(0, "/home/stefan/Projects/MemChorus/src")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import unittest
 from memchorus.wing_isolation import (

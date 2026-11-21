@@ -269,6 +269,32 @@ def _entry_interpreter(link: Path) -> Optional[Path]:
     return _interpreter_of(target)
 
 
+def _entry_exec_token(launcher: Path) -> Optional[str]:
+    """Raw interpreter token of a launcher file, without existence check.
+
+    For a ``#!/bin/sh`` wrapper (uv/pip relocatable launcher) the real
+    interpreter is the token on the ``exec`` line — the doubled absolute
+    path of GH #306.  Returns that token (outer quotes stripped), else the
+    line-1 shebang interpreter, else ``None`` when the file is unreadable.
+    """
+    try:
+        text = launcher.read_text(errors="replace")
+    except OSError:
+        return None
+    lines = text.splitlines()
+    for line in lines[:5]:
+        m = re.search(
+            r"""exec['"]?\s+(.+?)\s+["']\$0["']\s+["']\$@["']""", line
+        )
+        if m:
+            return m.group(1).strip("\"'")
+    if lines and lines[0].startswith("#!"):
+        parts = lines[0][2:].split()
+        if parts:
+            return parts[0]
+    return None
+
+
 def _bin_search_dirs() -> List[Path]:
     """Ordered, de-duplicated bin dirs to probe for advertised entrypoints.
 
@@ -339,6 +365,30 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
         checked.append(name)
 
         interpreter = _entry_interpreter(link)
+        if interpreter is None or interpreter.name in ("sh", "bash", "dash"):
+            # A ``#!/bin/sh`` wrapper names the shell on line 1; the real
+            # interpreter is the exec-line token (GH #306 doubled paths).
+            launcher = link
+            if link.is_symlink():
+                try:
+                    launcher = (link.parent / os.readlink(link)).expanduser()
+                except OSError:
+                    launcher = link
+            token = _entry_exec_token(launcher)
+            resolved = None
+            if token:
+                from memchorus import shebang_repair
+
+                resolved = shebang_repair.resolve_token(token, launcher)
+            if token and (resolved is None or not resolved.exists()):
+                dangling.append(
+                    f"{name} -> GH #306: interpreter {token!r} does not exist "
+                    f"(malformed/doubled shebang)"
+                )
+                continue
+            if token and resolved is not None:
+                interpreter = resolved
+
         if interpreter is None:
             dangling.append(f"{name} -> target missing")
             continue
@@ -364,6 +414,20 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
         status = FAIL if strict else WARN
         broken = dangling + unimportable
         problem_txt = "; ".join(broken)
+        if any("GH #306" in b for b in broken):
+            return CheckResult(
+                name="bin_entrypoints",
+                status=status,
+                message=(
+                    f"broken advertised bin entrypoint(s): {problem_txt}"
+                ),
+                hint=(
+                    "a GH #306 launcher has a doubled interpreter path — "
+                    "repair it in place with "
+                    "`memchorus-doctor --repair <venv>/bin` (no reinstall "
+                    "needed), then re-run `memchorus-doctor` to confirm"
+                ),
+            )
         reinstall = (
             "pip install -e . "
             "(re-adds the memchorus console scripts to the active venv) and "
@@ -2513,6 +2577,80 @@ def _emit(results: List[CheckResult], as_json: bool) -> None:
         print_report(results)
 
 
+def _repair_entrypoints_main(args: List[str], as_json: bool) -> int:
+    """Self-heal malformed console-script launchers (GH #306).
+
+    ``--repair [BIN_DIR]`` — BIN_DIR is the ``venv/bin`` directory to repair
+    (optional; defaults to the bin directory of the interpreter running this
+    repair).  ``--dry-run`` classifies and reports without writing.
+
+    Exit codes:
+      0  every present launcher is healthy or was repaired and re-verified
+      1  at least one launcher could not be repaired/verified
+      2  usage error
+    """
+    from memchorus import shebang_repair
+
+    idx = args.index("--repair")
+    bin_dir: Optional[Path] = None
+    if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+        bin_dir = Path(args[idx + 1])
+    dry_run = "--dry-run" in args
+
+    try:
+        results = shebang_repair.repair_entrypoints(bin_dir=bin_dir, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001 — repair must never crash the CLI
+        print(f"[fail] entrypoint repair error: {exc}")
+        return 1
+
+    for r in results:
+        print(r.describe())
+
+    if dry_run:
+        return 1 if any(r.action == "dry-run" for r in results) else 0
+
+    # Re-verify: every repaired launcher must now classify as healthy.
+    for r in results:
+        if r.action == "unrecognized":
+            # Present, but in a shape this repairer cannot fix (e.g. no
+            # shebang at all) — leave it, but fail the run so the operator
+            # knows a re-provision (GH #252 path) is required.
+            print(f"[fail] {r.name} not repairable (unrecognized launcher shape)")
+            return 1
+        if r.action != "repaired":
+            continue
+        try:
+            info = shebang_repair.classify(Path(r.path))
+        except OSError:
+            info = None
+        if info is None or not info.ok:
+            found = info.interpreter if info else "<unreadable>"
+            print(f"[fail] {r.name} still malformed after repair: {found}")
+            return 1
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "repaired": [
+                        {
+                            "name": r.name,
+                            "path": r.path,
+                            "from": r.found_interpreter,
+                            "to": r.set_interpreter,
+                        }
+                        for r in results
+                        if r.action == "repaired"
+                    ],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for ``memchorus-doctor``.
 
@@ -2546,6 +2684,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          reconciled channels
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
+        memchorus-doctor --repair [BIN_DIR]
+                                         rewrite malformed console-script
+                                         launchers (doubled shebang paths,
+                                         GH #306). BIN_DIR defaults to the
+                                         bin directory of the interpreter
+                                         running the repair.
 
     Returns:
       * full report / ``--palace-layout`` / ``--deps-check`` -> 0 when no FAIL,
@@ -2559,9 +2703,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         1 when it did not (no orchestrator registered, source opted out, or
         the resolver raised), 2 on bad arguments. A diagnostic is always
         printed (human or ``--json``).
+      * ``--repair [BIN_DIR]`` -> 0 when every present launcher is healthy or
+        was repaired and re-verified, 1 when any launcher remains malformed,
+        2 on bad arguments.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     as_json = "--json" in args
+
+    # ------------------------------------------------------------------ #
+    # --repair [BIN_DIR] — self-heal malformed console-script launchers   #
+    # (GH #306)                                                          #
+    # ------------------------------------------------------------------ #
+    if "--repair" in args:
+        return _repair_entrypoints_main(args, as_json)
 
     # ------------------------------------------------------------------ #
     # --status — active-project closet + corpus-imbalance diagnostic       #
