@@ -50,7 +50,7 @@ MEMCHORUS_SCRIPT_NAMES: Tuple[str, ...] = (
 )
 
 # The ``exec`` launch line of a ``#!/bin/sh`` wrapper, e.g.
-#   '''exec' /home/u/.../venv/bin/python "$0" "$@"
+#   '''exec' ~/.hermes/installs/<id>/environments/<env>/venv/bin/python "$0" "$@"
 #   '''exec' "$(dirname -- "$(realpath -- "$0")")"/'python' "$0" "$@"  (uv 0.13.x relocatable)
 #   '''exec' "<venv>/bin/python" "$0" "$@"                             (distlib style)
 # Anchored at the canonical ``"$0" "$@"`` argument tail so the token group
