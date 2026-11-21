@@ -300,6 +300,38 @@ def enable_plugin(profile: Optional[str] = None) -> bool:
 # CLI entry-point (wired in setup.py)
 # ---------------------------------------------------------------------------
 
+def _self_repair_launchers() -> None:
+    """Best-effort self-repair of console-script shebangs (GH #306).
+
+    On some boxes, ``pip install`` leaves the console scripts
+    (``memchorus-init``, ``memchorus-doctor``, ``memchorus-recall``, ...)
+    with a launch line naming a nonexistent doubled interpreter path
+    (``.../venv/bin/.../venv/bin/python``), so they fail with
+    ``No such file or directory``.  ``memchorus-init`` is the first of
+    those scripts to be run after install, so it is the natural moment to
+    self-heal — and it is running, which makes its own ``sys.executable``
+    the correct interpreter to write into every launcher in that venv.
+
+    Best-effort by contract: any failure here is printed (stderr) and
+    swallowed — the config-generation flow must never be blocked by it.
+    """
+    try:
+        from memchorus.shebang_repair import repair_entrypoints
+    except Exception as exc:  # noqa: BLE001 — self-repair must never block init
+        print(f"[init] launcher self-repair skipped: {exc}", file=sys.stderr)
+        return
+    try:
+        results = repair_entrypoints()
+        for r in results:
+            if r.action == "repaired":
+                print(
+                    f"[init] repaired launcher shebang: {r.name}: "
+                    f"{r.found_interpreter} -> {r.set_interpreter}"
+                )
+    except Exception as exc:  # noqa: BLE001 — self-repair must never block init
+        print(f"[init] launcher self-repair skipped: {exc}", file=sys.stderr)
+
+
 def cli_main() -> int:
     """Entry point for the ``memchorus-init`` command."""
     import argparse
@@ -329,6 +361,15 @@ def cli_main() -> int:
 
     args = parser.parse_args()
     profile = args.profile or os.environ.get("HERMES_KANBAN_PROFILE") or "default"
+
+    # GH #306 — best-effort self-repair of console-script launchers whose
+    # launch line names a nonexistent (doubled) interpreter path.  This runs
+    # under whatever interpreter owns the venv we're installing into, so it
+    # repairs exactly the scripts in that venv's bin dir.  Best-effort by
+    # contract: a broken launcher must never block config generation, and a
+    # repair failure must never fail an otherwise successful init.
+    if not args.dry_run:
+        _self_repair_launchers()
 
     if args.migrate is not None:
         # --migrate ROOT  →  re-point this profile's reader config at the
