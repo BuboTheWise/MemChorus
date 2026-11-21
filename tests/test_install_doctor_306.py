@@ -22,6 +22,7 @@ every code path, so no real install, profile, or symlink tree is touched.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -38,17 +39,60 @@ from memchorus.install_doctor import FAIL, PASS, check_bin_entrypoints
 # fixtures / helpers
 # ---------------------------------------------------------------------------
 
+def _root_usable(base: Path) -> bool:
+    """True if a temp dir can actually be created + removed under ``base``."""
+    try:
+        probe = tempfile.mkdtemp(prefix="mc306probe_", dir=str(base))
+    except OSError:
+        return False
+    try:
+        os.rmdir(probe)
+        return True
+    except OSError:
+        return False
+
+
 def _clean_root() -> Path:
-    """A writable root with no ``profiles``/``profile`` path segment, so the
-    doctor's home-based probes (GH #298) can never leak into the real tree.
-    (Same convention as ``test_install_doctor_252.py``.)"""
-    for cand in ("/tmp", "/var/tmp", tempfile.gettempdir()):
-        p = Path(cand)
-        if p.exists() and not any(
-            seg in ("profiles", "profile") for seg in p.parts
-        ):
-            return p
-    return Path("/tmp")
+    """A writable fixture root with no ``profiles``/``profile`` segment, so
+    the doctor's home-based probes (GH #298) can never leak into the real
+    tree. (Same convention as ``test_install_doctor_252.py``.)
+
+    Two platform constraints shape the choice:
+
+    1. The doubled-path token the tests build must be ABSOLUTE, so the
+       classifier takes its broken branch. A root-relative ``/tmp`` is not
+       absolute under ``ntpath``, which would send the token down the
+       non-absolute → healthy branch (the shape reserved for uv relocatable
+       wrappers) and make the broken-launcher tests vacuous. So the root is
+       drive-absolute on Windows (``C:\\...``) and a real absolute path on
+       POSIX (``/tmp``).
+
+    2. The repaired launcher is a dual sh+python wrapper whose exec line is
+       a triple-quoted string — ``'''exec' "<interpreter>" "$0" "$@"`` —
+       which python re-parses when the launcher runs. A Windows
+       interpreter path under ``C:\\Users`` carries ``\\U`` (a truncated
+       unicode escape) and fails to compile. So the root must also be free
+       of the ``\\U``/``\\x``/``\\N`` sequences; a path at the drive root
+       (``C:\\memchorus306_...``) has only harmless escapes and compiles.
+
+    On POSIX ``/tmp`` satisfies both. On Windows we therefore prefer the
+    tempdir's drive root (``C:\\``) over the tempdir itself (``C:\\Users\\``),
+    falling back to the tempdir if the drive root is not writable.
+    """
+    if sys.platform == "win32":
+        td = Path(tempfile.gettempdir())
+        cands = []
+        if td.anchor:  # e.g. 'C:\\' → drive root
+            cands.append(Path(td.anchor))
+        cands.append(td)
+    else:
+        cands = [Path("/tmp"), Path("/var/tmp"), Path(tempfile.gettempdir())]
+    for cand in cands:
+        if any(seg in ("profiles", "profile") for seg in cand.parts):
+            continue
+        if _root_usable(cand):
+            return cand
+    return cands[-1]
 
 
 @pytest.fixture
@@ -144,6 +188,9 @@ def test_repair_dry_run_writes_nothing(venv_bin):
     assert p.read_bytes() == before
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only exec-bit semantics — Windows st_mode "
+                           "carries no exec bits for regular files")
 def test_repair_preserves_exec_bit(venv_bin):
     p = venv_bin / "memchorus-recall"
     _write_wrapper(p, f"{venv_bin}/{venv_bin}/python")
