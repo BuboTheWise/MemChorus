@@ -36,11 +36,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Issue #310 — sentinel placed on the enforce queue to tell the worker loop
+# to exit (drained shutdown). A module-level singleton so identity checks are
+# reliable.
+_ENFORCE_SENTINEL = object()
 
 try:
     from agent.memory_provider import MemoryProvider as _MemoryProviderBase
@@ -215,6 +221,15 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         self._worker_started_at = 0.0
         self._initialized = False
 
+        # Issue #310 — sync-turn enforcement runs on a single persistent worker
+        # thread consuming a FIFO queue, instead of spawning (and leaking) one
+        # daemon thread per call. At most one sync-turn thread exists per
+        # provider instance at any time; pending turns wait in the queue and
+        # are drained on shutdown/on_session_end (see :meth:`_drain_enforce`).
+        self._enforce_queue: "queue.Queue[Any]" = queue.Queue()
+        self._enforce_worker: Optional[threading.Thread] = None
+        self._enforce_worker_lock = threading.Lock()
+
         # Version / schema gate cache (issue #284 scope 3).  Lazily evaluated
         # and cached for the process lifetime: the gate depends only on the
         # installed SDK version and the on-disk schema marker, both of which
@@ -387,7 +402,12 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
         _post_setup(hermes_home, config)
 
     def shutdown(self) -> None:
-        """Join any in-flight background prefetch (bounded)."""
+        """Join any in-flight background prefetch and drain the enforce worker.
+
+        Issue #310 — queued/in-flight sync-turn enforces are drained (bounded
+        join) before the daemon worker can be torn down.
+        """
+        self._drain_enforce(timeout=5.0)
         try:
             with self._worker_lock:
                 worker = self._worker
@@ -773,6 +793,10 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
 
         Kept non-blocking so it never adds latency to the API path. The
         enforcement pipeline auto-wires recall + storage capture.
+
+        Issue #310 — the turn is enqueued onto a single persistent enforce
+        worker thread (FIFO queue) instead of spawning one daemon thread per
+        call, which the old code never tracked or joined.
         """
         orch = self._orchestrator
         if orch is None:
@@ -794,16 +818,112 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
             )
             return
 
-        def _run() -> None:
+        # Issue #310 — enqueue onto the single persistent enforce worker
+        # instead of spawning a daemon thread per call (the old thread was
+        # never tracked or joined, so threads accumulated without bound). The
+        # call path stays non-blocking: the worker picks the turn up in the
+        # background.
+        self._enqueue_enforce(text)
+
+    # ------------------------------------------------------------------
+    # Issue #310 — sync-turn enforce worker (single persistent thread + queue)
+    # ------------------------------------------------------------------
+
+    def _enqueue_enforce(self, text: str) -> None:
+        """Queue a sync-turn enforce and make sure the worker is running.
+
+        At most one sync-turn worker thread exists per provider instance:
+        a live worker is reused, a dead one (crash / drained shutdown) is
+        restarted. Pending turns wait in the FIFO queue — no thread is
+        leaked by the call path.
+        """
+        self._enforce_queue.put(text)
+        # Start the worker *under the lock*: is_alive() is only reliable once
+        # start() has returned, and a concurrent caller must see the in-flight
+        # thread as "claimed" rather than racing to spawn its own.
+        with self._enforce_worker_lock:
+            worker = self._enforce_worker
+            if worker is not None and worker.is_alive():
+                return  # live worker will pick the item up
+            t = threading.Thread(
+                target=self._enforce_worker_loop,
+                name=f"memchorus-sync-turn-{id(self):x}",
+                daemon=True,
+            )
+            self._enforce_worker = t
             try:
-                em = orch._get_enforcement_manager()
-                if em is not None:
-                    em.enforce(text)
+                t.start()
+            except Exception as exc:  # pragma: no cover
+                logger.debug("MemChorus provider enforce worker start: %s", exc)
+
+    def _process_enforce(self, text: str) -> None:
+        """Run the enforcement pipeline on one queued turn (best-effort)."""
+        orch = self._orchestrator
+        if orch is None:
+            return
+        em = orch._get_enforcement_manager()
+        if em is not None:
+            em.enforce(text)
+
+    def _enforce_worker_loop(self) -> None:
+        """Drain queued sync-turn enforces until a shutdown sentinel.
+
+        Runs on the single ``memchorus-sync-turn`` daemon thread (issue
+        #310). Per-item failures are swallowed (same best-effort contract as
+        the old inline thread) so one bad turn never wedges the queue.
+        """
+        # Discard leading sentinels left over from a previous drain (shutdown
+        # is idempotent) so a restarted worker handles fresh work instead of
+        # exiting on a stale sentinel. A non-sentinel item found while
+        # scanning is processed inline.
+        while True:
+            try:
+                item = self._enforce_queue.get_nowait()
+            except queue.Empty:
+                break
+            if item is not _ENFORCE_SENTINEL:
+                try:
+                    self._process_enforce(item)
+                except Exception as exc:  # pragma: no cover
+                    logger.debug("MemChorus provider sync_turn enforce: %s", exc)
+                break
+
+        while True:
+            item = self._enforce_queue.get()
+            if item is _ENFORCE_SENTINEL:
+                self._enforce_queue.task_done()
+                break
+            try:
+                self._process_enforce(item)
             except Exception as exc:  # pragma: no cover
                 logger.debug("MemChorus provider sync_turn enforce: %s", exc)
+            finally:
+                self._enforce_queue.task_done()
 
-        t = threading.Thread(target=_run, name="memchorus-sync-turn", daemon=True)
-        t.start()
+    def _drain_enforce(self, timeout: float = 5.0) -> None:
+        """Finish in-flight work and stop the enforce worker (bounded join).
+
+        Issue #310 — called on session end so queued turns are applied (or
+        bounded-timeout joined) instead of being dropped mid-``enforce`` when
+        the daemon thread dies at teardown. Safe to call when no worker is
+        running, or more than once (idempotent).
+        """
+        try:
+            self._enforce_queue.put(_ENFORCE_SENTINEL)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("MemChorus provider enforce drain (put): %s", exc)
+        try:
+            with self._enforce_worker_lock:
+                worker = self._enforce_worker
+                self._enforce_worker = None
+            if (
+                worker is not None
+                and worker.is_alive()
+                and worker is not threading.current_thread()
+            ):
+                worker.join(timeout=timeout)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("MemChorus provider enforce drain (join): %s", exc)
 
     def _extract_user_texts(self, messages: List[Dict[str, Any]]) -> List[str]:
         """Pull user-role text out of a Hermes message list.
@@ -852,7 +972,12 @@ class MemChorusMemoryProvider(_MemoryProviderBase):
            ``boost_factor_for_key`` move off its 1.0 pin. Finally, fire a
            throttled :meth:`MemoryOrchestrator.run_calibration_cycle` so the
            tuned parameters are persisted (spec §10.2 step 3).
+
+        Issue #310 — before anything else, drain the sync-turn enforce worker
+        (bounded join) so queued turns are applied rather than dropped when
+        the daemon thread dies at teardown.
         """
+        self._drain_enforce(timeout=5.0)
         orch = self._orchestrator
         if orch is None:
             return
