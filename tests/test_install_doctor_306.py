@@ -41,14 +41,29 @@ from memchorus.install_doctor import FAIL, PASS, check_bin_entrypoints
 def _clean_root() -> Path:
     """A writable root with no ``profiles``/``profile`` path segment, so the
     doctor's home-based probes (GH #298) can never leak into the real tree.
-    (Same convention as ``test_install_doctor_252.py``.)"""
-    for cand in ("/tmp", "/var/tmp", tempfile.gettempdir()):
+    (Same convention as ``test_install_doctor_252.py``.)
+
+    On Windows the real tempdir is preferred first: CI runners ship
+    ``C:\\tmp`` pre-created, so ``/tmp`` *exists* there yet is
+    root-relative under ``ntpath`` (not absolute) — and a doubled-path
+    token built on a non-absolute root takes the non-absolute → healthy
+    branch of ``_token_ok`` (the shape reserved for uv relocatable
+    wrappers). A drive-absolute root reproduces real Windows venv shapes
+    and keeps the broken-launcher tests meaningful instead of vacuous.
+    """
+    if sys.platform == "win32":
+        cands = [tempfile.gettempdir()]
+    else:
+        cands = ["/tmp", "/var/tmp"]
+    if tempfile.gettempdir() not in cands:
+        cands.append(tempfile.gettempdir())
+    for cand in cands:
         p = Path(cand)
         if p.exists() and not any(
             seg in ("profiles", "profile") for seg in p.parts
         ):
             return p
-    return Path("/tmp")
+    return Path(tempfile.gettempdir())
 
 
 @pytest.fixture
@@ -144,6 +159,9 @@ def test_repair_dry_run_writes_nothing(venv_bin):
     assert p.read_bytes() == before
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="POSIX-only exec-bit semantics — Windows st_mode "
+                           "carries no exec bits for regular files")
 def test_repair_preserves_exec_bit(venv_bin):
     p = venv_bin / "memchorus-recall"
     _write_wrapper(p, f"{venv_bin}/{venv_bin}/python")
