@@ -39,6 +39,34 @@ from memchorus import _sanitize_profile as _sanitize_profile
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# GH-#312: once-per-process loud-degrade warning for the recall path
+# ---------------------------------------------------------------------------
+
+_RECALL_WARNED = False
+_RECALL_WARN_LOCK = threading.Lock()
+
+
+def _warn_recall_disabled(reason: str) -> None:
+    """Emit exactly one WARNING per process when recall is unavailable (#312).
+
+    A silent ``return None`` from ``on_pre_llm_call`` is how recall died
+    invisibly in the gateway (spec-312 clause 1): the first unavailable call
+    must speak — a gateway-visible WARNING carrying the concrete reason — and
+    every subsequent call in the same process stays quiet. Never raises.
+    """
+    global _RECALL_WARNED
+    if _RECALL_WARNED:
+        return
+    with _RECALL_WARN_LOCK:
+        if _RECALL_WARNED:
+            return
+        _RECALL_WARNED = True
+        logger.warning(
+            "MemChorus recall disabled: orchestrator unavailable in this interpreter (%s)",
+            reason,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Lazy-global bootstrap helper
@@ -76,6 +104,7 @@ def _get_orchestrator() -> Optional[Any]:
         return __import__('memchorus', fromlist=['_instance'])._instance
     except Exception as exc:  # pragma: no cover - defensive fallback
         logger.debug("_get_orchestrator failed (no auto_bootstrap yet): %s", exc)
+        _warn_recall_disabled(f"{type(exc).__name__}: {exc}")
         return None
 
 
@@ -370,6 +399,7 @@ class MemChorusHooks:
         logger.debug("MemChorus on_pre_llm_call ENTRY — kwargs keys: %s", list(kwargs.keys())[:5])
         orchestrator = _get_orchestrator()
         if orchestrator is None:
+            _warn_recall_disabled("no orchestrator instance")
             return None
 
         try:
@@ -1543,7 +1573,7 @@ def _load_profile_config_yaml(path: str) -> Optional[dict]:
         parsed = None
     else:
         try:
-            parsed = _yml.safe_load(text)
+            parsed = _yml.safe_load(text) if _yml is not None else None
         except Exception:
             parsed = None
     data = parsed if isinstance(parsed, dict) else None
@@ -2676,7 +2706,10 @@ def suppression_state() -> Dict[str, Any]:
 # register() never reached configure_save_triggers() (GH-270 L1). We now probe
 # every known alias and fall back to scanning the plugins directory for any
 # manifest that identifies MemChorus or carries the save_triggers section.
-import yaml as _yml  # Optional: skip if PyYAML not installed
+try:
+    import yaml as _yml  # Optional: skip if PyYAML not installed
+except Exception:  # pragma: no cover - interpreter-dependent
+    _yml = None
 from pathlib import Path as _Path
 
 # Canonical manifest path (kept for backward-compat) + every alias we accept.
@@ -2724,6 +2757,8 @@ def _load_plugin_config() -> dict:
     """
     for p in _plugin_yaml_candidates():
         if not p.exists():
+            continue
+        if _yml is None:
             continue
         try:
             cfg = _yml.safe_load(p.read_text()) or {}
