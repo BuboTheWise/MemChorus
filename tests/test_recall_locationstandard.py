@@ -43,6 +43,33 @@ def orch_setup():
     clear_project_record_cache()
 
 
+def _no_flat_file_fallback(monkeypatch):
+    """Hermeticity: #255 (commit 946b4c9) extended
+    ``MemPalaceMemorySource.retrieve`` to fall back to the live hermes
+    flat-file store on a cache/live miss (``HermesDefaultMemorySource(data_dir=None)``).
+    On a dev or CI box, real ``project:<name>`` session-checkpoint records in
+    that store leak into these tests and shadow the SSoT / rule fallback the
+    test is exercising (first seen as the ``test_location_channel_from_ssot``
+    CI red, GH #313 follow-up).
+
+    The fallback's import is function-local and re-resolved at call time from
+    the source module, so patching the class on
+    ``memchorus.hermes_memory_source`` neutralizes it here, while the
+    orchestrator's own hermes_default source (bound at module import time) is
+    untouched.
+    """
+    import memchorus.hermes_memory_source as hms_mod
+
+    class _Miss:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def retrieve(self, key, *args, **kwargs):
+            return None
+
+    monkeypatch.setattr(hms_mod, "HermesDefaultMemorySource", _Miss)
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # §2.3  Location channel
 # ────────────────────────────────────────────────────────────────────────────
@@ -73,6 +100,7 @@ def test_location_channel_from_ssot(orch_setup, monkeypatch):
     # Patch the module-level SSoT reader so resolve_project_record's SSoT
     # fallback (step 3) returns our known row.  No record is saved, so step 2
     # (exact-key retrieve) misses and falls through to the SSoT path.
+    _no_flat_file_fallback(monkeypatch)
     monkeypatch.setattr(mo, "_ssot_read_cached", lambda: [
         {"project": "MemChorus",
          "canonical_root": "/workspace/Code/MemChorus/",
@@ -92,6 +120,7 @@ def test_location_fallback_rule_when_no_ssot(orch_setup, monkeypatch):
     import memchorus.orchestrator as mo
 
     # Force the SSoT layer absent so step 4 (rule-derived fallback) is exercised.
+    _no_flat_file_fallback(monkeypatch)
     monkeypatch.setattr(mo, "_ssot_read_cached", lambda: None)
     from memchorus.orchestrator import clear_project_record_cache
     clear_project_record_cache()

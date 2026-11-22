@@ -36,6 +36,10 @@ class TestDiscoverToolPython:
             d.mkdir(parents=True)
             (d / "python3").write_text("#!/usr/bin/env python3\n")
         monkeypatch.setenv("HOME", str(home))
+        # On Windows, expanduser("~") honours USERPROFILE, not HOME — point the
+        # discovery at the fake home explicitly so the discovery logic is
+        # exercised on every platform (CI red on the windows runner).
+        monkeypatch.setattr(doctor.os.path, "expanduser", lambda p: str(home))
         found = doctor._discover_tool_python()
         assert found is not None
         expected = str(home / ".hermes" / "tools" / "python-a" / "bin" / "python3")

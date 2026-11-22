@@ -178,6 +178,11 @@ def test_ensure_exit_wrapped_leaves_wrapped_untouched(bin_root):
 # e2e — THE regression proof
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Executes the shebang launcher directly (POSIX exec semantics); "
+    "Windows rejects direct execution of non-.exe files (WinError 193).",
+)
 def test_launcher_propagates_rc_after_repair(bin_root):
     root = bin_root
     bin_dir = root / "venv" / "bin"

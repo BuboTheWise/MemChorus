@@ -8,7 +8,9 @@ Hermetic: builds a fake ``$HOME`` with legacy state at the documented
 locations (``~/.mempalace/<profile>``, ``~/.memchorus.yaml``,
 ``~/.memchorus-data/prohibitions.jsonl``) and points ``HERMES_HOME`` at a
 subdirectory, so ``profile_home("default")`` resolves to ``HERMES_HOME``
-and ``_canonical_in_home("default")`` is ``HERMES_HOME/mempalace``.
+and ``_canonical_in_home("default")`` is ``HERMES_HOME/.mempalace/palace``
+— the wing_isolation canonical layout (``86995b5``;
+``auto_init.DEFAULT_DATA_DIR``).
 """
 from __future__ import annotations
 
@@ -156,8 +158,12 @@ def test_migrate_moves_legacy_palace_into_home(legacy_home):
     # The legacy palace is gone from its old location…
     legacy_palace = legacy_home / ".mempalace" / "default"
     assert not legacy_palace.exists()
-    # …and the in-home canonical dir has the data.
-    canonical = legacy_home / ".hermes" / "mempalace"
+    # …and the in-home canonical dir has the data. Canonical shape is
+    # <profile_home>/.mempalace/palace (86995b5 wing_isolation;
+    # auto_init.DEFAULT_DATA_DIR). The legacy dir is moved as the canonical
+    # leaf, so its internal layout (palace/chroma.sqlite3) is preserved
+    # under it — palace_data_dir() resolves that nesting.
+    canonical = legacy_home / ".hermes" / ".mempalace" / "palace"
     assert canonical.exists()
     assert (canonical / "palace" / "chroma.sqlite3").exists()
 
@@ -238,7 +244,9 @@ def test_migrate_dry_run_moves_nothing(legacy_home):
 
 def test_migrate_preserves_source_when_dest_populated(legacy_home):
     # Pre-populate the in-home canonical dir with authoritative data.
-    canonical = legacy_home / ".hermes" / "mempalace" / "existing"
+    # Canonical shape: <profile_home>/.mempalace/palace (86995b5;
+    # auto_init.DEFAULT_DATA_DIR) — must match state_migrate._canonical_in_home.
+    canonical = legacy_home / ".hermes" / ".mempalace" / "palace" / "existing"
     canonical.mkdir(parents=True)
     (canonical / "authoritative.sqlite3").write_bytes(b"keep-me")
 
@@ -272,7 +280,9 @@ def test_migrate_rewrites_data_dir_to_canonical(legacy_home):
     new_cfg = legacy_home / ".hermes" / "memchorus.yaml"
     assert new_cfg.exists()
     text = new_cfg.read_text()
-    canonical = str(legacy_home / ".hermes" / "mempalace")
+    # Canonical shape: <profile_home>/.mempalace/palace (86995b5 wing_isolation;
+    # auto_init.DEFAULT_DATA_DIR).
+    canonical = str(legacy_home / ".hermes" / ".mempalace" / "palace")
     # The old legacy location must be gone from the rewritten config.
     assert ".mempalace/default" not in text
     # The canonical path must now be present.
