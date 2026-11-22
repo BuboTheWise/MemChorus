@@ -2492,6 +2492,7 @@ def run_checks(strict: bool = False) -> List[CheckResult]:
         lambda: check_bin_entrypoints(strict=strict),
         check_memory_source_registration,
         check_plugin_hooks,
+        check_inprocess_interpreter,
         check_config_validation,
         check_auto_tune_pipeline,
         check_data_directory,
@@ -2897,6 +2898,262 @@ def _retrieve_probe_exit_code(report: Dict[str, Any]) -> int:
     return 0 if report.get("verdict") == "green" else 1
 
 
+# ---------------------------------------------------------------------------
+# Probe E (--inprocess) — the in-process interpreter import probe (#312).
+#
+# Verifies that the **in-process interpreter** — the gateway/tool python under
+# ``~/.hermes/tools/python-*/bin/python3``, NOT the install venv — can
+# ``import memchorus`` and resolve the orchestrator module. The MCP/CLI
+# surface runs under the install venv, so a green MCP does NOT imply a live
+# in-process hook (spec-312 clause 3). This probe is the gate that
+# distinguishes the two surfaces: RED when the tool python cannot import
+# memchorus (the #312 "recall silently dead in the gateway" regression), with
+# expected-vs-actual so the operator sees exactly which interpreter failed.
+#
+#   GREEN   tool python imports memchorus + orchestrator ->
+#           ``in-process interpreter OK (<path>)``
+#   RED     import fails ->
+#           expected: import memchorus OK under <interpreter>
+#           actual:   <error line of the traceback>
+#   YELLOW  no tool python found under ``~/.hermes/tools`` -> skip (not a
+#           failure, but distinguishable from a red; see spec clause 2).
+# ---------------------------------------------------------------------------
+
+
+def _discover_tool_python() -> Optional[str]:
+    """Find the in-process (gateway/tool) interpreter to probe.
+
+    First match of ``~/.hermes/tools/python-*/bin/python3`` (glob, sorted).
+    Returns ``None`` when no tool python is provisioned (probe E -> YELLOW
+    skip, not a red).
+    """
+    import glob
+
+    pattern = os.path.join(
+        os.path.expanduser("~"), ".hermes", "tools", "python-*", "bin", "python3"
+    )
+    for path in sorted(glob.glob(pattern)):
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+_PROBE_E_IMPORT = "import memchorus; import memchorus.orchestrator; print('ok')"
+
+
+def _error_line(stderr: str, stdout: str) -> str:
+    """Return the meaningful error line from a failed interpreter run.
+
+    For a Python traceback the exception (e.g.
+    ``ModuleNotFoundError: No module named 'memchorus'``) is the final
+    non-empty line of stderr; for a plain one-line error it is that line.
+    Falls back to the first stdout line, then a placeholder.
+    """
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if lines:
+        return lines[-1]
+    lines = [ln.strip() for ln in (stdout or "").splitlines() if ln.strip()]
+    return lines[0] if lines else "(no output)"
+
+
+def _inprocess_probe_report(interpreter: Optional[str] = None) -> Dict[str, Any]:
+    """Run ``<interpreter> -c "import memchorus; import memchorus.orchestrator; print('ok')"``
+    and assert it succeeds in the in-process interpreter (probe E, #312).
+
+    ``interpreter`` is the python to probe; when ``None`` it is discovered via
+    :func:`_discover_tool_python`. Returns a report dict with
+    ``interpreter`` / ``status`` (``ok`` | ``missing`` | ``error`` |
+    ``skipped``) / ``expected`` / ``actual`` / ``stdout`` / ``stderr`` and a
+    ``verdict`` (``green`` | ``red`` | ``yellow``). Never raises for expected
+    failure modes — mirrors the ``_retrieve_probe_report`` (probe D) style.
+    """
+    if interpreter is None:
+        interpreter = _discover_tool_python()
+
+    if interpreter is None:
+        return {
+            "interpreter": None,
+            "status": "skipped",
+            "expected": "import memchorus OK under a tool python under ~/.hermes/tools",
+            "actual": "",
+            "stdout": "",
+            "stderr": "",
+            "verdict": "yellow",
+            "reason": "no tool python found under ~/.hermes/tools",
+        }
+
+    expected = f"import memchorus OK under {interpreter}"
+    try:
+        proc = subprocess.run(
+            [interpreter, "-c", _PROBE_E_IMPORT],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        rc = proc.returncode
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+    except subprocess.TimeoutExpired:
+        return {
+            "interpreter": interpreter,
+            "status": "error",
+            "expected": expected,
+            "actual": "probe timed out after 30s",
+            "stdout": "",
+            "stderr": "",
+            "verdict": "red",
+            "reason": "in-process import probe did not return within 30s",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "interpreter": interpreter,
+            "status": "error",
+            "expected": expected,
+            "actual": f"{type(exc).__name__}: {exc}",
+            "stdout": "",
+            "stderr": "",
+            "verdict": "red",
+            "reason": f"probe failed to spawn the interpreter: {type(exc).__name__}",
+        }
+
+    if rc == 0 and "ok" in out:
+        return {
+            "interpreter": interpreter,
+            "status": "ok",
+            "expected": expected,
+            "actual": "ok",
+            "stdout": out,
+            "stderr": err,
+            "verdict": "green",
+        }
+
+    # Non-zero exit (or exit 0 without the expected marker) = the in-process
+    # interpreter cannot import memchorus — exactly the #312 regression.
+    return {
+        "interpreter": interpreter,
+        "status": "missing",
+        "expected": expected,
+        "actual": _error_line(err, out),
+        "stdout": out,
+        "stderr": err,
+        "verdict": "red",
+    }
+
+
+def _render_inprocess_probe_human(report: Dict[str, Any]) -> None:
+    """Human render for ``--inprocess`` (probe E, #312)."""
+    interpreter = report.get("interpreter")
+    verdict = report.get("verdict", "red")
+    status = report.get("status", "?")
+
+    print("probe E (in-process interpreter) — #312")
+    print(f"  interpreter: {interpreter or '(none found under ~/.hermes/tools)'}")
+
+    err = (report.get("stderr") or "").strip()
+    if err:
+        print("  interpreter stderr:")
+        for line in err.splitlines():
+            print(f"    {line}")
+
+    print(f"  expected: {report.get('expected', '')}")
+    if verdict == "yellow":
+        print(f"  actual:   (skipped) {report.get('reason', '')}")
+    else:
+        print(f"  actual:   {report.get('actual') or '(no output)'}")
+    print()
+    if verdict == "green":
+        print(
+            "  verdict:  GREEN (PASS) — in-process interpreter resolves "
+            "memchorus + orchestrator"
+        )
+    elif verdict == "yellow":
+        print(
+            "  verdict:  YELLOW (SKIP) — no tool python found; a skip is "
+            "distinguishable from a red"
+        )
+    else:
+        print(
+            "  verdict:  RED (FAIL) — in-process interpreter cannot import "
+            "memchorus (the #312 recall-silently-dead regression)"
+        )
+
+
+def _render_inprocess_probe_json(report: Dict[str, Any]) -> None:
+    """JSON render for ``--inprocess`` — stable schema."""
+    out: Dict[str, Any] = {
+        "interpreter": report.get("interpreter"),
+        "status": report.get("status", ""),
+        "expected": report.get("expected", ""),
+        "actual": report.get("actual", ""),
+        "verdict": report.get("verdict", ""),
+    }
+    if report.get("reason"):
+        out["reason"] = report["reason"]
+    if report.get("stderr"):
+        out["stderr"] = report["stderr"]
+    print(json.dumps(out, indent=2, sort_keys=True, default=str))
+
+
+def _inprocess_probe_exit_code(report: Dict[str, Any]) -> int:
+    """GREEN -> 0.  YELLOW (skip) -> 0 (a skip is not a failure).  RED -> 1.
+
+    A red means the in-process interpreter cannot import memchorus — a
+    *failure of the probe's expectation* — so it exits non-zero: the probe
+    must distinguish a live in-process hook from a dead one. A yellow skip
+    (no tool python) is not a failure, and is kept distinguishable from a red
+    via the ``verdict``/``status`` fields rather than the exit code.
+    """
+    return 0 if report.get("verdict") in ("green", "yellow") else 1
+
+
+def check_inprocess_interpreter() -> CheckResult:
+    """Probe E (#312) as a default-run check: the in-process interpreter must
+    resolve memchorus (a different interpreter from the install venv).
+
+    Maps the probe verdict onto the check status: green -> PASS, yellow ->
+    WARN (skip, not a failure), red -> FAIL (the #312 regression). See
+    spec-312-recall-degrade.md clause 2 for the expected-vs-actual contract.
+    """
+    report = _inprocess_probe_report()
+    verdict = report.get("verdict")
+
+    if verdict == "green":
+        return CheckResult(
+            name="inprocess_interpreter",
+            status=PASS,
+            message=f"in-process interpreter OK ({report.get('interpreter')})",
+        )
+
+    if verdict == "yellow":
+        return CheckResult(
+            name="inprocess_interpreter",
+            status=WARN,
+            message=(
+                "in-process interpreter probe skipped: "
+                "no tool python found under ~/.hermes/tools"
+            ),
+            hint=(
+                "a skip is not a failure; provision a tool python under "
+                "~/.hermes/tools to enable probe E"
+            ),
+        )
+
+    # red — the in-process interpreter cannot import memchorus.
+    return CheckResult(
+        name="inprocess_interpreter",
+        status=FAIL,
+        message=(
+            f"expected: import memchorus OK under {report.get('interpreter')}; "
+            f"actual: {report.get('actual') or '(no output)'}"
+        ),
+        hint=(
+            "the in-process (gateway/tool) interpreter cannot import memchorus — "
+            "recall injection is silently dead in the gateway; install memchorus "
+            "into that interpreter (spec-312 clause 3), then restart the gateway"
+        ),
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for ``memchorus-doctor``.
 
@@ -2934,6 +3191,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          (0 resolved / 1 miss / 2 unreachable)
                                          AND the body — GREEN on a resolve,
                                          RED on a miss/unreachable
+        memchorus-doctor --inprocess [INTERPRETER]
+                                         probe E (#312): verify the
+                                         in-process (gateway/tool) interpreter
+                                         can import memchorus + orchestrator.
+                                         INTERPRETER is optional and defaults
+                                         to the discovered tool python under
+                                         ~/.hermes/tools — GREEN when it
+                                         imports, RED with expected-vs-actual
+                                         when it cannot, YELLOW skip when no
+                                         tool python is provisioned
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
         memchorus-doctor --repair [BIN_DIR]
@@ -2960,6 +3227,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         unreachable, inconsistent, or the probe could not run), 2 on bad
         arguments. A diagnostic is always printed showing the expected
         contract (exit 0 + body) versus the actual exit code and body.
+      * ``--inprocess [INTERPRETER]`` (probe E, #312) -> 0 when the
+        in-process interpreter resolves memchorus (green) or is skipped
+        (yellow — no tool python), 1 when it cannot import memchorus
+        (red — the #312 recall-silently-dead regression). A diagnostic is
+        always printed showing the expected import contract versus the
+        actual interpreter stderr.
       * ``--repair [BIN_DIR]`` -> 0 when every present launcher is healthy or
         was repaired and re-verified, 1 when any launcher remains malformed,
         2 on bad arguments.
@@ -3066,6 +3339,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             _render_retrieve_probe_human(rreport)
         return _retrieve_probe_exit_code(rreport)
+
+    # ------------------------------------------------------------------ #
+    # --inprocess [INTERPRETER] — probe E: verify the in-process          #
+    # (gateway/tool) interpreter can `import memchorus` + orchestrator.   #
+    # A green MCP/CLI does NOT imply a live in-process hook (spec-312     #
+    # clause 3). INTERPRETER is optional and defaults to the discovered   #
+    # tool python under ~/.hermes/tools; an explicit path lets an         #
+    # operator / test point the probe at a specific interpreter.          #
+    # ------------------------------------------------------------------ #
+    if "--inprocess" in args:
+        try:
+            idx = args.index("--inprocess")
+        except ValueError:  # unreachable — `in` already gated this branch
+            idx = -1
+        inprocess_interpreter = None
+        if idx >= 0 and idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            inprocess_interpreter = args[idx + 1]
+
+        ereport = _inprocess_probe_report(inprocess_interpreter)
+        if as_json:
+            _render_inprocess_probe_json(ereport)
+        else:
+            _render_inprocess_probe_human(ereport)
+        return _inprocess_probe_exit_code(ereport)
 
     # ------------------------------------------------------------------ #
     # --migration — read-only pre-flight for host migration (#283 item 6)  #
