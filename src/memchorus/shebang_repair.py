@@ -19,6 +19,11 @@ Contract
 * **Byte-surgical.**  Only the launch line (line 1 for a direct shebang, the
   ``exec`` line for a shell wrapper) is rewritten; every other byte —
   including the closing ``' '''`` line and the module body — is preserved.
+* **Exit-code preserving.**  Launchers whose entry call is invoked bare —
+  e.g. ``main(sys.argv[1:])`` with no ``sys.exit`` — are wrapped in
+  ``sys.exit(...)`` so the process exit code reflects ``main()``'s return
+  value.  Without this, the rc=0-for-miss regression (issue #255) makes every
+  retrieve exit 0.  Already-wrapped launchers are left byte-identical.
 * **Conservative.**  A launcher is only rewritten when its interpreter token
   is missing (the #306 doubled path), or when it is an absolute path that
   resolves to a Python outside the bin directory being repaired.  Healthy
@@ -90,6 +95,12 @@ class RepairResult:
 
     def describe(self) -> str:
         if self.action == "repaired":
+            if self.found_interpreter == self.set_interpreter:
+                return (
+                    f"[ok] repaired {self.name} ({self.path}): "
+                    f"entry call wrapped in sys.exit(...) "
+                    f"(exit-code propagation, issue #255)"
+                )
             return (
                 f"[ok] repaired {self.name} ({self.path}): "
                 f"{self.found_interpreter} -> {self.set_interpreter}"
@@ -227,6 +238,84 @@ def repair_script(script: Path, interpreter: str) -> bool:
     return True
 
 
+def _imported_entry_names(text: str) -> List[str]:
+    """Collect ``from <mod> import <name>`` entry names (excl. ``__future__``)."""
+    names: List[str] = []
+    for m in re.finditer(
+        r"^\s*from\s+([\w.]+)\s+import\s+([A-Za-z_][\w*(), \t]*)", text, re.M
+    ):
+        if m.group(1) == "__future__":
+            continue
+        first = m.group(2).split(",")[0].strip()
+        first = re.match(r"[A-Za-z_]\w*", first)
+        if first:
+            names.append(first.group(0))
+    return names
+
+
+def _exit_wrap_repair(text: str) -> Optional[str]:
+    """Return the body with its entry call wrapped in ``sys.exit(...)``, or
+    ``None`` when nothing needs wrapping.
+
+    The Hermes install pipeline emits MemChorus launchers whose final line
+    calls the entry function bare — e.g. ``main(sys.argv[1:])`` — so the
+    process always exits 0 and a ``main()`` that returns 1 (miss) or 2
+    (pipeline unreachable) is silently discarded.  This is the rc=0-for-miss
+    regression (issue #255).  Wrapping the single entry invocation in
+    ``sys.exit(...)`` restores the 0/1/2 contract.
+
+    Conservative: only the one statement that invokes an imported entry name
+    as a top-level call is rewritten, and only when it is not already inside
+    ``sys.exit(...)``.  Idempotent — an already-wrapped launcher (the
+    ``if __name__ == '__main__': sys.exit(main())`` shape) is left untouched.
+    """
+    names = _imported_entry_names(text)
+    if not names:
+        return None
+    patterns = [re.compile(r"^" + re.escape(n) + r"\s*\(") for n in names]
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if any(p.match(stripped) for p in patterns):
+            if re.match(r"^(?:sys\.)?exit\s*\(", stripped):
+                return None  # already wrapped
+            indent = line[: len(line) - len(line.lstrip())]
+            eol = "\n" if line.endswith("\n") else ""
+            lines[i] = f"{indent}sys.exit({stripped}){eol}"
+            return "".join(lines)
+    return None
+
+
+def _body_needs_exit(script: Path) -> bool:
+    """Non-mutating peek: True when *script*'s entry call lacks ``sys.exit``."""
+    try:
+        text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _exit_wrap_repair(text) is not None
+
+
+def ensure_exit_wrapped(script: Path) -> bool:
+    """Rewrite *script* so its entry call propagates its return code.
+
+    Returns ``True`` when the file was rewritten (the entry call was wrapped
+    in ``sys.exit(...)`` so ``main()``'s 0/1/2 return value becomes the
+    process exit code), ``False`` when the launcher was already correct or the
+    entry call was not recognizable (file left untouched).  Idempotent.
+    """
+    try:
+        text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    new = _exit_wrap_repair(text)
+    if new is None or new == text:
+        return False
+    script.write_bytes(new.encode("utf-8"))
+    return True
+
+
 def _script_should_be_repointed(info: LauncherInfo, bin_dir: Path,
                                 interpreter: str) -> bool:
     """Decide whether *info* describes a launcher that must be rewritten."""
@@ -285,7 +374,9 @@ def repair_entrypoints(
             results.append(RepairResult(name, str(p), "missing", None, None))
             continue
         info = classify(p)
-        if not _script_should_be_repointed(info, bin_dir, interpreter):
+        needs_repoint = _script_should_be_repointed(info, bin_dir, interpreter)
+        needs_exit = _body_needs_exit(p)
+        if not (needs_repoint or needs_exit):
             results.append(
                 RepairResult(name, str(p), "ok", info.interpreter, None)
             )
@@ -297,7 +388,11 @@ def repair_entrypoints(
             )
             results[-1].action = "dry-run"
             continue
-        rewritten = repair_script(p, interpreter)
+        rewritten = False
+        if needs_repoint:
+            rewritten = repair_script(p, interpreter) or rewritten
+        if needs_exit:
+            rewritten = ensure_exit_wrapped(p) or rewritten
         results.append(
             RepairResult(
                 name,
