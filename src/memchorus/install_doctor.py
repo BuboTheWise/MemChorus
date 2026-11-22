@@ -2651,6 +2651,252 @@ def _repair_entrypoints_main(args: List[str], as_json: bool) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Probe D (--retrieve "<key>") — the retrieve exit-contract probe (#255).
+#
+# Runs the real ``memchorus-recall retrieve <key>`` CLI and asserts BOTH the
+# exit code AND the body/hint against the real contract:
+#
+#     0  resolved      (real body printed on stdout)
+#     1  miss          (hint on stderr: "Key not found … re-fetch the live source")
+#     2  unreachable   (source error)
+#
+# The stale expectation ("expect exit 2 per upstream #255") treated exit 2 as a
+# *miss*; after the #255 fix a miss is exit 1 and exit 2 means *unreachable*.
+# This probe therefore cannot be satisfied by a miss: it only goes GREEN when
+# the exit code says resolved AND stdout carries a real body (not a hint).
+# ---------------------------------------------------------------------------
+
+
+def _locate_memchorus_recall() -> Optional[str]:
+    """Find the ``memchorus-recall`` console script to probe.
+
+    Prefer the one installed beside this interpreter (the same venv this
+    doctor runs in), then fall back to ``PATH``.
+    """
+    import shutil
+
+    exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    candidate = os.path.join(exe_dir, "memchorus-recall")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        return candidate
+    return shutil.which("memchorus-recall")
+
+
+def _flat_file_location(key: str) -> Optional[str]:
+    """Return the first flat-file cache that actually holds ``<key>.json``.
+
+    Checks the two persistent locations the #255 retrieve path consults:
+    the MemPalace JSON cache and each profile's ``memories/`` directory.
+    Returns the path when found, else ``None``.
+    """
+    home = os.path.expanduser("~")
+    candidates = [os.path.join(home, ".hermes", "mempalace_cache", f"{key}.json")]
+    profiles_dir = os.path.join(home, ".hermes", "profiles")
+    if os.path.isdir(profiles_dir):
+        try:
+            profiles = sorted(os.listdir(profiles_dir))
+        except OSError:
+            profiles = []
+        for p in profiles:
+            candidates.append(os.path.join(profiles_dir, p, "memories", f"{key}.json"))
+    candidates.append(os.path.join(home, ".hermes", "memories", f"{key}.json"))
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+_MISS_HINT_MARKERS = (
+    "Key not found",
+    "cold cache or never saved",
+    "re-fetch the live source",
+)
+
+
+def _looks_like_miss_hint(text: str) -> bool:
+    return any(marker in text for marker in _MISS_HINT_MARKERS)
+
+
+def _retrieve_probe_report(key: str) -> Dict[str, Any]:
+    """Run ``memchorus-recall retrieve <key>`` and assert exit code + body.
+
+    Returns a report dict (``status`` ``resolved`` | ``miss`` |
+    ``unreachable`` | ``inconsistent`` | ``error``) with ``expected_rc`` /
+    ``actual_rc`` / ``stdout`` / ``stderr`` / ``body_present`` and a
+    ``verdict`` (``green`` | ``red``). Never raises for expected failure
+    modes — mirrors the ``_recall_query`` diagnostic style.
+    """
+    binary = _locate_memchorus_recall()
+    flat = _flat_file_location(key)
+    file_exists = flat is not None
+
+    if binary is None:
+        return {
+            "key": key,
+            "file_exists": file_exists,
+            "flat_file": None,
+            "status": "unreachable",
+            "expected_rc": 0,
+            "actual_rc": 2,
+            "stdout": "",
+            "stderr": (
+                "memchorus-recall binary not found (not beside this "
+                "interpreter and not on PATH)"
+            ),
+            "body_present": False,
+            "verdict": "red",
+            "reason": (
+                "probe could not run: memchorus-recall is not available "
+                "in this environment"
+            ),
+        }
+
+    try:
+        proc = subprocess.run(
+            [binary, "retrieve", key],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        rc = proc.returncode
+        out = proc.stdout or ""
+        err = proc.stderr or ""
+    except subprocess.TimeoutExpired:
+        return {
+            "key": key,
+            "file_exists": file_exists,
+            "flat_file": flat,
+            "status": "error",
+            "expected_rc": 0,
+            "actual_rc": None,
+            "stdout": "",
+            "stderr": "probe timed out after 30s",
+            "body_present": False,
+            "verdict": "red",
+            "reason": "memchorus-recall retrieve did not return within 30s",
+        }
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "key": key,
+            "file_exists": file_exists,
+            "flat_file": flat,
+            "status": "error",
+            "expected_rc": 0,
+            "actual_rc": None,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+            "body_present": False,
+            "verdict": "red",
+            "reason": f"probe failed to spawn memchorus-recall: {type(exc).__name__}",
+        }
+
+    body_present = bool(out.strip())
+    miss_hint = _looks_like_miss_hint(out) or _looks_like_miss_hint(err)
+
+    if rc == 0 and body_present and not miss_hint:
+        status = "resolved"
+        verdict = "green"
+    elif rc == 1:
+        status = "miss"
+        verdict = "red"
+    elif rc == 2:
+        status = "unreachable"
+        verdict = "red"
+    else:
+        # exit 0 with no real body (or a hint in the body) = a miss reported
+        # as a hit — exactly the stale behaviour #255 removed. Flag it.
+        status = "inconsistent"
+        verdict = "red"
+
+    return {
+        "key": key,
+        "file_exists": file_exists,
+        "flat_file": flat,
+        "status": status,
+        "expected_rc": 0,
+        "actual_rc": rc,
+        "stdout": out,
+        "stderr": err,
+        "body_present": body_present,
+        "miss_hint": miss_hint,
+        "verdict": verdict,
+    }
+
+
+def _render_retrieve_probe_human(report: Dict[str, Any]) -> None:
+    """Human render for ``--retrieve <key>`` (probe D, #255)."""
+    key = report.get("key", "?")
+    verdict = report.get("verdict", "red")
+    status = report.get("status", "?")
+    actual_rc = report.get("actual_rc")
+    body_present = report.get("body_present")
+    flat = report.get("flat_file")
+
+    print(f"probe D (retrieve) — key: {key}")
+    file_line = f"  flat file exists: {'yes' if report.get('file_exists') else 'no'}"
+    if flat:
+        file_line += f"  ({flat})"
+    print(file_line)
+
+    out = (report.get("stdout") or "").strip()
+    err = (report.get("stderr") or "").strip()
+    if out:
+        print("  retrieve stdout:")
+        for line in out.splitlines():
+            print(f"    {line}")
+    if err:
+        print("  retrieve stderr:")
+        for line in err.splitlines():
+            print(f"    {line}")
+
+    print("  expected: exit 0  (resolved, real body on stdout)")
+    if actual_rc is None:
+        print("  actual:   (probe did not run to completion)")
+    else:
+        print(f"  actual:   exit {actual_rc}  [{status}]")
+    print(
+        "  body assert: "
+        + ("body present on stdout" if body_present else "no real body on stdout (hint or empty)")
+    )
+    print()
+    if verdict == "green":
+        print("  verdict:  GREEN (PASS) — exit code AND body agree the key resolved")
+    else:
+        print(
+            "  verdict:  RED (FAIL) — this key did not resolve; a miss must "
+            "fail the probe, not pass it"
+        )
+
+
+def _render_retrieve_probe_json(report: Dict[str, Any]) -> None:
+    """JSON render for ``--retrieve <key>`` — stable schema."""
+    out: Dict[str, Any] = {
+        "key": report.get("key", ""),
+        "file_exists": report.get("file_exists", False),
+        "status": report.get("status", ""),
+        "expected_rc": report.get("expected_rc"),
+        "actual_rc": report.get("actual_rc"),
+        "body_present": report.get("body_present", False),
+        "verdict": report.get("verdict", ""),
+    }
+    if report.get("flat_file"):
+        out["flat_file"] = report["flat_file"]
+    if report.get("reason"):
+        out["reason"] = report["reason"]
+    print(json.dumps(out, indent=2, sort_keys=True, default=str))
+
+
+def _retrieve_probe_exit_code(report: Dict[str, Any]) -> int:
+    """GREEN (resolved) -> 0.  RED (miss/unreachable/inconsistent/error) -> 1.
+
+    A miss is a *failure of the probe's expectation* (the key was expected to
+    resolve), so it exits non-zero: the probe must distinguish a resolve from
+    a miss rather than passing both.
+    """
+    return 0 if report.get("verdict") == "green" else 1
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for ``memchorus-doctor``.
 
@@ -2682,6 +2928,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          record (IMPL #163.4 / spec §4.7) and
                                          print its location / standard /
                                          reconciled channels
+        memchorus-doctor --retrieve <key>  probe D (#255): run the real
+                                         ``memchorus-recall retrieve <key>``
+                                         and assert BOTH the exit code
+                                         (0 resolved / 1 miss / 2 unreachable)
+                                         AND the body — GREEN on a resolve,
+                                         RED on a miss/unreachable
         memchorus-doctor --json          emit machine-readable JSON instead of
                                          the human table
         memchorus-doctor --repair [BIN_DIR]
@@ -2703,6 +2955,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         1 when it did not (no orchestrator registered, source opted out, or
         the resolver raised), 2 on bad arguments. A diagnostic is always
         printed (human or ``--json``).
+      * ``--retrieve <key>`` (probe D, #255) -> 0 when the key resolved
+        (exit 0 AND a real body on stdout), 1 when it did not (miss,
+        unreachable, inconsistent, or the probe could not run), 2 on bad
+        arguments. A diagnostic is always printed showing the expected
+        contract (exit 0 + body) versus the actual exit code and body.
       * ``--repair [BIN_DIR]`` -> 0 when every present launcher is healthy or
         was repaired and re-verified, 1 when any launcher remains malformed,
         2 on bad arguments.
@@ -2784,6 +3041,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             _render_project_report_human(report)
         return _project_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --retrieve "<key>" — probe D: assert the #255 retrieve exit         #
+    # contract (0 resolved / 1 miss / 2 unreachable) on BOTH the exit     #
+    # code and the body/hint. A miss must RED the probe, not pass it.     #
+    # ------------------------------------------------------------------ #
+    if "--retrieve" in args:
+        try:
+            idx = args.index("--retrieve")
+        except ValueError:  # unreachable — `in` already gated this branch
+            idx = -1
+        if idx < 0 or idx + 1 >= len(args):
+            print('error: --retrieve requires a key, e.g. --retrieve "learning-abc123"')
+            return 2
+        retrieve_key = args[idx + 1]
+        if not retrieve_key:
+            print("error: --retrieve key must be non-empty")
+            return 2
+
+        rreport = _retrieve_probe_report(retrieve_key)
+        if as_json:
+            _render_retrieve_probe_json(rreport)
+        else:
+            _render_retrieve_probe_human(rreport)
+        return _retrieve_probe_exit_code(rreport)
 
     # ------------------------------------------------------------------ #
     # --migration — read-only pre-flight for host migration (#283 item 6)  #
