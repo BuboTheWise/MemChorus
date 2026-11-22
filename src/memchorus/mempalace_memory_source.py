@@ -1705,6 +1705,21 @@ class MemPalaceMemorySource(MemorySource):
                 logger.debug(
                     "mempalace: fallback live refetch failed for %r: %s", key, e
                 )
+
+        # When MemPalace falls back to its local cache the actual flat-file
+        # memories live at ~/.hermes/profiles/<profile>/memories/*.json —
+        # managed by HermesDefaultMemorySource.  If we still have nothing,
+        # try that source so we don't report "not found" when the file
+        # exists on disk but is only absent from our cache.
+        try:
+            from memchorus.hermes_memory_source import HermesDefaultMemorySource
+            hms = HermesDefaultMemorySource(data_dir=None)
+            val = hms.retrieve(key)
+            if val is not None:
+                return val
+        except Exception:
+            pass
+
         return RETRIEVE_MISS
 
     def _refetch_live(self, key: str) -> Any:
