@@ -740,10 +740,23 @@ def _list_palace_wings(data_dir: Path) -> Optional[List[str]]:
 def _active_palace_dir() -> Path:
     """Resolve the active profile's palace data directory.
 
-    Uses the same resolver chain as :func:`check_data_directory` so the wing
-    audit inspects the same store the reader/writer use.
+    **Profile-aware (issue #305).**  A named profile's store lives under
+    ``profile_home(name)/.mempalace`` — that is the tree the reader/writer
+    actually use (``config.yaml`` ``--palace``), not the global
+    ``~/.mempalace`` shell.  The wing audit must inspect the *same* store the
+    data lands in, so for a named profile we resolve the profile-scoped root.
+    The global default (``~/.mempalace``) still applies for the ``default``
+    profile and whenever ``PALACE_ROOT`` / ``MEMPALACE_PALACE_PATH`` are
+    explicitly set (explicit user config wins over the profile convention).
     """
-    root = _palace_layout_root(None)
+    profile = active_profile_name()
+    env = os.environ.get("PALACE_ROOT") or os.environ.get("MEMPALACE_PALACE_PATH")
+    if env:
+        root = Path(env)
+    elif profile and profile != "default":
+        root = profile_home(profile) / ".mempalace"
+    else:
+        root = Path.home() / ".mempalace"
     try:
         return Path(palace_path_mod.palace_data_dir(root))
     except Exception:
@@ -828,6 +841,106 @@ def check_wing_isolation(strict: bool = False) -> CheckResult:
         name="wing_isolation",
         status=status,
         message=message,
+        hint=hint,
+    )
+
+
+def _list_palace_wing_row_counts(data_dir: Path) -> Optional[Dict[str, int]]:
+    """Row-weighted wing census for the palace at *data_dir*.
+
+    Maps each stored ``wing`` value to its embedding-row count via
+    ``GROUP BY`` over ``embedding_metadata`` (issue #305 — a row-weighted
+    census, unlike the set-based :func:`_list_palace_wings`).  ``None``
+    wing values are reported under the ``""`` key so the classifier sees
+    them as empty.  Returns ``None`` when the store is missing/unreadable
+    or has no wing rows at all.
+    """
+    import sqlite3
+    chroma = data_dir / "chroma.sqlite3"
+    if not chroma.exists():
+        chroma = data_dir / "palace" / "chroma.sqlite3"
+    if not chroma.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{chroma}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT COALESCE(string_value, ''), COUNT(*) "
+                "FROM embedding_metadata WHERE key='wing' "
+                "GROUP BY COALESCE(string_value, '')"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return None
+    return {w: n for w, n in rows} if rows else None
+
+
+def check_wing_orphans(strict: bool = False) -> CheckResult:
+    """Row-weighted wing-orphan census (issue #305).
+
+    Unlike :func:`check_wing_isolation` (which inspects the *set* of distinct
+    wings and catches a few stray misroutes), this check counts *rows* per
+    wing and reports what fraction of the profile's embedding rows are
+    stranded in wings that wing-scoped recall will never query —
+    timestamps, empty/``None`` wings, case-variants, unrecognized slugs.
+    Those rows are silently invisible: written but never retrievable.
+
+    Status decision (gated by the ``wing_isolation.warn_on_orphaned`` config
+    flag, default on):
+
+    * No palace data / no orphans → PASS.
+    * Orphans present → WARN, with orphan count + percentage + top wings in
+      the message and a ``--wing-migrate`` hint.
+    * Orphans present + ``--strict`` → FAIL.
+    * Orphans present + ``warn_on_orphaned: false`` → PASS (stats only).
+
+    Detection / observability only — never moves data (use
+    ``memchorus-wing-migrate`` for that).
+    """
+    import memchorus.wing_orphans as _orphans
+
+    profile = active_profile_name()
+    data_dir = _active_palace_dir()
+    counts = _list_palace_wing_row_counts(data_dir)
+
+    if counts is None:
+        return CheckResult(
+            name="wing_orphans",
+            status=PASS,
+            message=f"{data_dir}: no palace wing data to census (fresh install)",
+        )
+
+    report = _orphans.orphan_report(profile, counts)
+    if report.is_clean:
+        return CheckResult(
+            name="wing_orphans",
+            status=PASS,
+            message=f"{profile}: all {report.total_rows} embedding rows "
+                    f"in-namespace — 0 orphaned",
+        )
+
+    warn = _orphans.warn_on_orphaned_enabled(profile)
+    if not warn:
+        return CheckResult(
+            name="wing_orphans",
+            status=PASS,
+            message=f"{profile}: {report.orphan_rows} of {report.total_rows} "
+                    f"rows ({report.orphan_pct:.0f}%) orphaned "
+                    f"(warn_on_orphaned=false — stats only)",
+            hint="Reassign with 'memchorus-wing-migrate --apply'.",
+        )
+
+    status = FAIL if strict else WARN
+    hint = "Reassign with 'memchorus-wing-migrate --apply' (dry-run first)."
+    if strict:
+        hint += " Under --strict, orphaned rows are treated as a failure."
+    return CheckResult(
+        name="wing_orphans",
+        status=status,
+        message=report.summary() + (
+            " — these rows are invisible to wing-scoped recall (issue #305)"
+        ),
         hint=hint,
     )
 
@@ -2500,6 +2613,7 @@ def run_checks(strict: bool = False) -> List[CheckResult]:
         check_test_suite,
         check_version_alignment,
         lambda: check_wing_isolation(strict=strict),
+        lambda: check_wing_orphans(strict=strict),
     ]
     return [fn() for fn in checks]
 
@@ -3181,6 +3295,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                                          Out-of-namespace wings are WARN; under
                                          ``--strict`` cross-profile misroutes
                                          are promoted to FAIL (non-zero exit).
+        memchorus-doctor --wing-orphans   row-weighted census of embedding rows
+                                         stranded in unmapped wing values
+                                         (#305): timestamps, empty/None wings,
+                                         case-variants, unrecognized slugs.
+                                         PASS/WARN/FAIL with count + percentage;
+                                         ``--strict`` promotes orphans to FAIL.
+        memchorus-doctor --wing-migrate [APPLY]
+                                         orphan wing reassignment (#305):
+                                         dry-run by default (report the plan),
+                                         ``APPLY`` repoints wing metadata in
+                                         chroma.sqlite3 (backup made first).
+                                         Never touches the embeddings table.
         memchorus-doctor --project <name>  resolve the keyed ``project:<name>``
                                          record (IMPL #163.4 / spec §4.7) and
                                          print its location / standard /
@@ -3386,6 +3512,50 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             _render_provenance_human(report)
         return _provenance_exit_code(report)
+
+    # ------------------------------------------------------------------ #
+    # --wing-orphans — row-weighted orphan census (#305)                  #
+    # --wing-migrate [APPLY] — orphan wing reassignment (#305)            #
+    # ------------------------------------------------------------------ #
+    if "--wing-orphans" in args:
+        results = [check_wing_orphans(strict="--strict" in args)]
+        _emit(results, as_json)
+        return 1 if any(r.status == FAIL for r in results) else 0
+
+    if "--wing-migrate" in args:
+        import memchorus.wing_migrate as _wing_migrate
+
+        idx = args.index("--wing-migrate")
+        apply_ = (
+            idx + 1 < len(args)
+            and not args[idx + 1].startswith("--")
+            and args[idx + 1].upper() == "APPLY"
+        )
+        profile = None
+        if "--profile" in args:
+            pi = args.index("--profile")
+            if pi + 1 < len(args):
+                profile = args[pi + 1]
+        palace_dir = None
+        if "--palace-root" in args:
+            pr = args.index("--palace-root")
+            if pr + 1 < len(args):
+                palace_dir = Path(args[pr + 1]).expanduser()
+        result = _wing_migrate.apply_migration(
+            palace_dir=palace_dir,
+            profile=profile,
+            dry_run=not apply_,
+            make_backup=True,
+        )
+        if as_json:
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+        else:
+            print(result.human_summary())
+        if result.error:
+            return 2
+        if not result.dry_run and result.orphan_rows_after > 0:
+            return 1
+        return 0
 
     # ------------------------------------------------------------------ #
     # --deps-check / default install-health report                         #
