@@ -150,6 +150,8 @@ def test_marker_path_under_profile_data_dir(legacy_home):
 # ---------------------------------------------------------------------------
 
 def test_migrate_moves_legacy_palace_into_home(legacy_home):
+    """Verify that legacy palace data under HOME/.mempalace/default gets
+    migrated to the canonical in-home directory."""
     res = migrate_profile_state("default")
     assert isinstance(res, StateMigrationResult)
 
@@ -157,9 +159,14 @@ def test_migrate_moves_legacy_palace_into_home(legacy_home):
     legacy_palace = legacy_home / ".mempalace" / "default"
     assert not legacy_palace.exists()
     # …and the in-home canonical dir has the data.
-    canonical = legacy_home / ".hermes" / "mempalace"
-    assert canonical.exists()
-    assert (canonical / "palace" / "chroma.sqlite3").exists()
+    # Canonical path: HERMES_HOME/profiles/default/.mempalace/palace
+    from memchorus.state_migrate import _canonical_in_home
+    expected_canonical = _canonical_in_home("default")
+    assert expected_canonical.exists(), (
+        f"Expected canonical at {expected_canonical}, but it does not exist. "
+        f"HERMES_HOME={os.environ.get('HERMES_HOME', 'unset')}"
+    )
+    assert (expected_canonical / "palace" / "chroma.sqlite3").exists()
 
     # Moved pairs recorded.  (Separator-agnostic: on Windows the legacy path
     # uses backslashes, so a literal "/.mempalace/default" never matches.)
@@ -238,16 +245,16 @@ def test_migrate_dry_run_moves_nothing(legacy_home):
 
 def test_migrate_preserves_source_when_dest_populated(legacy_home):
     # Pre-populate the in-home canonical dir with authoritative data.
-    canonical = legacy_home / ".hermes" / "mempalace" / "existing"
-    canonical.mkdir(parents=True)
+    from memchorus.state_migrate import _canonical_in_home
+    canonical = _canonical_in_home("default")  # HERMES_HOME/profiles/default/.mempalace/palace
+    canonical.mkdir(parents=True, exist_ok=True)
     (canonical / "authoritative.sqlite3").write_bytes(b"keep-me")
 
     res = migrate_profile_state("default")
 
     # The legacy palace source was preserved as .bak, not clobbered.
-    legacy_palace = legacy_home / ".mempalace" / "default"
     assert (legacy_home / ".mempalace" / "default.bak").exists()
-    assert not legacy_palace.exists()
+    assert not (legacy_home / ".mempalace" / "default").exists()
     # The authoritative destination is untouched.
     assert (canonical / "authoritative.sqlite3").read_bytes() == b"keep-me"
     assert res.preserved
@@ -272,7 +279,9 @@ def test_migrate_rewrites_data_dir_to_canonical(legacy_home):
     new_cfg = legacy_home / ".hermes" / "memchorus.yaml"
     assert new_cfg.exists()
     text = new_cfg.read_text()
-    canonical = str(legacy_home / ".hermes" / "mempalace")
+    # Canonical path from _canonical_in_home
+    from memchorus.state_migrate import _canonical_in_home
+    canonical = str(_canonical_in_home("default"))
     # The old legacy location must be gone from the rewritten config.
     assert ".mempalace/default" not in text
     # The canonical path must now be present.

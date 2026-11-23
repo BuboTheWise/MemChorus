@@ -317,10 +317,18 @@ class TestCLIEntryPoint:
         base["PYTHONPATH"] = os.pathsep.join(cleaned)
         return base
 
+    @staticmethod
+    def _mc_cmd(env):
+        """Return a PATH-safe command to invoke the calibration engine."""
+        # Prefer direct python -m invocation so we don't depend on console script
+        # entry points being on PATH (they may not be in isolated test envs).
+        return [sys.executable, "-m", "memchorus.calibration_engine"]
+
     def test_main_help(self, tmp_path):
-        """--help returns exit code 0 and expected output (tested via entry point)."""
+        """--help returns exit code 0 and expected output."""
+        cmd = self._mc_cmd({})
         result = subprocess.run(
-            ["memchorus-recalibrate", "--help"],
+            cmd + ["--help"],
             capture_output=True,
             text=True,
             env=self._env(str(tmp_path)),
@@ -329,9 +337,10 @@ class TestCLIEntryPoint:
         assert "profile" in result.stdout.lower()
 
     def test_main_profile_output(self, tmp_path):
-        """Running with --profile produces expected output format (tested via entry point)."""
+        """Running with --profile produces expected output format."""
+        cmd = self._mc_cmd({})
         result = subprocess.run(
-            ["memchorus-recalibrate", "--profile", "test_cli"],
+            cmd + ["--profile", "test_cli"],
             capture_output=True,
             text=True,
             env=self._env(str(tmp_path)),

@@ -42,6 +42,7 @@ def _install_test_home_isolation():
     _pre = os.environ.get("HOME") or os.environ.get("USERPROFILE") or ""
     if _pre:
         os.environ.setdefault("_MC269_REAL_HOME", _pre)
+
     # Issue #269: the suite writes only to a private temp root, never to the
     # operator's real tree (~/.hermes, ~/.mempalace, ~/.memchoris-data, ...).
     #
@@ -50,8 +51,19 @@ def _install_test_home_isolation():
     # profile home (~/.hermes/profiles/<p>/) — the exact tree #269 protects.
     # Redirecting to a fresh temp root is the whole point; a CI job that
     # genuinely wants to pin a specific location can set MC269_TEST_HOME.
-    pinned = os.environ.get("MC269_TEST_HOME")
-    root = pinned if (pinned and os.path.isdir(pinned)) else _tempfile.mkdtemp(prefix="mc269-test-home-")
+    #
+    # CRITICAL: Save and override TMPDIR *before* calling mkdtemp so that if
+    # TMPDIR already points inside the operator's home (e.g. Hermes scratch),
+    # the temp root itself lands outside any real user tree (#319 regression).
+    _saved_tmpdir = os.environ.get("TMPDIR")
+    os.environ["TMPDIR"] = "/tmp"  # guaranteed outside any user's home
+    try:
+        pinned = os.environ.get("MC269_TEST_HOME")
+        root = pinned if (pinned and os.path.isdir(pinned)) else _tempfile.mkdtemp(prefix="mc269-test-home-")
+    finally:
+        if _saved_tmpdir is not None:
+            os.environ["TMPDIR"] = _saved_tmpdir
+
     os.environ["HERMES_HOME"] = root
     # Neutralise every direct home-resolution path (Path.home / expanduser("~")).
     os.environ["HOME"] = root                    # POSIX (no-op on Windows, harmless)
