@@ -1114,7 +1114,18 @@ class _McpClient:
         wing: Optional[str] = None,
         room: Optional[str] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """mempalace_search -\u003e list of dicts."""
+        """mempalace_search -> list of dicts."""
+        # mempalace's MCP server caps search/list ``limit`` at 100
+        # (mcp_server._MAX_RESULTS); a larger value is rejected as
+        # "Invalid params ... 'limit' must be at most 100", which tears down
+        # the persistent MCP session and kills recall injection in-process.
+        # Callers such as the lifecycle manager pass limit=10_000 / limit=500
+        # to enumerate broadly — clamp here so *every* caller stays under the
+        # server ceiling regardless of intent. (#315)
+        try:
+            limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError):
+            limit = 5
         args: Dict[str, Any] = {"query": query, "limit": limit}
         if wing is not None:
             args["wing"] = wing
@@ -1237,6 +1248,38 @@ class _McpClient:
                 )
         except Exception as exc:  # pragma: no cover - guard must never break the write
             logger.debug("add_drawer boundary check skipped: %s", exc)
+
+        # --- write-time orphan enforcement (issue #305) -------------------
+        # #286 catches *foreign* wings (a small number of misrouted rows).
+        # #305 is the row-weighted problem: the write path sometimes stores
+        # a timestamp / empty / case-variant / unrecognized slug as the wing,
+        # and those rows are silently invisible to wing-scoped recall.  When
+        # ``wing_isolation.enforce_on_write`` is enabled (default), coerce the
+        # wing to its canonical in-namespace target before forwarding to the
+        # server so *new* writes can no longer strand rows.  Detection-only
+        # (log, write as-is) when disabled — the #286 behaviour above.
+        try:
+            import memchorus.wing_orphans as _orphans
+
+            _prof = active_profile_name()
+            _valid = _orphans.valid_wings_for_profile(_prof)
+            _info = _orphans.classify_wing_value(wing, _valid)
+            if _info is not None and _info.suggested_target:
+                if _orphans.enforce_on_write_enabled(_prof):
+                    logger.info(
+                        "add_drawer boundary: coercing orphan wing %r (%s) "
+                        "-> %r for profile %r (issue #305)",
+                        wing, _info.category, _info.suggested_target, _prof,
+                    )
+                    args["wing"] = _info.suggested_target
+                else:
+                    logger.warning(
+                        "add_drawer boundary: orphan wing %r (%s) for profile "
+                        "%r — writing anyway (enforce_on_write=false, #305)",
+                        wing, _info.category, _prof,
+                    )
+        except Exception as exc:  # pragma: no cover - guard must never break the write
+            logger.debug("add_drawer orphan guard skipped: %s", exc)
 
         result = self.call_tool("mempalace_add_drawer", args)
         if result is None:

@@ -193,18 +193,19 @@ class TestRunnerPresence:
         assert callable(check_version_alignment)
         assert callable(check_test_suite)
 
-    def test_check_count_is_13(self):
-        """run_checks() returns 13 results.
+    def test_check_count_is_14(self):
+        """run_checks() returns 14 results.
 
         Was 9 pre-#222, 10 post-#222 (version_alignment added), 11 after the
-        earlier 2.0.x growth, 12 post-#286 (wing_isolation added, last), and
-        13 post-#312 (inprocess_interpreter / probe E added).
+        earlier 2.0.x growth, 12 post-#286 (wing_isolation added, last),
+        13 post-#312 (inprocess_interpreter / probe E added), and 14 post-#305
+        (wing_orphans row-weighted census added, last).
         """
         from memchorus.install_doctor import run_checks
 
         results = run_checks()
-        assert len(results) == 13, (
-            f"Expected 13 checks, got {len(results)}. "
+        assert len(results) == 14, (
+            f"Expected 14 checks, got {len(results)}. "
             f"Names: {[r.name for r in results]}"
         )
 
@@ -217,19 +218,20 @@ class TestRunnerPresence:
         )
 
     def test_version_alignment_is_last(self):
-        """#286 note: wing_isolation is now the last check.
+        """#305 note: wing_orphans is now the last check.
 
         Pre-#286, version_alignment (added by #222, post-``check_test_suite``)
         was the final entry. #286 appended ``check_wing_isolation`` after it,
-        so the positional invariant we actually want to pin is:
+        and #305 appended ``check_wing_orphans`` (the row-weighted orphan
+        census) after that. The positional invariant we pin is therefore:
         (a) version_alignment still sits immediately after test_suite, and
-        (b) wing_isolation is now the last entry.
+        (b) wing_orphans is now the last entry.
         """
         from memchorus.install_doctor import run_checks
 
         names = [r.name for r in run_checks()]
-        assert names[-1] == "wing_isolation", (
-            f"Expected wing_isolation last (added by #286), got order: {names}"
+        assert names[-1] == "wing_orphans", (
+            f"Expected wing_orphans last (added by #305), got order: {names}"
         )
         # The #222 positional invariant is preserved: version_alignment follows
         # check_test_suite.
