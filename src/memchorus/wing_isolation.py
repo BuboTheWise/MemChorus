@@ -45,6 +45,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import FrozenSet, Iterable, List, Optional, Set
 
+import sqlite3  # for database queries
+import yaml  # for config loading
+import os  # for path operations
+
 __all__ = [
     "NATIVE_WINGS",
     "expected_wings",
@@ -52,6 +56,7 @@ __all__ = [
     "WingAudit",
     "audit_palace_wings",
     "classify_wing",
+    "detect_orphan_wings",  # GH-305 P1
 ]
 
 # The canonical MemChorus writer wings.  The live routing
@@ -137,6 +142,134 @@ def expected_wings(profile: Optional[str]) -> FrozenSet[str]:
     return frozenset(wings)
 
 
+def detect_orphan_wings(config_path: str, profile: Optional[str]) -> dict:
+    """Detect orphaned entries in a profile's wings (GH-305 Phase 1).
+
+    An entry is "orphaned" if its ``wing`` value doesn't match expected native
+    wings for that profile. Native wings are defined by:
+    
+    * SHARED_WRITER_WINGS (memchorus_*) — same for all profiles
+    * SHARED_CANONICAL_WINGS (self-improvement) 
+    * Profile's bare name (GH-304: older writer form)
+    * wing_<profile> prefix (GH-286 canonical form)
+    * profile_<category> legacy keys (GH-297 via _build_wing_map)
+    
+    Reads from a profile's palace SQLite store — read-only.
+
+    Args:
+        config_path: Path to memchorus.yaml (used to resolve profile name if not provided)
+        profile: Profile name (defaults to dirname of config_path basename)
+
+    Returns:
+        dict with orphan stats, mapped wings list, and top orphaned values
+    
+    Example usage:
+        >>> result = detect_orphan_wings('/path/to/memchorus.yaml', 'myprofile')
+        >>> print(result['orphan_pct'])  # e.g. 0.0 (all entries native)
+    """
+    import sqlite3
+    
+    # Use module-level constants (defined at top of this file)
+    
+    # Normalize profile name
+    norm_profile = _norm_profile(profile)
+    
+    # Determine expected native wings for this profile
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f.read())
+        
+        # Load wing_map from config if present (for legacy category handling)
+        wing_map = config.get('mempalace_config', {}).get(
+            'mempalace_routing', 
+            {}
+        ).get('wing_map', {})
+    except Exception:
+        config = None
+    
+    # Compute expected native wings
+    native_wings = set(SHARED_WRITER_WINGS) | SHARED_CANONICAL_WINGS
+    if norm_profile != "default":
+        for cat in LEGACY_CATEGORY_WINGS:
+            native_wings.add(f"{norm_profile}_{cat}")  # profile_<category> (GH-297)
+        native_wings.add(f"wing_{norm_profile}")  # GH-286 canonical wing form
+    
+    expected_native = frozenset(native_wings)
+    
+    # Build palace path from config directory
+    config_dir = os.path.dirname(config_path)
+    palace_path = os.path.join(
+        config_dir, 
+        '.mempalace/palace/chroma.sqlite3'
+    )
+    
+    if not os.path.exists(palace_path):
+        return {
+            'error': f'Palace file not found: {palace_path}',
+            'profile': norm_profile,
+        }
+    
+    conn = sqlite3.connect(palace_path)
+    cursor = conn.cursor()
+    
+    # Get all distinct wing values from Chroma
+    try:
+        cursor.execute("""SELECT DISTINCT string_value 
+                          FROM embedding_metadata 
+                          WHERE key = 'wing' AND string_value IS NOT NULL""")
+        actual_wings = [row[0] for row in cursor.fetchall()]
+    except sqlite3.OperationalError as e:
+        conn.close()
+        return {
+            'error': f'Could not query wing field: {e}',
+            'profile': norm_profile,
+        }
+    
+    # Count entries per wing value
+    cursor.execute("""SELECT string_value, COUNT(*) as cnt 
+                      FROM embedding_metadata em
+                      WHERE em.key = 'wing' AND em.string_value IS NOT NULL
+                      GROUP BY string_value""")
+    distribution = cursor.fetchall()
+    
+    # Calculate orphaned vs native counts
+    orphaned_wing_values = [w for w, _ in distribution if w not in expected_native]
+    
+    placeholders = ','.join(['?'] * len(orphaned_wing_values)) if orphaned_wing_values else ''
+    
+    top_orphaned = []
+    if orphaned_wing_values and placeholders:
+        cursor.execute(f"""SELECT string_value, COUNT(*) as cnt 
+                          FROM embedding_metadata em
+                          WHERE em.key = 'wing' AND em.string_value IN ({placeholders})
+                          GROUP BY string_value
+                          ORDER BY cnt DESC, string_value ASC""", orphaned_wing_values)
+        top_orphaned = cursor.fetchall()
+    
+    # Filter to only actual orphans (not expected native)
+    native_count = sum(cnt for w, cnt in distribution if w in expected_native)
+    orphaned_count = sum(cnt for w, cnt in distribution if w not in expected_native)
+    total_entries = sum(cnt for w, cnt in distribution)  # Total number of wing entries, not distinct values
+    
+    orphan_pct = round((orphaned_count / total_entries) * 100, 1) if total_entries > 0 else 0.0
+    
+    # Get native wings found (actual values present)
+    native_wings_found = sorted([w for w, _ in distribution if w in expected_native])
+    
+    conn.close()
+    
+    return {
+        'profile': norm_profile,
+        'total_entries': total_entries,
+        'orphaned_count': orphaned_count,
+        'orphan_pct': orphan_pct,
+        'mapped_wings': sorted(actual_wings),
+        'top_orphaned_wings': [(w, cnt) for w, cnt in top_orphaned],
+        'native_wings': native_wings_found,
+        'expected_native': sorted(expected_native),
+    }
+
+
 @dataclass(frozen=True)
 class WingIssue:
     """One foreign wing found inside a profile-scoped palace."""
@@ -155,7 +288,7 @@ class WingIssue:
         }
 
 
-@dataclass
+@dataclass(frozen=True)
 class WingAudit:
     """Outcome of :func:`audit_palace_wings`."""
 
