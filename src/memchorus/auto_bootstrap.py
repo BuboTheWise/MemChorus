@@ -42,7 +42,16 @@ _DEFAULTS: Dict[str, Any] = {
 
 # Wing/room routing defaults (§1 + §3 of spec).  Mirrored here so that
 # ``mempalace_routing`` can be configured before the Orchestrator is built.
+#
+# GH-325: ``routing.source`` is the required marker that a routing section is
+# *active*.  MemChorus (and the external wing-data-quality audits) treat a
+# ``mempalace_routing`` section without ``routing.source`` as a silent no-op
+# fallback — writes succeed but land on wings that are unresolvable by
+# drawer/room queries.  Every generated/injected routing section therefore
+# carries ``routing.source: chroma`` (the Chroma-backed MemPalace store).
+ROUTING_SOURCE_CHROMA = "chroma"
 _DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
+    "routing.source": ROUTING_SOURCE_CHROMA,
     "wing_map": {
         "DECISION": "memchorus_decisions",
         "LEARNING": "memchorus_learning",
@@ -58,6 +67,31 @@ _DEFAULT_MEMPALACE_ROUTING: Dict[str, Any] = {
         "default":  "general",
     },
 }
+
+
+def ensure_routing_source(routing: Any) -> bool:
+    """Ensure a ``mempalace_routing`` mapping carries the required
+    ``routing.source`` marker (GH-325).
+
+    A ``mempalace_routing`` section without ``routing.source`` is treated as
+    a silent no-op fallback (writes succeed but are unresolvable by
+    drawer/room queries).  This injects ``routing.source=chroma`` when the
+    key is missing — mutating *routing* in place — and returns ``True``.
+    Returns ``False`` when *routing* is not a dict so the caller can fall
+    back to :data:`_DEFAULT_MEMPALACE_ROUTING` (which carries the marker).
+    An already-present value is never overwritten.
+    """
+    if not isinstance(routing, dict):
+        return False
+    if "routing.source" not in routing:
+        routing["routing.source"] = ROUTING_SOURCE_CHROMA
+        logger.info(
+            "GH-325: mempalace_routing was missing required routing.source — "
+            "injected routing.source=%s (without it, wing routing silently "
+            "falls back to no-op)",
+            ROUTING_SOURCE_CHROMA,
+        )
+    return True
 
 
 # --- helpers ----------------------------------------------------------------
@@ -354,6 +388,22 @@ def _bootstrap() -> Optional[Any]:
         if isinstance(user_override, dict):
             existing = orchestrator_cfg.setdefault(adapter_key, {})
             existing.update(user_override)
+
+    # GH-325: ensure the routing section is marked active.  Profiles whose
+    # memchorus.yaml was generated before this fix carry a
+    # ``mempalace_routing`` section without the required ``routing.source``
+    # marker, which silently degrades to no-op wing routing.  Inject the
+    # marker dynamically (no YAML edit required) so already-installed
+    # profiles get working routing on the next bootstrap.
+    _mp_cfg = orchestrator_cfg.get("mempalace_config")
+    if isinstance(_mp_cfg, dict):
+        if not ensure_routing_source(_mp_cfg.get("mempalace_routing")):
+            _mp_cfg["mempalace_routing"] = dict(_DEFAULT_MEMPALACE_ROUTING)
+            logger.info(
+                "GH-325: no mempalace_routing section present — using "
+                "defaults (routing.source=%s)",
+                ROUTING_SOURCE_CHROMA,
+            )
 
     # Forward any remaining non-adapter config through to the orchestrator.
     orchestrator_cfg.update(config)

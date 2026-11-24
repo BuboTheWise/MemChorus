@@ -137,9 +137,16 @@ def generate_config(profile: Optional[str] = None,
         config_dict["profile_name"] = profile
 
     # --- mempalace_config section ------------------------------------------
+    # GH-325: ``routing.source`` is the required marker that makes the
+    # ``mempalace_routing`` section *active*.  Without it the section is
+    # treated as a silent no-op fallback — wing-scoped writes succeed but
+    # are unresolvable by drawer/room queries.  Always inject it.
     config_dict["mempalace_config"] = {
         "data_dir": resolved_ddir,
-        "mempalace_routing": {"wing_map": _build_wing_map(profile)},
+        "mempalace_routing": {
+            "routing.source": "chroma",
+            "wing_map": _build_wing_map(profile),
+        },
         "runtime": {"mempalace_home": resolved_ddir},
     }
 

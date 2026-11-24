@@ -1567,6 +1567,24 @@ class MemPalaceMemorySource(MemorySource):
         else:
             self._routing_config = {}
 
+        # GH-325: ``routing.source`` is the required marker that makes a
+        # routing section *active*.  A section without it is a silent no-op
+        # fallback (writes succeed but land on wings unresolvable by
+        # drawer/room queries).  Record it for introspection and warn when
+        # a populated routing section is missing the marker.
+        self.routing_source: Optional[str] = None
+        _rs = self._routing_config.get("routing.source")
+        if isinstance(_rs, str) and _rs:
+            self.routing_source = _rs
+        elif self._routing_config:
+            logger.warning(
+                "GH-325: mempalace_routing is missing the required "
+                "routing.source marker — wing routing is in no-op fallback "
+                "mode (writes succeed but are unresolvable by drawer/room "
+                "queries). Inject 'routing.source: chroma' (auto_bootstrap / "
+                "auto_init do this automatically)."
+            )
+
         wing_map_raw = self._routing_config.get("wing_map", None)
         if isinstance(wing_map_raw, dict) and wing_map_raw:
             # Build a case-insensitive lookup table: uppercase key → value.
