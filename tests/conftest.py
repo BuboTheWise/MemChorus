@@ -35,6 +35,86 @@ import pytest
 # tests unit-testing the resolver itself (test_hermes_home.py) already manage
 # HERMES_HOME/HOME explicitly and keep holding because both sides of their
 # assertions compute against the same isolated HOME.
+
+
+def _guaranteed_outside_home_tmp() -> str:
+    """Pick a system temp dir guaranteed to sit OUTSIDE the operator's home.
+
+    ``tempfile.mkdtemp()`` resolves its base dir from the EXISTING OS temp
+    env vars (``TMPDIR`` on POSIX, ``TEMP``/``TMP`` on Windows).  When those
+    point inside the operator's real home — e.g. an agent runtime's scratch
+    dir under ``~/.hermes/...`` — a temp root created for #269 lands inside
+    the very tree #269 protects, and the HOME-isolation regression tests
+    fail (GH-324).  This returns the first usable candidate from the OS's
+    default temp locations, which on every supported platform sit outside
+    the home tree.
+    """
+    home = (os.environ.get("HOME") or os.environ.get("USERPROFILE") or "").rstrip("/\\")
+
+    def _usable(p: str) -> bool:
+        try:
+            return os.path.isdir(p) and os.access(p, os.W_OK)
+        except (OSError, ValueError):
+            return False
+
+    def _outside_home(p: str) -> bool:
+        if not home:
+            return True
+        try:
+            ap, ah = os.path.realpath(p), os.path.realpath(home)
+        except OSError:
+            return True
+        return ap != ah and not ap.startswith(ah + os.sep)
+
+    if sys.platform == "win32":
+        cands = [os.path.join(os.environ.get("SYSTEMROOT", r"C:\Windows"), "Temp"), r"C:\TEMP"]
+    else:
+        cands = ["/tmp", "/var/tmp"]
+    for c in cands:
+        if _usable(c) and _outside_home(c):
+            return c
+    # Exotic setup: every candidate missing/unwritable/in-home.  Fall back to
+    # tempfile's own resolution (still a defined base dir).
+    return _tempfile.gettempdir()
+
+
+_OS_TEMP_ENV_KEYS = ("TMPDIR", "TEMP", "TMP")
+
+
+def _mkdtemp_outside_home(prefix: str) -> str:
+    """``mkdtemp()`` whose base dir is guaranteed outside the real home (GH-324).
+
+    Pins the OS temp env vars to a system temp location for the duration of
+    the call, then restores whatever was there.  The isolation step below
+    re-points them at the test root regardless, so this only affects where
+    the root itself is created.
+
+    Two env-var writes are NOT enough on every interpreter: some builds
+    (observed on Python 3.14.x) cache the resolved temp dir in the module
+    global ``tempfile.tempdir`` after its first use, so any earlier
+    ``gettempdir``/``mkstemp`` call in the process (pytest itself, plugin
+    startup) pins the stale base dir for the whole process.  We therefore
+    also override ``tempfile.tempdir`` directly and restore the previous
+    value afterwards — the documented override knob on all supported
+    versions.
+    """
+    saved_env = {k: os.environ.get(k) for k in _OS_TEMP_ENV_KEYS}
+    saved_tempdir = getattr(_tempfile, "tempdir", None)
+    base = _guaranteed_outside_home_tmp()
+    for k in _OS_TEMP_ENV_KEYS:
+        os.environ[k] = base
+    try:
+        _tempfile.tempdir = base
+        return _tempfile.mkdtemp(prefix=prefix)
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        _tempfile.tempdir = saved_tempdir
+
+
 def _install_test_home_isolation():
     # Capture the REAL home (pre-isolation, cross-platform) so the regression
     # test can assert suite writes never land there. Exposed under a distinct
@@ -50,8 +130,13 @@ def _install_test_home_isolation():
     # profile home (~/.hermes/profiles/<p>/) — the exact tree #269 protects.
     # Redirecting to a fresh temp root is the whole point; a CI job that
     # genuinely wants to pin a specific location can set MC269_TEST_HOME.
+    #
+    # GH-324: create that root via _mkdtemp_outside_home() — a plain
+    # tempfile.mkdtemp() honours a TMPDIR that is itself inside the real
+    # home (e.g. an agent scratch dir under ~/.hermes/...), silently
+    # recreating exactly the leak #269 closed.
     pinned = os.environ.get("MC269_TEST_HOME")
-    root = pinned if (pinned and os.path.isdir(pinned)) else _tempfile.mkdtemp(prefix="mc269-test-home-")
+    root = pinned if (pinned and os.path.isdir(pinned)) else _mkdtemp_outside_home("mc269-test-home-")
     os.environ["HERMES_HOME"] = root
     # Neutralise every direct home-resolution path (Path.home / expanduser("~")).
     os.environ["HOME"] = root                    # POSIX (no-op on Windows, harmless)
