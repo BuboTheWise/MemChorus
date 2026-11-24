@@ -311,6 +311,72 @@ def _normalize_body(body: object) -> tuple:
     return repr(body), False
 
 
+def _on_disk_profile_names() -> List[str]:
+    """Named profile leaves present under ``<base>/profiles/`` (read-only).
+
+    Best-effort enumeration for :func:`_candidate_profiles` — a pointer body may
+    live under a sibling profile the injected directive does not name, so the
+    standalone CLI widens its search to every leaf on disk.  Returns an empty
+    list when the directory is absent or unreadable.
+    """
+    try:
+        from memchorus.hermes_home import _base_home
+
+        profiles_dir = _base_home() / "profiles"
+        if not profiles_dir.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in profiles_dir.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+    except Exception:  # noqa: BLE001 - best-effort enumeration
+        return []
+
+
+def _candidate_profiles(profile: Optional[str]) -> List[Optional[str]]:
+    """Profile leaves to probe for ``retrieve``, in priority order.
+
+    GH-330 / GH-329: a pointer key's injected directive names the store it was
+    written under (``hermes_default`` → ``default``), but the body may
+    physically live in a *different* leaf — the reader's own profile (e.g.
+    ``cthugha``) — because the writing agent ran in its own shell.  Probing
+    only the named leaf cold-misses (the cross-agent miss class behind #259).
+    So the standalone CLI probes, in order:
+
+      1. the ``--profile`` value (the store the directive names);
+      2. the ambient active profile (``$HERMES_HOME`` / ``$HERMES_PROFILE``);
+      3. ``default``;
+      4. any other profile leaves present on disk under ``<base>/profiles/``.
+
+    De-duplicated, order preserved, never empty.  Only the *first* leaf gets a
+    live MCP refetch (see :func:`run_retrieve`); the rest are local-cache /
+    flat-store probes, so a warm hit anywhere wins without N live calls.
+    """
+    cands: List[Optional[str]] = []
+
+    def _add(name: Optional[str]) -> None:
+        # name=None means "base-level cache" (legacy location); dedup via ""
+        key = name if name is not None else ""
+        if key not in [c if c is not None else "" for c in cands]:
+            cands.append(name)
+
+    _add(profile)
+    try:
+        _add(active_profile())
+    except Exception:  # noqa: BLE001 - env-based; never fatal here
+        pass
+    # Base-level cache (legacy location, profile_name=None): checked after the
+    # ambient profile so the reader's own leaf wins first, but before "default"
+    # so pre-separation data still resolves (GH-330 / #255 warm-cache path).
+    _add(None)
+    _add("default")
+    for name in _on_disk_profile_names():
+        _add(name)
+
+    return cands or ["default"]
+
+
 def run_retrieve(key: str, as_json: bool = False,
                  profile: Optional[str] = None) -> int:
     """Execute ``memchorus-recall retrieve <key>`` (D1, spec-253).
@@ -358,11 +424,20 @@ def run_retrieve(key: str, as_json: bool = False,
             )
             return 2
         bare_source = None
+        bare_profiles = None
+        _bare_source_cls = None
     else:
         # Standalone CLI — no live orchestrator in this process.
+        #
+        # GH-330 / GH-329: honour --profile AND fall back across the candidate
+        # profile leaves (see _candidate_profiles).  The old empty-config source
+        # read one shared cache dir by exact filename and never consulted the
+        # per-leaf flat-store, so a pointer body written to the reader's own
+        # leaf cold-missed (#259).  We now build one profile-scoped source per
+        # candidate leaf and probe them in priority order.
         try:
             from memchorus.mempalace_memory_source import MemPalaceMemorySource
-            bare_source = MemPalaceMemorySource(name="mempalace", config={})
+            _bare_source_cls = MemPalaceMemorySource
         except Exception as exc:
             print(
                 f"error: no orchestrator and MemPalaceMemorySource unavailable: "
@@ -370,17 +445,34 @@ def run_retrieve(key: str, as_json: bool = False,
                 file=sys.stderr,
             )
             return 2
+        bare_profiles = _candidate_profiles(profile)
+        bare_source = None  # unused; the candidate loop builds sources below
         retrieve_fn = source_fn = None
 
     # --- Execute retrieval --------------------------------------------------
     try:
-        if bare_source is not None:
-            # MemPalaceMemorySource.retrieve() supports fallback="live"
-            # (defined via _refetch_live) — pass it so a warm cache hit wins
-            # and a cold miss attempts a live MCP search before giving up.
-            # This mirrors exactly what MemoryOrchestrator.retrieve() does
-            # at line 1879-1883 of orchestrator.py.
-            result = bare_source.retrieve(key, fallback="live")
+        if bare_profiles is not None and _bare_source_cls is not None:
+            # GH-330 / GH-329: probe the candidate profile leaves in priority
+            # order.  The first leaf does a full local→live→flat-store resolve;
+            # the rest are local/flat-store-only (a warm hit on any leaf is
+            # authoritative, so we avoid N live MCP calls).  This is what makes
+            # ``memchorus-recall retrieve <pointer-key>`` resolve wherever the
+            # body actually is, instead of 404-ing on the named leaf alone.
+            result = None
+            for idx, prof in enumerate(bare_profiles):
+                src = _bare_source_cls(
+                    name="mempalace", config={"profile_name": prof}
+                )
+                try:
+                    val = src.retrieve(
+                        key, fallback="live" if idx == 0 else "none"
+                    )
+                except Exception:  # noqa: BLE001 - cold leaf; try the next
+                    val = None
+                val = _unwrap_retrieve_result(val)
+                if val is not None:
+                    result = val
+                    break
         else:
             if as_json and callable(source_fn):
                 # spec-253 §3.36: --json prefers the provenance form
