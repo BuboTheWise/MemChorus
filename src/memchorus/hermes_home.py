@@ -118,20 +118,25 @@ def _profile_name_from_home(p: Path) -> str | None:
 
     Recognises the layouts produced by ``hermes -p`` / the Kanban dispatcher:
 
-    * ``.../profiles/<name>/...``  -> ``<name>`` (any depth; the first
-      component after a ``profiles`` segment wins)
-    * ``.../profile/<name>/...``   -> ``<name>`` (Hermes Desktop legacy)
+    * ``.../profiles/<name>``  -> ``<name>``
+    * ``.../profile/<name>``   -> ``<name>`` (Hermes Desktop legacy)
 
-    Returns ``None`` when *p* does not carry a profile segment, or when the
+    The boundary must be the **tail** of the path: ``hermes -p`` sets
+    ``$HERMES_HOME`` to the profile directory itself, so ``profiles/<name>``
+    is always the final two components. A ``profiles`` segment somewhere in
+    the middle of a longer path is an incidental component (e.g. a scratch
+    workspace nested under a profile's cache directory), not the profile
+    boundary — treating it as one detaches every downstream path from the
+    actual home and reads/writes the wrong tree (issue #322).
+
+    Returns ``None`` when *p* does not carry a profile tail, or when the
     candidate fails :data:`_PROFILE_NAME_RE` (i.e. it is not a usable name).
     """
     parts = p.parts
-    for i, part in enumerate(parts):
-        if part in ("profiles", "profile"):
-            if i + 1 < len(parts):
-                candidate = parts[i + 1]
-                if _PROFILE_NAME_RE.fullmatch(candidate):
-                    return candidate
+    if len(parts) >= 2 and parts[-2] in ("profiles", "profile"):
+        candidate = parts[-1]
+        if _PROFILE_NAME_RE.fullmatch(candidate):
+            return candidate
     return None
 
 
@@ -175,11 +180,17 @@ def _base_home() -> Path:
     home = _raw_hermes_home()
     if home is not None:
         parts = home.parts
-        for i, part in enumerate(parts):
-            if part in ("profiles", "profile"):
-                if i > 0:
-                    return Path(*parts[:i])
-                break
+        # Strip the profile tail only — ``profiles/<name>`` must be the final
+        # two components (see :func:`_profile_name_from_home`, issue #322).
+        # A ``profiles`` segment as an intermediate component of a longer path
+        # (e.g. a scratch workspace under a profile's cache dir) is *not* a
+        # profile boundary; stripping there returns the wrong base.
+        if (
+            len(parts) > 2
+            and parts[-2] in ("profiles", "profile")
+            and _PROFILE_NAME_RE.fullmatch(parts[-1])
+        ):
+            return Path(*parts[:-2])
     return hermes_home()
 
 
