@@ -33,12 +33,13 @@ import importlib.metadata as imp_meta
 import importlib.util
 import json
 import os
+import dataclasses
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -943,6 +944,133 @@ def check_wing_orphans(strict: bool = False) -> CheckResult:
         ),
         hint=hint,
     )
+
+
+def _pointer_key_store_dirs() -> Tuple[List[Path], List[Path]]:
+    """The store roots the fixed retrieve path (GH-330) consults.
+
+    Returns ``(cache_dirs, memory_dirs)``: the base ``mempalace_cache`` plus
+    every on-disk profile leaf's ``mempalace_cache`` and ``memories`` flat
+    store.  These are exactly the leaves ``memchorus-recall retrieve`` probes
+    (base → ambient → default → on-disk), so resolving against them validates
+    the same invariant the CLI enforces.
+    """
+    base = _base_home()
+    cache_dirs: List[Path] = [base / "mempalace_cache"]
+    memory_dirs: List[Path] = []
+    names: List[str] = []
+    try:
+        from memchorus.recall_cli import _on_disk_profile_names
+
+        names = _on_disk_profile_names()
+    except Exception:  # noqa: BLE001 — best-effort; fall back to active only
+        names = []
+    active = active_profile_name()
+    if active and active not in names:
+        names.append(active)
+    for name in names:
+        ph = profile_home(name)
+        cache_dirs.append(ph / "mempalace_cache")
+        memory_dirs.append(ph / "memories")
+    return cache_dirs, memory_dirs
+
+
+def run_pointer_key_probe(
+    strict: bool = False,
+    extra_keys: Optional[Sequence[str]] = None,
+) -> Tuple[int, "CheckResult", "memchorus.pointer_key_diag.PointerKeyReport"]:
+    """Pointer-key vs drawer_id mismatch probe (issue #331).
+
+    Scans the key store (base + every profile leaf's cache / memories dirs)
+    for pointer keys (``learning-*`` / ``decision-*`` / …), resolves each
+    through the GH-330 flat/drawer cross-form path, and reports the ones that
+    do not resolve to a local body.  ``extra_keys`` lets the operator feed in
+    keys from a recall block that may have *no* backing file (the dangling
+    pointers a key-store-only scan cannot see).
+
+    Returns ``(exit_code, check, report)``:
+      exit 0 — clean (no unresolved; includes the no-data case)
+      exit 1 — one or more pointer keys do not resolve (mismatches present)
+    Status: PASS when clean / no-data; WARN when unresolved and not ``strict``;
+    FAIL when unresolved and ``strict``.  Read-only, local-only, fast.
+    """
+    import memchorus.pointer_key_diag as _diag
+
+    cache_dirs, memory_dirs = _pointer_key_store_dirs()
+    report = _diag.pointer_key_report(
+        cache_dirs, memory_dirs, extra_keys=extra_keys
+    )
+    profile = active_profile_name()
+
+    if report.no_data:
+        check = CheckResult(
+            name="pointer_keys",
+            status=PASS,
+            message=f"{profile}: no pointer keys in the key store (fresh install)",
+        )
+        return 0, check, report
+
+    if report.ok:
+        check = CheckResult(
+            name="pointer_keys",
+            status=PASS,
+            message=(
+                f"{profile}: {report.total_keys} pointer keys, all resolve "
+                f"locally ({report.cross_form_hits} resolved across "
+                f"flat/drawer forms — GH-330 fix verified, issue #331)"
+            ),
+        )
+        return 0, check, report
+
+    status = FAIL if strict else WARN
+    examples = ", ".join(report.unresolved_keys[:5])
+    if report.unresolved > 5:
+        examples += f" (+{report.unresolved - 5} more)"
+    hint = (
+        "Each unresolved key is a dangling pointer — re-fetch the live source "
+        "or check the writer's profile leaf (see GH-330)."
+    )
+    if strict:
+        hint += " Under --strict, unresolved pointer keys are a failure."
+    check = CheckResult(
+        name="pointer_keys",
+        status=status,
+        message=(
+            f"{profile}: {report.unresolved} of {report.total_keys} pointer "
+            f"keys do NOT resolve to a local body — e.g. {examples} (issue #331)"
+        ),
+        hint=hint,
+    )
+    return 1, check, report
+
+
+def _collect_pointer_keys(args: List[str]) -> List[str]:
+    """Gather extra pointer keys from ``--keys KEY...`` and ``--keys-file``.
+
+    ``--keys`` consumes the following tokens until the next ``--`` flag;
+    ``--keys-file`` reads one key per line (``#`` comments / blanks ignored).
+    Keys may name bodies that have *no* backing file — the dangling pointers a
+    key-store-only scan cannot see.
+    """
+    keys: List[str] = []
+    if "--keys" in args:
+        idx = args.index("--keys")
+        i = idx + 1
+        while i < len(args) and not args[i].startswith("--"):
+            keys.append(args[i])
+            i += 1
+    if "--keys-file" in args:
+        idx = args.index("--keys-file")
+        if idx + 1 < len(args):
+            path = Path(args[idx + 1]).expanduser()
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        keys.append(line)
+            except OSError:  # noqa: BLE001 — unreadable file → skip
+                pass
+    return keys
 
 
 def check_test_suite() -> CheckResult:
@@ -3556,6 +3684,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         if not result.dry_run and result.orphan_rows_after > 0:
             return 1
         return 0
+
+    # ------------------------------------------------------------------ #
+    # --pointer-keys — pointer-key vs drawer_id mismatch probe (issue     #
+    # #331).  Validates the GH-330 flat/drawer resolution invariant.      #
+    # ------------------------------------------------------------------ #
+    if "--pointer-keys" in args:
+        extra = _collect_pointer_keys(args)
+        exit_code, check, report = run_pointer_key_probe(
+            strict="--strict" in args, extra_keys=extra
+        )
+        if as_json:
+            payload = report.to_dict()
+            payload["check"] = dataclasses.asdict(check)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            _emit([check], as_json)
+        return exit_code
 
     # ------------------------------------------------------------------ #
     # --deps-check / default install-health report                         #
