@@ -56,6 +56,46 @@ class _RetrieveMiss:
 
 RETRIEVE_MISS = _RetrieveMiss()
 
+# --- Pointer-key / drawer-key form mapping (GH-329 / #330) ---------------------
+# A pointer key (``learning-<sha16>`` / ``decision-<sha16>`` / ``mistake-<sha16>``)
+# is a *MemChorus flat-file* ID: category tag + ``sha256[:16]``.  The same logical
+# entry is written to the local JSON cache under its *drawer-store* form
+# (category uppercased, tag/dash → ``_``): ``DECISION_<sha16>``.  The injected
+# ``memchorus-recall retrieve <key>`` directive carries the *flat* form, so a
+# read that probed only the flat filename 404'd against the drawer-form cache file
+# (and vice-versa) — the "structural 404" diagnosed in GH-329.  Probing both
+# forms on read makes either form resolve.
+#
+#   flat   decision-88e86e5790c4c3ec   (category tag, dash,  sha256[:16])
+#   drawer DECISION_88e86e5790c4c3ec   (category tag, underscore, same sha)
+_POINTER_KEY_RE = re.compile(
+    r"^(?P<cat>[A-Za-z][A-Za-z0-9]*)(?P<sep>[-_])(?P<hex>[0-9a-fA-F]{8,})$"
+)
+
+
+def _cache_key_variants(key: str) -> List[str]:
+    """Candidate cache-file basenames for ``key``, in priority order.
+
+    For a pointer key (``<tag>-<hex>`` / ``<tag>_<hex>``) this yields the key
+    itself plus its cross-form twin: the flat form (``decision-<hex>``) and the
+    drawer-store form (``DECISION_<hex>``), so a read of either resolves the
+    cache file written under the other.  Non-pointer keys (no ``<tag>[-_]
+    <8+hex>`` shape — e.g. ``k1`` or a full ``drawer_<wing>_<room>_<sha>`` id)
+    yield ``[key]`` only, so existing round-trip and real-drawer_id reads see
+    no change.
+    """
+    variants = [key]
+    m = _POINTER_KEY_RE.match(key)
+    if m:
+        drawer_form = f"{m.group('cat').upper()}_{m.group('hex')}"
+        if drawer_form not in variants:
+            variants.append(drawer_form)
+        flat_form = f"{m.group('cat').lower()}-{m.group('hex')}"
+        if flat_form not in variants:
+            variants.append(flat_form)
+    return variants
+
+
 # --- Wing / room routing defaults (§1 + §3 of spec) ----------------------------
 _DEFAULT_WING_MAP: Dict[str, str] = {
     "DECISION": "memchorus_decisions",
@@ -1717,8 +1757,15 @@ class MemPalaceMemorySource(MemorySource):
           Never raises — any error in the refetch path degrades to
           :data:`RETRIEVE_MISS`.
         """
-        filepath = self._cache_dir / f"{key}.json"
-        if filepath.exists():
+        # GH-330 / GH-329: a pointer key travels in the *flat* form in the
+        # injected ``retrieve`` directive but is written to the local cache in
+        # the *drawer-store* form (``decision-<sha>`` vs ``DECISION_<sha>``).
+        # Probe every cross-form variant so either form resolves — the single
+        # exact-filename probe is what produced the structural 404.
+        for variant in _cache_key_variants(key):
+            filepath = self._cache_dir / f"{variant}.json"
+            if not filepath.exists():
+                continue
             try:
                 with open(filepath) as f:
                     data = json.load(f)
@@ -1754,9 +1801,23 @@ class MemPalaceMemorySource(MemorySource):
         # managed by HermesDefaultMemorySource.  If we still have nothing,
         # try that source so we don't report "not found" when the file
         # exists on disk but is only absent from our cache.
+        #
+        # GH-330: route the flat-store probe to *this source's* profile leaf
+        # (``profile_name`` from config) instead of the ambient env profile.
+        # A standalone ``memchorus-recall retrieve --profile X`` builds its
+        # source with ``profile_name=X``; the cache_dir is already X-scoped
+        # (see __init__), so the flat-store fallback must be too — otherwise
+        # it cold-misses against the reader's own leaf and re-fetches live.
         try:
             from memchorus.hermes_memory_source import HermesDefaultMemorySource
-            hms = HermesDefaultMemorySource(data_dir=None)
+            if self._profile_name:
+                from memchorus.hermes_home import profile_home
+
+                hms = HermesDefaultMemorySource(
+                    data_dir=str(profile_home(self._profile_name) / "memories")
+                )
+            else:
+                hms = HermesDefaultMemorySource(data_dir=None)
             val = hms.retrieve(key)
             if val is not None:
                 return val
