@@ -203,6 +203,61 @@ def _import_ok(interpreter: Path, package: str, timeout: int = 20) -> bool:
     return proc.returncode == 0
 
 
+def _interpreter_runs(interpreter: Path, timeout: int = 20) -> bool:
+    """True if ``interpreter`` exists, is executable, and actually starts.
+
+    GH #323: the broken-entrypoint probe used to lump "interpreter cannot
+    start at all" together with "interpreter runs but lacks the package"
+    (``_import_ok`` returns False for both). They are different defects: a
+    dead interpreter is a *dangling* entrypoint, an importable-but-partial
+    venv is an *unimportable* one. Verify the interpreter first.
+    """
+    try:
+        if not interpreter.exists() or not os.access(interpreter, os.X_OK):
+            return False
+        proc = subprocess.run(
+            [str(interpreter), "-c", "pass"],
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def _is_current_interpreter(p: Path) -> bool:
+    """True if ``p`` is the interpreter the doctor itself runs under.
+
+    Either ``p`` is ``sys.executable`` directly, or it is a one-hop symlink
+    onto it (the shape of the test fixtures: a temp ``venv/bin/python``
+    symlinked at ``sys.executable``, see ``test_install_doctor_306.py``).
+    A one-hop (immediate-target) comparison on purpose: it distinguishes
+    "this very interpreter" from a different venv python that happens to
+    resolve onto the same base CPython binary.
+    """
+    cur = os.path.normpath(os.path.abspath(sys.executable))
+    if os.path.normpath(os.path.abspath(str(p))) == cur:
+        return True
+    try:
+        if p.is_symlink():
+            target = os.path.normpath(
+                os.path.abspath(str((p.parent / os.readlink(p)).expanduser()))
+            )
+            if target == cur:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _package_importable_here(package: str) -> bool:
+    """True if ``package`` is importable in the doctor's own process."""
+    try:
+        return importlib.util.find_spec(package) is not None
+    except Exception:  # ValueError on odd module names, broken submodule
+        return False
+
+
 _NATIVE_SUFFIXES = (".so", ".dylib", ".dll")
 
 
@@ -333,9 +388,18 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
       (a) the symlink target still exists — it survives even after the venv
           it pointed into was re-provisioned, which is precisely the silent
           dangling state #252 describes; and
-      (b) resolving through it to the owning interpreter, that interpreter can
-          ``import`` the entrypoint's package (``memchorus`` for the memchorus
-          scripts, ``mempalace`` for ``mempalace-mcp``).
+      (b) resolving through it to the owning interpreter, that interpreter
+          can ``import`` the entrypoint's package (``memchorus`` for the
+          memchorus scripts, ``mempalace`` for ``mempalace-mcp``).
+
+    GH #323 refines the ordering: the interpreter is verified to *run*
+    (exists, executable, starts) before the import probe. An interpreter
+    that cannot start is reported as a dangling symlink; one that runs but
+    cannot import the package is flagged broken — except when the entry
+    points at this very interpreter (``sys.executable``, directly or one
+    symlink hop) and the doctor's own process can import the package: that
+    is a test-context entry (temp test-venv python without a ``pyvenv.cfg``),
+    not a real break.
 
     Status:
       * any broken/dangling entrypoint -> ``FAIL`` under ``--strict`` (so a
@@ -394,7 +458,27 @@ def check_bin_entrypoints(strict: bool = False) -> CheckResult:
             dangling.append(f"{name} -> target missing")
             continue
 
+        if not _interpreter_runs(interpreter):
+            # GH #323: the interpreter cannot start at all — the entry is
+            # dangling in effect, not merely "cannot import". Report it as a
+            # dangling symlink so the fix hint matches the defect.
+            dangling.append(
+                f"{name} -> dangling symlink: interpreter {interpreter} "
+                f"cannot start (missing, not executable, or fails to run)"
+            )
+            continue
+
         if not _import_ok(interpreter, package):
+            if _is_current_interpreter(interpreter) and _package_importable_here(
+                package
+            ):
+                # GH #323 — test context, not a real break: the entry points
+                # at this very interpreter (the one running the doctor), and
+                # the doctor's own process imports the package, so the entry
+                # is healthy here. A temp test-venv python does not activate
+                # site-packages (no pyvenv.cfg above it), so a child probe
+                # would falsely report the package as missing.
+                continue
             unimportable.append(
                 f"{name} -> {interpreter} cannot import {package}"
             )
