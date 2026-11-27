@@ -918,7 +918,14 @@ try:
     from hypothesis import strategies as st
     _HYPOTHESIS_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    # hypothesis is an optional fuzzing dep (see pyproject `dev` extra).  Bind
+    # the names to None in the fallback so the module always imports cleanly;
+    # the `if _HYPOTHESIS_AVAILABLE:` guard below is the only place they are
+    # referenced, and it is skipped when the import failed.
     _HYPOTHESIS_AVAILABLE = False
+    given = None        # type: ignore[assignment, misc]
+    _h_settings = None  # type: ignore[assignment, misc]
+    st = None           # type: ignore[assignment, misc]
 
 
 # Fixed anchor points for as_of (avoids unbounded datetime generation)
@@ -929,74 +936,80 @@ _ASAOFS = [
     datetime(2026, 8, 15, tzinfo=timezone.utc),  # just before AC-6 valid_to
 ]
 
-_CONTENT_SHAPE_STRATEGIES = [
-    st.none(),
-    st.booleans(),
-    st.integers(min_value=-100, max_value=100),
-    st.floats(allow_nan=False),
-    st.text(max_size=20),
-    st.lists(st.text(max_size=5), max_size=3),
-    st.fixed_dictionaries({
-        "subject":   st.text(max_size=10),
-        "predicate": st.text(max_size=10),
-        "object":    st.text(max_size=10),
-    }),
-    st.fixed_dictionaries({
-        "subject":     st.text(max_size=10),
-        "predicate":   st.text(max_size=10),
-        "object":      st.text(max_size=10),
-        "valid_from":  st.sampled_from([None, "2026-09-20", "2026-08-01", "2026-08-15"]),
-        "valid_to":    st.sampled_from([None, "2026-08-15", "2026-12-31"]),
-        "superseded_by": st.sampled_from([None, "kg-xyz"]),
-    }),
-    st.fixed_dictionaries({
-        "text": st.text(max_size=20),
-        "valid_from": st.sampled_from([None, "2026-09-20"]),
-    }),
-]
+# NOTE: everything below this guard is hypothesis-driven.  The strategies and
+# the @given/@settings decorators are evaluated at import time, so they must
+# live inside the guard — otherwise an absent `hypothesis` raises NameError
+# while pytest is still collecting this module (and no test in the file
+# collects, not even the non-fuzz ones).  When hypothesis is installed the
+# tests are defined and run exactly as before; when it is not, the module
+# still imports cleanly and only these two fuzz tests are absent.
+if _HYPOTHESIS_AVAILABLE:
+    _CONTENT_SHAPE_STRATEGIES = [
+        st.none(),
+        st.booleans(),
+        st.integers(min_value=-100, max_value=100),
+        st.floats(allow_nan=False),
+        st.text(max_size=20),
+        st.lists(st.text(max_size=5), max_size=3),
+        st.fixed_dictionaries({
+            "subject":   st.text(max_size=10),
+            "predicate": st.text(max_size=10),
+            "object":    st.text(max_size=10),
+        }),
+        st.fixed_dictionaries({
+            "subject":     st.text(max_size=10),
+            "predicate":   st.text(max_size=10),
+            "object":      st.text(max_size=10),
+            "valid_from":  st.sampled_from([None, "2026-09-20", "2026-08-01", "2026-08-15"]),
+            "valid_to":    st.sampled_from([None, "2026-08-15", "2026-12-31"]),
+            "superseded_by": st.sampled_from([None, "kg-xyz"]),
+        }),
+        st.fixed_dictionaries({
+            "text": st.text(max_size=20),
+            "valid_from": st.sampled_from([None, "2026-09-20"]),
+        }),
+    ]
 
-_ROUTE_CONTEXT_STRATEGY = st.fixed_dictionaries({
-    "caller_explicit":       st.sampled_from([None, SURFACE_MEMORY, SURFACE_DRAWER, SURFACE_KG]),
-    "fact_kind":             st.sampled_from([f.value for f in FactKind]),
-    "has_validity_window":   st.booleans(),
-    "is_standing_preference": st.booleans(),
-    "is_relationship_shape":  st.booleans(),
-    "as_of":                 st.sampled_from(_ASAOFS),
-})
+    _ROUTE_CONTEXT_STRATEGY = st.fixed_dictionaries({
+        "caller_explicit":       st.sampled_from([None, SURFACE_MEMORY, SURFACE_DRAWER, SURFACE_KG]),
+        "fact_kind":             st.sampled_from([f.value for f in FactKind]),
+        "has_validity_window":   st.booleans(),
+        "is_standing_preference": st.booleans(),
+        "is_relationship_shape":  st.booleans(),
+        "as_of":                 st.sampled_from(_ASAOFS),
+    })
 
+    @pytest.mark.skipif(not _HYPOTHESIS_AVAILABLE, reason="hypothesis not installed")
+    @_h_settings(max_examples=200, deadline=None, database=None)
+    @given(content_shape=_CONTENT_SHAPE_STRATEGIES[0] | _CONTENT_SHAPE_STRATEGIES[6],
+           context_kw=_ROUTE_CONTEXT_STRATEGY)
+    def test_fuzz_router_returns_valid_surface_hypothesis(content_shape, context_kw):
+        """hypothesis layer: for any valid RouteContext + structured content,
+        route() returns exactly one of MEMORY / DRAWER / KG.
 
-@pytest.mark.skipif(not _HYPOTHESIS_AVAILABLE, reason="hypothesis not installed")
-@_h_settings(max_examples=200, deadline=None, database=None)
-@given(content_shape=_CONTENT_SHAPE_STRATEGIES[0] | _CONTENT_SHAPE_STRATEGIES[6],
-       context_kw=_ROUTE_CONTEXT_STRATEGY)
-def test_fuzz_router_returns_valid_surface_hypothesis(content_shape, context_kw):
-    """hypothesis layer: for any valid RouteContext + structured content,
-    route() returns exactly one of MEMORY / DRAWER / KG.
+        This is the invariant contract for the write-side classifier (spec §4.2):
+        the classifier must be total over its input domain — it must NEVER
+        raise, return None, or return a surface outside the three-surface set.
+        """
+        result = route(content_shape, RouteContext(**context_kw))
+        assert result in SURFACES, (
+            f"route() returned {result!r} — expected one of {SURFACES}. "
+            f"context_kw={context_kw}"
+        )
 
-    This is the invariant contract for the write-side classifier (spec §4.2):
-    the classifier must be total over its input domain — it must NEVER
-    raise, return None, or return a surface outside the three-surface set.
-    """
-    result = route(content_shape, RouteContext(**context_kw))
-    assert result in SURFACES, (
-        f"route() returned {result!r} — expected one of {SURFACES}. "
-        f"context_kw={context_kw}"
-    )
+    @_h_settings(max_examples=100, deadline=None, database=None)
+    @given(context_kw=_ROUTE_CONTEXT_STRATEGY)
+    def test_fuzz_router_rule_and_reason_always_set(context_kw):
+        """Every routing_decision() call must populate .rule and .reason.
 
-
-@_h_settings(max_examples=100, deadline=None, database=None)
-@given(context_kw=_ROUTE_CONTEXT_STRATEGY)
-def test_fuzz_router_rule_and_reason_always_set(context_kw):
-    """Every routing_decision() call must populate .rule and .reason.
-
-    The structured logging contract (spec §7.3) requires that whichever rule
-    fires — R0 through R4 — the caller can read which rule fired and why.
-    """
-    ctx = RouteContext(**context_kw)
-    result = routing_decision("fuzz-content", ctx)
-    assert result.rule is not None
-    assert result.reason is not None
-    assert result.rule in ("R0", "R1", "R2", "R3", "R4"), f"unexpected rule: {result.rule}"
+        The structured logging contract (spec §7.3) requires that whichever rule
+        fires — R0 through R4 — the caller can read which rule fired and why.
+        """
+        ctx = RouteContext(**context_kw)
+        result = routing_decision("fuzz-content", ctx)
+        assert result.rule is not None
+        assert result.reason is not None
+        assert result.rule in ("R0", "R1", "R2", "R3", "R4"), f"unexpected rule: {result.rule}"
 
 
 def test_fuzz_arbitrary_payloads_never_raise():
