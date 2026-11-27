@@ -635,38 +635,16 @@ def check_plugin_hooks() -> CheckResult:
 
 
 def check_config_validation() -> CheckResult:
-    """A valid config.yaml can be loaded without errors."""
+    """A valid config.yaml can be loaded, and its ``plugins.enabled`` list is
+    free of YAML type errors (bare booleans / numbers / ``None``) that would
+    otherwise pass this check yet raise ``import true`` at plugin-load time
+    (GH-#335)."""
     candidates = [
         hermes_home() / "config.yaml",
         Path(".hermes/config.yaml").resolve(),
     ]
-
-    found_path: Optional[Path] = None
-    for cfg in candidates:
-        if cfg.is_file():
-            found_path = cfg
-            try:
-                with open(cfg) as fh:
-                    data = yaml.safe_load(fh)
-                if not isinstance(data, dict):
-                    return CheckResult(
-                        name="config_validation",
-                        status=WARN,
-                        message=(
-                            f"Config at {cfg} valid YAML but type "
-                            f"{type(data).__name__}, expected mapping"
-                        ),
-                        hint="Start config.yaml with key: value pairs.",
-                    )
-            except yaml.YAMLError as exc:
-                return CheckResult(
-                    name="config_validation",
-                    status=FAIL,
-                    message=f"YAML error in {cfg}: {exc}",
-                    hint="Run 'memchorus-init --profile <name>' to regenerate.",
-                )
-
-    if found_path is None:
+    cfg = next((c for c in candidates if c.is_file()), None)
+    if cfg is None:
         return CheckResult(
             name="config_validation",
             status=WARN,
@@ -674,10 +652,59 @@ def check_config_validation() -> CheckResult:
             hint="Run 'memchorus-init --profile <name>' to create one.",
         )
 
+    try:
+        with open(cfg) as fh:
+            data = yaml.safe_load(fh)
+    except yaml.YAMLError as exc:
+        return CheckResult(
+            name="config_validation",
+            status=FAIL,
+            message=f"YAML error in {cfg}: {exc}",
+            hint="Run 'memchorus-init --profile <name>' to regenerate.",
+        )
+
+    if not isinstance(data, dict):
+        return CheckResult(
+            name="config_validation",
+            status=WARN,
+            message=(
+                f"Config at {cfg} valid YAML but type "
+                f"{type(data).__name__}, expected mapping"
+            ),
+            hint="Start config.yaml with key: value pairs.",
+        )
+
+    # GH-#335: validate the plugins.enabled list so a bare YAML boolean
+    # (e.g. `enabled: true`) is flagged here instead of silently passing and
+    # later raising `import true` when the plugin is loaded.
+    plugins = data.get("plugins")
+    if isinstance(plugins, dict) and "enabled" in plugins:
+        from memchorus.auto_init import (
+            _coerce_enabled_list,
+            validate_enabled_entries,
+        )
+        entries = _coerce_enabled_list(plugins.get("enabled"))
+        _valid, invalid = validate_enabled_entries(entries)
+        if invalid:
+            shown = ", ".join(repr(v) for v in invalid[:5])
+            return CheckResult(
+                name="config_validation",
+                status=WARN,
+                message=(
+                    f"plugins.enabled in {cfg} contains non-name "
+                    f"entry/entries: {shown}"
+                ),
+                hint=(
+                    "Remove bare booleans/numbers from plugins.enabled "
+                    "(GH-#335), or re-run 'memchorus-init --profile "
+                    "<name>' to normalise the list."
+                ),
+            )
+
     return CheckResult(
         name="config_validation",
         status=PASS,
-        message=f"Config valid at {found_path}",
+        message=f"Config valid at {cfg}",
     )
 
 

@@ -18,10 +18,11 @@ Python API: ::
 from __future__ import annotations
 
 import os
+import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 
 from memchorus import palace_path
 from memchorus.hermes_home import hermes_home, profile_home, profile_config_path
@@ -242,6 +243,71 @@ def write_config(profile: Optional[str] = None,
 # Plugin enablement helper (edits ~/.hermes/config.yaml safely)
 # ---------------------------------------------------------------------------
 
+#: A plugin name is an identifier: starts with a letter, then letters, digits,
+#: ``.``, ``_`` or ``-`` (e.g. ``memchorus``, ``mempalace-mcp``).  This is a
+#: secondary guard — the primary rejection of YAML booleans/numbers/None is a
+#: *type* check, because ``true`` would otherwise match this pattern as a string.
+_PLUGIN_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+#: Strings that are almost certainly a YAML 1.1 boolean-coercion artifact
+#: (``true``/``false`` in any case), not a real plugin name.  A plugin literally
+#: called "true" is indistinguishable from the config bug this guard exists to
+#: catch (``import true``), so reject them case-insensitively (GH-#335).
+_BOOL_LIKE_STRINGS = {"true", "false"}
+
+
+def validate_enabled_entries(entries) -> Tuple[List[str], List[object]]:
+    """Split a raw ``plugins.enabled`` list into valid plugin names and the
+    entries that are not.
+
+    A valid entry is a non-empty string that matches :data:`_PLUGIN_NAME_RE`
+    and is not a boolean-like word (``true``/``false``, any case).  Everything
+    else — bare YAML booleans, numbers, ``None``, nested collections, and empty
+    / whitespace-only strings — is invalid.  These are YAML *type* errors, not
+    plugin names, and loading one as a module (``import true``) is what raised
+    the runtime error in GH-#335.
+
+    Returns ``(valid, invalid)`` where ``valid`` is a list of clean plugin-name
+    strings and ``invalid`` preserves the offending raw values (in order) for
+    reporting.
+    """
+    valid: List[str] = []
+    invalid: List[object] = []
+    for entry in (entries or []):
+        # bool must be tested before the ``str`` branch: it is a distinct YAML
+        # type that must never be treated as a name, even though ``True``
+        # stringifies to ``"true"`` which would pass the pattern above.
+        if isinstance(entry, bool):
+            invalid.append(entry)
+        elif not isinstance(entry, str):
+            invalid.append(entry)
+        else:
+            stripped = entry.strip()
+            if (
+                stripped
+                and stripped.lower() not in _BOOL_LIKE_STRINGS
+                and _PLUGIN_NAME_RE.fullmatch(stripped)
+            ):
+                valid.append(stripped)
+            else:
+                invalid.append(entry)
+    return valid, invalid
+
+
+def _coerce_enabled_list(raw) -> List[object]:
+    """Normalise a raw ``plugins.enabled`` value to a list of entries.
+
+    Handles the three shapes the config may take: a proper list, a bare scalar
+    (``enabled: true`` / ``enabled: false`` / ``enabled: memchorus``), or an
+    absent / null value.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return list(raw)
+    return [raw]
+
+
 def _resolve_hermes_config(profile: str) -> Path:
     if profile == "default":
         return hermes_home() / "config.yaml"
@@ -251,8 +317,14 @@ def _resolve_hermes_config(profile: str) -> Path:
 def enable_plugin(profile: Optional[str] = None) -> bool:
     """Ensure ``memchorus`` appears in the ``plugins.enabled`` list.
 
-    Returns ``True`` if the file was modified, ``False`` if it already had
-    the plugin listed (idempotent).
+    The existing ``enabled`` list is validated before anything is written
+    (GH-#335): bare YAML booleans, numbers, ``None``, and empty strings are
+    rejected and dropped — only clean plugin-name strings are kept.  A bare
+    boolean such as ``enabled: true`` is normalised to a proper list instead
+    of being treated as a single (unresolvable) entry.
+
+    Returns ``True`` if the file was modified, ``False`` if the plugin is
+    already correctly enabled (idempotent, file left untouched).
     """
     profile = (profile
                or os.environ.get("HERMES_KANBAN_PROFILE")
@@ -264,42 +336,48 @@ def enable_plugin(profile: Optional[str] = None) -> bool:
               file=sys.stderr)
         return False
 
-    with open(cfg_path, "r") as f:
-        lines = f.readlines()
+    text = cfg_path.read_text()
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        print(f"[error] {cfg_path} is not valid YAML: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if not isinstance(data, dict):
+        data = {}
 
-    # Look for the ``enabled:`` line and add memchorus if absent.
-    wrote_it = False
-    for idx, line in enumerate(lines):
-        stripped = line.strip().lower()
-        if stripped.startswith("enabled:"):
-            items_part = stripped.split(":", 1)[1].strip()
-            # Handle both inline list ``[a, b]`` and empty brackets ``[]``
-            inner = items_part.strip("[]")
-            entries = [e.strip() for e in inner.split(",") if e.strip()]
-            if "memchorus" not in entries:
-                entries.append("memchorus")
-                lines[idx] = f"  enabled: [{', '.join(entries)}]{lines[idx][len(line.rstrip()):]}"
-                wrote_it = True
-            break
+    plugins = data.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
 
-    if not wrote_it and all(not l.strip().startswith("enabled:") for l in lines):
-        # No ``enabled:`` line at all — append one near the bottom.
-        lines.append("\nplugins:\n  enabled: [memchorus]\n")
-        wrote_it = True
+    raw_enabled = plugins.get("enabled")
+    entries = _coerce_enabled_list(raw_enabled)
+    valid, invalid = validate_enabled_entries(entries)
 
-    if not wrote_it:
+    for bad in invalid:
+        print(f"[warn] plugins.enabled: rejecting {bad!r} — not a valid "
+              f"plugin name (GH-#335)", file=sys.stderr)
+
+    already = "memchorus" in valid
+    if not already:
+        valid.append("memchorus")
+
+    if already and not invalid:
         print(f"[skip] memchorus already enabled in {cfg_path}")
         return False
 
+    plugins["enabled"] = valid
+    data["plugins"] = plugins
+    new_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
     tmp = cfg_path.with_suffix(".tmp")
     try:
-        tmp.write_text("".join(lines))
+        tmp.write_text(new_text)
         os.replace(tmp, cfg_path)
     except OSError as exc:
         print(f"[error] failed to update {cfg_path}: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
 
-    print(f"[ok] memchorus added to plugins.enabled in {cfg_path}")
+    print(f"[ok] memchorus enabled in plugins.enabled in {cfg_path}")
     return True
 
 

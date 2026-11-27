@@ -233,3 +233,244 @@ class TestEnablePlugin:
             assert result is False, "Missing config => graceful no-op"
         finally:
             ai._resolve_hermes_config = orig_res
+
+
+# ---------------------------------------------------------------------------
+# GH-#335 — plugins.enabled validation (boolean / number / None entries)
+# ---------------------------------------------------------------------------
+
+
+class TestValidateEnabledEntries:
+    """validate_enabled_entries splits a raw list into valid names and the
+    entries that are not (bare booleans, numbers, None, empty strings)."""
+
+    def test_rejects_yaml_boolean_true(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries([True, "memchorus"])
+        assert valid == ["memchorus"]
+        assert invalid == [True]
+
+    def test_rejects_yaml_boolean_false(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries([False])
+        assert valid == []
+        assert invalid == [False]
+
+    def test_rejects_numbers(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries([42, 3.14, "mempalace-mcp"])
+        assert valid == ["mempalace-mcp"]
+        assert invalid == [42, 3.14]
+
+    def test_rejects_none(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries([None, "memchorus"])
+        assert valid == ["memchorus"]
+        assert invalid == [None]
+
+    def test_rejects_nested_collections(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries([["a", "b"], {"k": "v"}, "ok"])
+        assert valid == ["ok"]
+        assert invalid == [["a", "b"], {"k": "v"}]
+
+    def test_rejects_empty_and_whitespace_strings(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(["", "   ", "memchorus"])
+        assert valid == ["memchorus"]
+        assert invalid == ["", "   "]
+
+    def test_accepts_valid_plugin_names(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(
+            ["memchorus", "mempalace-mcp", "my_plugin", "v2"]
+        )
+        assert valid == ["memchorus", "mempalace-mcp", "my_plugin", "v2"]
+        assert invalid == []
+
+    def test_strips_whitespace_from_valid_names(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(["  memchorus  "])
+        assert valid == ["memchorus"]
+        assert invalid == []
+
+    def test_rejects_name_starting_with_digit(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(["2fast", "9lives"])
+        assert valid == []
+        assert invalid == ["2fast", "9lives"]
+
+    def test_handles_none_and_empty_input(self):
+        from memchorus.auto_init import validate_enabled_entries
+        assert validate_enabled_entries(None) == ([], [])
+        assert validate_enabled_entries([]) == ([], [])
+
+    def test_true_is_not_accepted_as_a_string_name(self):
+        # The core of GH-#335: the YAML boolean `true` must not be treated as
+        # the string "true", and the boolean-like *strings* "true"/"false" are
+        # rejected too (a plugin literally named that is the bug, not a name).
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(["true", "false", "True", True])
+        assert valid == []
+        # All four offenders must be preserved in order in `invalid`.
+        assert "true" in invalid
+        assert "false" in invalid
+        assert "True" in invalid
+        assert True in invalid
+
+    def test_boolean_like_strings_rejected_case_insensitive(self):
+        from memchorus.auto_init import validate_enabled_entries
+        valid, invalid = validate_enabled_entries(
+            ["TRUE", "False", "memchorus"]
+        )
+        assert valid == ["memchorus"]
+        assert "TRUE" in invalid
+        assert "False" in invalid
+
+
+class TestCoerceEnabledList:
+    """_coerce_enabled_list normalises the three shapes the config can take."""
+
+    def test_none_becomes_empty_list(self):
+        from memchorus.auto_init import _coerce_enabled_list
+        assert _coerce_enabled_list(None) == []
+
+    def test_list_is_preserved(self):
+        from memchorus.auto_init import _coerce_enabled_list
+        assert _coerce_enabled_list(["a", "b"]) == ["a", "b"]
+
+    def test_tuple_is_preserved(self):
+        from memchorus.auto_init import _coerce_enabled_list
+        assert _coerce_enabled_list(("a",)) == ["a"]
+
+    def test_bare_scalar_is_wrapped(self):
+        from memchorus.auto_init import _coerce_enabled_list
+        assert _coerce_enabled_list(True) == [True]
+        assert _coerce_enabled_list("memchorus") == ["memchorus"]
+        assert _coerce_enabled_list(42) == [42]
+
+
+class TestEnablePluginValidation335:
+    """GH-#335: enable_plugin rejects / drops non-name entries and normalises
+    bare booleans instead of leaving them as phantom plugin names."""
+
+    def _write_fake_cfg(self, text, tmp_path):
+        fake_cfg = tmp_path / "config.yaml"
+        fake_cfg.write_text(text)
+        return fake_cfg
+
+    def _patch(self, fake_cfg):
+        import memchorus.auto_init as ai
+        orig_res = ai._resolve_hermes_config
+        ai._resolve_hermes_config = lambda _p: fake_cfg  # type: ignore
+        return orig_res
+
+    def test_drops_true_keeps_memchorus(self, tmp_path, capsys):
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg(
+            "plugins:\n  enabled: [true, memchorus]\n", tmp_path
+        )
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())
+            enabled = data["plugins"]["enabled"]
+            assert result is True
+            assert enabled == ["memchorus"], f"got {enabled!r}"
+            assert True not in enabled and "true" not in enabled
+            # A warning should have been emitted on stderr.
+            err = capsys.readouterr().err
+            assert "rejecting" in err and "True" in err
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_block_list_true_not_corrupted(self, tmp_path):
+        # The old line-based parser orphaned block-list items and produced
+        # invalid YAML.  It must now normalise cleanly.
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg(
+            "plugins:\n  enabled:\n    - true\n    - memchorus\n", tmp_path
+        )
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())  # must parse
+            assert data["plugins"]["enabled"] == ["memchorus"]
+            assert result is True
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_bare_boolean_true_normalised(self, tmp_path):
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg("plugins:\n  enabled: true\n", tmp_path)
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())
+            assert data["plugins"]["enabled"] == ["memchorus"]
+            assert result is True
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_bare_boolean_false_normalised(self, tmp_path):
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg("plugins:\n  enabled: false\n", tmp_path)
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())
+            assert data["plugins"]["enabled"] == ["memchorus"]
+            assert result is True
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_mixed_null_number_string_cleaned(self, tmp_path):
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg(
+            "plugins:\n  enabled: [null, 42, memchorus, other-plug]\n", tmp_path
+        )
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())
+            assert data["plugins"]["enabled"] == ["memchorus", "other-plug"]
+            assert result is True
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_noop_when_memchorus_present_and_clean(self, tmp_path, capsys):
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg(
+            "plugins:\n  enabled: [memchorus, other-plug]\n", tmp_path
+        )
+        orig_res = self._patch(fake_cfg)
+        before = fake_cfg.read_text()
+        try:
+            result = ai.enable_plugin(profile="default")
+            assert result is False, "clean + already present => no-op"
+            # File must be left untouched (idempotent).
+            assert fake_cfg.read_text() == before
+        finally:
+            ai._resolve_hermes_config = orig_res
+
+    def test_repairs_dirty_list_even_when_memchorus_present(self, tmp_path):
+        # memchorus is present but a `true` entry lingers — the list is dirty,
+        # so enable_plugin must clean it and report a change.
+        import memchorus.auto_init as ai
+        fake_cfg = self._write_fake_cfg(
+            "plugins:\n  enabled: [memchorus, true]\n", tmp_path
+        )
+        orig_res = self._patch(fake_cfg)
+        try:
+            result = ai.enable_plugin(profile="default")
+            import yaml
+            data = yaml.safe_load(fake_cfg.read_text())
+            assert data["plugins"]["enabled"] == ["memchorus"]
+            assert result is True
+        finally:
+            ai._resolve_hermes_config = orig_res
