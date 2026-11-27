@@ -71,7 +71,7 @@ jobs:
       - name: Run full test suite
         env:
           PYTEST_ADDOPTS: ""
-        run: PYTHONPATH=src python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts="
+        run: PYTHONPATH=src python -m pytest tests/ --tb=short -x --durations=20 --override-ini="addopts=-p no:profiling --timeout=30 -n 4 --dist=loadgroup"
 
       - name: Pre-push board-card gate (IMPL #203)
         # Decision-logic + fixture-board cases for the local pre-push gate.
@@ -191,7 +191,9 @@ jobs:
           # Deselect it so the Windows signal is not masked; remove this line once fixed.
           # Run the full suite WITHOUT -x on Windows so every remaining failure
           # is reported in a single pass (stop-on-first was masking the list).
-          python -m pytest tests/ --tb=short --durations=20 --override-ini="addopts=" `
+          # Parallel via xdist (restored in #343): loadgroup keeps live/MCP
+          # groups on one worker, matching the local pytest.ini addopts.
+          python -m pytest tests/ --tb=short --durations=20 --override-ini="addopts=-p no:profiling --timeout=30 -n 4 --dist=loadgroup" `
             --deselect "tests/test_hermes_source_integration.py::test_search_multi_word_query_matches_any_term_in_content"
 
       - name: Verify routing test coverage threshold
